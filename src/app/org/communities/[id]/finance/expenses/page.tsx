@@ -26,6 +26,24 @@ const CATS = [
   "OTHER",
 ] as const;
 
+const CAT_LABELS: Record<string, string> = {
+  ELECTRICITY:    "Electricidad",
+  WATER:          "Agua",
+  GAS:            "Gas",
+  INTERNET:       "Internet",
+  CLEANING:       "Limpieza",
+  GARDENING:      "Jardinería",
+  SECURITY:       "Seguridad",
+  ELEVATOR:       "Ascensor",
+  STAFF_PAYROLL:  "Nómina de personal",
+  ADMINISTRATION: "Administración",
+  INSURANCE:      "Seguro",
+  REPAIRS:        "Reparaciones",
+  RESERVE_FUND:   "Fondo de reserva",
+  TAXES:          "Impuestos",
+  OTHER:          "Otro",
+};
+
 const today = new Date();
 
 export default function ExpensesPage() {
@@ -83,7 +101,7 @@ export default function ExpensesPage() {
           <tbody>
             {list.data?.map((e) => (
               <tr key={e.id} className="border-t">
-                <td className="px-3 py-2">{e.category}</td>
+                <td className="px-3 py-2">{CAT_LABELS[e.category] ?? e.category}</td>
                 <td className="px-3 py-2">{e.description}</td>
                 <td className="px-3 py-2 text-muted-foreground">{e.supplierName ?? "—"}</td>
                 <td className="px-3 py-2 text-right">${Number(e.amountUsd.toString()).toFixed(2)}</td>
@@ -186,7 +204,7 @@ function NewExpenseDialog({
                 value={form.category}
                 onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number] }))}
               >
-                {CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c] ?? c}</option>)}
               </select>
             </div>
             <div>

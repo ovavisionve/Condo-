@@ -17,6 +17,24 @@ const EXPENSE_CATEGORIES = [
   "REPAIRS", "RESERVE_FUND", "TAXES", "OTHER",
 ] as const;
 
+const EXPENSE_CAT_LABELS: Record<string, string> = {
+  ELECTRICITY:    "Electricidad",
+  WATER:          "Agua",
+  GAS:            "Gas",
+  INTERNET:       "Internet",
+  CLEANING:       "Limpieza",
+  GARDENING:      "Jardinería",
+  SECURITY:       "Seguridad",
+  ELEVATOR:       "Ascensor",
+  STAFF_PAYROLL:  "Nómina de personal",
+  ADMINISTRATION: "Administración",
+  INSURANCE:      "Seguro",
+  REPAIRS:        "Reparaciones",
+  RESERVE_FUND:   "Fondo de reserva",
+  TAXES:          "Impuestos",
+  OTHER:          "Otro",
+};
+
 type WOStatus = (typeof WO_STATUSES)[number];
 type WOPriority = (typeof WO_PRIORITIES)[number];
 
@@ -122,7 +140,7 @@ export default function MaintenancePage() {
                     <span className="text-xs">Área común</span>
                   )}
                 </td>
-                <td className="px-3 py-2 text-xs">{wo.category}</td>
+                <td className="px-3 py-2 text-xs">{EXPENSE_CAT_LABELS[wo.category] ?? wo.category}</td>
                 <td className="px-3 py-2">
                   <span className={`rounded px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[wo.priority as WOPriority]}`}>
                     {PRIORITY_LABELS[wo.priority as WOPriority]}
@@ -246,7 +264,7 @@ function NewWorkOrderDialog({
                 value={form.category}
                 onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof EXPENSE_CATEGORIES)[number] }))}
               >
-                {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{EXPENSE_CAT_LABELS[c] ?? c}</option>)}
               </select>
             </div>
             <div>

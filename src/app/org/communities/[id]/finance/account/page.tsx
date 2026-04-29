@@ -171,6 +171,15 @@ export default function AccountStatementPage() {
   );
 }
 
+const INVOICE_STATUS_LABELS: Record<string, string> = {
+  DRAFT:   "Borrador",
+  ISSUED:  "Emitida",
+  PARTIAL: "Pago parcial",
+  PAID:    "Pagada",
+  OVERDUE: "Vencida",
+  VOIDED:  "Anulada",
+};
+
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     DRAFT: "bg-gray-100 text-gray-700",
@@ -182,7 +191,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded px-2 py-0.5 text-xs font-medium ${colors[status] ?? "bg-gray-100"}`}>
-      {status}
+      {INVOICE_STATUS_LABELS[status] ?? status}
     </span>
   );
 }

@@ -246,6 +246,11 @@ function HistoryTab({ organizationId, communityId }: { organizationId: string; c
     FAILED: "text-destructive",
     PENDING: "text-yellow-600",
   };
+  const statusLabels: Record<string, string> = {
+    SENT: "Enviado",
+    FAILED: "Error",
+    PENDING: "Pendiente",
+  };
 
   const channelLabel: Record<string, string> = { WHATSAPP: "WhatsApp", IN_APP: "In-App", EMAIL: "Email" };
 
@@ -275,7 +280,7 @@ function HistoryTab({ organizationId, communityId }: { organizationId: string; c
                 </td>
                 <td className="px-3 py-2">{channelLabel[n.channel] ?? n.channel}</td>
                 <td className="px-3 py-2 text-xs">{EVENT_LABELS[n.event] ?? n.event}</td>
-                <td className={`px-3 py-2 font-medium ${statusColors[n.status] ?? ""}`}>{n.status}</td>
+                <td className={`px-3 py-2 font-medium ${statusColors[n.status] ?? ""}`}>{statusLabels[n.status] ?? n.status}</td>
                 <td className="px-3 py-2 max-w-xs truncate text-muted-foreground" title={n.body}>{n.body}</td>
               </tr>
             ))}
