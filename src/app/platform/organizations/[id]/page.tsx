@@ -224,7 +224,7 @@ export default function OrganizationDetailPage() {
                   </div>
                   <div>
                     <p className="text-muted-foreground">Precio</p>
-                    <p className="font-semibold">${sub.plan.priceUsd} / mes</p>
+                    <p className="font-semibold">${sub.plan.priceUsd.toString()} / mes</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Límites del plan</p>
