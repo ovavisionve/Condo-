@@ -6,6 +6,8 @@ import Link from "next/link";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 const VEHICLE_TYPES: Record<string, string> = {
   CAR: "Carro", MOTORCYCLE: "Moto", TRUCK: "Camión", VAN: "Van", OTHER: "Otro",
@@ -34,6 +36,87 @@ export default function ResidentsPage() {
 
   const { data, refetch } = trpc.org.persons.list.useQuery({ organizationId, communityId });
   const bulkImport = trpc.org.persons.bulkImport.useMutation();
+
+  // --- Formulario manual ---
+  const [showForm, setShowForm] = useState(false);
+  const [formMsg, setFormMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [formLoading, setFormLoading] = useState(false);
+
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [idType, setIdType] = useState<"CEDULA_V" | "CEDULA_E" | "PASSPORT" | "OTHER">("CEDULA_V");
+  const [idNumber, setIdNumber] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [role, setRole] = useState<"OWNER" | "TENANT">("OWNER");
+  const [unitId, setUnitId] = useState("");
+
+  const { data: unitsData } = trpc.org.units.list.useQuery({ organizationId, communityId });
+  const units = Array.isArray(unitsData) ? unitsData : [];
+
+  const createPerson = trpc.org.persons.create.useMutation();
+  const assignOwner = trpc.org.persons.assignOwner.useMutation();
+  const assignTenant = trpc.org.persons.assignTenant.useMutation();
+
+  const resetForm = () => {
+    setFirstName("");
+    setLastName("");
+    setIdType("CEDULA_V");
+    setIdNumber("");
+    setEmail("");
+    setPhone("");
+    setWhatsapp("");
+    setRole("OWNER");
+    setUnitId("");
+    setFormMsg(null);
+  };
+
+  const handleAddResident = async () => {
+    setFormMsg(null);
+    if (!firstName.trim() || !lastName.trim() || !idNumber.trim() || !unitId) {
+      setFormMsg({ type: "error", text: "Los campos Nombre, Apellido, Número de ID y Unidad son obligatorios." });
+      return;
+    }
+    setFormLoading(true);
+    try {
+      const person = await createPerson.mutateAsync({
+        organizationId,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        idType,
+        idNumber: idNumber.trim(),
+        email: email.trim() || undefined,
+        phone: phone.trim() || undefined,
+        whatsapp: whatsapp.trim() || undefined,
+      });
+      const today = new Date().toISOString().split("T")[0]!;
+      if (role === "OWNER") {
+        await assignOwner.mutateAsync({
+          organizationId,
+          unitId,
+          personId: person.id,
+          sharePercent: 100,
+          startDate: today,
+        });
+      } else {
+        await assignTenant.mutateAsync({
+          organizationId,
+          unitId,
+          personId: person.id,
+          startDate: today,
+        });
+      }
+      void refetch();
+      setFormMsg({ type: "success", text: `Residente ${person.firstName} ${person.lastName} agregado correctamente.` });
+      resetForm();
+      setShowForm(false);
+    } catch (err: unknown) {
+      setFormMsg({ type: "error", text: err instanceof Error ? err.message : "Error al guardar el residente." });
+    } finally {
+      setFormLoading(false);
+    }
+  };
 
   const residents = data && "ownerships" in data
     ? { ownerships: data.ownerships, tenancies: data.tenancies }
@@ -134,8 +217,129 @@ export default function ResidentsPage() {
               Importar CSV/Excel
             </Button>
           </label>
+          <Button
+            type="button"
+            onClick={() => { setShowForm((v) => !v); setFormMsg(null); }}
+          >
+            {showForm ? "Cancelar" : "+ Agregar residente"}
+          </Button>
         </div>
       </div>
+
+      {/* Mensaje de éxito/error tras guardar */}
+      {formMsg && !showForm && (
+        <div className={`rounded-lg border p-4 text-sm ${formMsg.type === "success" ? "border-green-300 bg-green-50 text-green-800" : "border-destructive/30 bg-destructive/5 text-destructive"}`}>
+          {formMsg.text}
+        </div>
+      )}
+
+      {/* Formulario manual: Agregar residente */}
+      {showForm && (
+        <div className="rounded-lg border bg-card p-5 space-y-5">
+          <h3 className="font-semibold text-base">Agregar residente manualmente</h3>
+
+          {formMsg && (
+            <div className={`rounded-md border px-3 py-2 text-sm ${formMsg.type === "success" ? "border-green-300 bg-green-50 text-green-800" : "border-destructive/30 bg-destructive/5 text-destructive"}`}>
+              {formMsg.text}
+            </div>
+          )}
+
+          {/* Datos de la persona */}
+          <div>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Datos personales</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="res-firstName">Nombre *</Label>
+                <Input id="res-firstName" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Juan" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-lastName">Apellido *</Label>
+                <Input id="res-lastName" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Pérez" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-idType">Tipo de ID</Label>
+                <select
+                  id="res-idType"
+                  value={idType}
+                  onChange={(e) => setIdType(e.target.value as typeof idType)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="CEDULA_V">V- (Cédula venezolana)</option>
+                  <option value="CEDULA_E">E- (Cédula extranjera)</option>
+                  <option value="PASSPORT">Pasaporte</option>
+                  <option value="OTHER">Otro</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-idNumber">Número de cédula / ID *</Label>
+                <Input id="res-idNumber" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} placeholder="12345678" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-email">Email <span className="text-muted-foreground text-xs">(para facturas)</span></Label>
+                <Input id="res-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="juan@correo.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-phone">Teléfono <span className="text-muted-foreground text-xs">ej. 0414-1234567</span></Label>
+                <Input id="res-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0414-1234567" />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="res-whatsapp">WhatsApp <span className="text-muted-foreground text-xs">formato internacional ej. 584141234567</span></Label>
+                <Input id="res-whatsapp" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="584141234567" />
+              </div>
+            </div>
+          </div>
+
+          {/* Asignación a unidad */}
+          <div>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Asignación a unidad</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="res-role">Rol</Label>
+                <select
+                  id="res-role"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as "OWNER" | "TENANT")}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="OWNER">Propietario</option>
+                  <option value="TENANT">Inquilino</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-unit">Unidad *</Label>
+                <select
+                  id="res-unit"
+                  value={unitId}
+                  onChange={(e) => setUnitId(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">Seleccionar unidad...</option>
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.code}{u.floor != null ? ` - Piso ${u.floor}` : ""}{u.tower ? ` - Torre ${u.tower}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Acciones */}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => { setShowForm(false); resetForm(); }}
+              disabled={formLoading}
+            >
+              Cancelar
+            </Button>
+            <Button type="button" onClick={handleAddResident} disabled={formLoading}>
+              {formLoading ? "Guardando..." : "Guardar residente"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Preview de CSV */}
       {csvRows.length > 0 && (
