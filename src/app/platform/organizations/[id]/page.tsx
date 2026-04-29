@@ -240,12 +240,18 @@ export default function OrganizationDetailPage() {
           <Card>
             <CardHeader><CardTitle>Acciones rápidas</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-2">
-              <Button variant="outline" size="sm" asChild>
-                <Link href="/platform/plans">Cambiar plan</Link>
-              </Button>
-              <Button variant="outline" size="sm" asChild>
-                <Link href="/platform/organizations">← Volver a la lista</Link>
-              </Button>
+              <Link
+                href="/platform/plans"
+                className="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+              >
+                Cambiar plan
+              </Link>
+              <Link
+                href="/platform/organizations"
+                className="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+              >
+                ← Volver a la lista
+              </Link>
             </CardContent>
           </Card>
         </div>
