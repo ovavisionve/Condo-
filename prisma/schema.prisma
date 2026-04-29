@@ -1,0 +1,1240 @@
+// Condominios — Schema multi-tenant
+// Fase 1: Core (Platform > Organization > Community > Unit) + Auth + Personas
+//
+// Reglas:
+// - Toda tabla "tenant" tiene organizationId (y communityId si aplica)
+// - Montos: Decimal(18, 2). Tasas: Decimal(18, 8).
+// - Soft delete: deletedAt en entidades editables. Nunca borrar facturas/pagos/audit.
+// - Ownership/Tenancy son históricas: nunca update destructivo, siempre cerrar período.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM & SAAS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Catálogo global de planes que ofrece la plataforma a las organizaciones.
+model Plan {
+  id              String   @id @default(cuid())
+  code            String   @unique // ej: "STARTER", "PRO", "ENTERPRISE"
+  name            String
+  description     String?
+  maxCommunities  Int // límite de edificios incluidos
+  maxUnits        Int // límite total de unidades
+  priceUsd        Decimal  @db.Decimal(10, 2)
+  features        Json // capabilities habilitadas: { whatsapp: bool, advancedReports: bool, ... }
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+/// Cliente del SaaS: una administradora o junta directiva que paga por usar el sistema.
+/// Es el "tenant" raíz. Todo dato funcional cuelga de aquí.
+model Organization {
+  id          String   @id @default(cuid())
+  slug        String   @unique // subdominio o identificador URL-friendly
+  name        String
+  legalName   String?
+  rif         String? // RIF venezolano (J-12345678-9)
+  email       String
+  phone       String?
+  address     String?
+  city        String?
+  country     String   @default("VE")
+  logoUrl     String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  subscription        Subscription?
+  communities         Community[]
+  memberships         Membership[]
+  persons             Person[]
+  auditLogs           AuditLog[]
+  visitors            Visitor[]
+  accessLogs          AccessLog[]
+  violations          Violation[]
+  boardMembers        BoardMember[]
+  assemblies          Assembly[]
+  communityDocuments  CommunityDocument[]
+
+  @@index([active, deletedAt])
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  SUSPENDED
+}
+
+model Subscription {
+  id              String             @id @default(cuid())
+  organizationId  String             @unique
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  planId          String
+  plan            Plan               @relation(fields: [planId], references: [id])
+  status          SubscriptionStatus @default(TRIAL)
+  trialEndsAt     DateTime?
+  currentPeriodStart DateTime         @default(now())
+  currentPeriodEnd   DateTime
+  cancelAt        DateTime?
+  cancelledAt     DateTime?
+  notes           String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMUNITIES & UNITS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Community {
+  id              String       @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  rif             String?
+  address         String
+  city            String
+  state           String?
+  country         String       @default("VE")
+  totalUnits      Int          @default(0)
+  floorsCount     Int?
+  towersCount     Int          @default(1)
+  primaryCurrency  Currency     @default(USD)
+  // Cuota mensual fija por unidad (si está seteada, se agrega a cada factura del período)
+  monthlyFeeUsd    Decimal?     @db.Decimal(18,2)
+  monthlyFeeSetAt  DateTime?
+  // Metadata
+  foundedAt       DateTime?
+  notes           String?
+  active          Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  units               Unit[]
+  memberships         Membership[]
+  expenses            Expense[]
+  incomes             Income[]
+  workOrders          WorkOrder[]
+  visitors            Visitor[]
+  accessLogs          AccessLog[]
+  violations          Violation[]
+  boardMembers        BoardMember[]
+  assemblies          Assembly[]
+  communityDocuments  CommunityDocument[]
+
+  @@index([organizationId, active])
+}
+
+enum UnitType {
+  APARTMENT
+  HOUSE
+  COMMERCIAL
+  PARKING
+  STORAGE
+  OTHER
+}
+
+model Unit {
+  id             String       @id @default(cuid())
+  organizationId String
+  communityId    String
+  community      Community    @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  code           String // identificador interno: "A-101", "PB-02"
+  type           UnitType     @default(APARTMENT)
+  floor          Int?
+  tower          String?
+  /// Alícuota: porcentaje de participación en gastos comunes (0.0001 a 100).
+  /// Se almacena con alta precisión para que la suma cuadre 100% exacto.
+  aliquot        Decimal      @db.Decimal(9, 6)
+  areaM2         Decimal?     @db.Decimal(10, 2)
+  bedrooms       Int?
+  bathrooms      Int?
+  parkingSpots   Int          @default(0)
+  storageUnits   Int          @default(0)
+  notes          String?
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  ownerships     Ownership[]
+  tenancies      Tenancy[]
+  invoices       Invoice[]
+  payments       Payment[]
+  workOrders     WorkOrder[]
+  visitors       Visitor[]
+  accessLogs     AccessLog[]
+  violations     Violation[]
+  assemblyVotes  AssemblyVote[]
+
+  @@unique([communityId, code])
+  @@index([organizationId])
+  @@index([communityId, active])
+  @@index([communityId, floor])
+  @@index([communityId, tower])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PEOPLE, USERS, ROLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum IdType {
+  CEDULA_V // Venezolano: V-
+  CEDULA_E // Extranjero: E-
+  RIF
+  PASSPORT
+  OTHER
+}
+
+/// Persona física dentro de una organización. Puede o no tener cuenta de usuario.
+/// Único por (organizationId, idType, idNumber) para evitar duplicados.
+model Person {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  firstName      String
+  lastName       String
+  idType         IdType       @default(CEDULA_V)
+  idNumber       String
+  email          String?
+  phone          String?
+  whatsapp       String? // número con código de país, ej: 584141234567
+  address        String?
+  notes          String?
+  // Vínculo opcional con cuenta de acceso al sistema
+  userId         String?      @unique
+  user           User?        @relation(fields: [userId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  ownerships    Ownership[]
+  tenancies     Tenancy[]
+  vehicles      Vehicle[]
+  notifications Notification[]
+  boardMembers  BoardMember[]
+  assemblyVotes AssemblyVote[]
+
+  @@unique([organizationId, idType, idNumber])
+  @@index([organizationId, lastName, firstName])
+}
+
+/// Cuenta de acceso al sistema. Email único global.
+/// Una cuenta puede tener múltiples Memberships (rol+scope).
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  emailVerified  DateTime?
+  name           String?
+  image          String?
+  passwordHash   String? // null si solo magic link
+  twoFactorSecret String?
+  twoFactorEnabled Boolean @default(false)
+  lastLoginAt    DateTime?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  person                Person?
+  memberships           Membership[]
+  accounts              Account[]
+  sessions              Session[]
+  auditLogs             AuditLog[]          @relation("AuditLogActor")
+  authorizedVisitors    Visitor[]           @relation("VisitorAuthorizer")
+  checkedInVisitors     Visitor[]           @relation("VisitorCheckIn")
+  accessLogsRegistered  AccessLog[]         @relation("AccessLogRegistrar")
+  reportedViolations    Violation[]         @relation("ViolationReporter")
+  assembliesCreated     Assembly[]          @relation("AssemblyCreator")
+  documentsUploaded     CommunityDocument[] @relation("DocumentUploader")
+
+  @@index([active])
+}
+
+enum Role {
+  PLATFORM_OWNER
+  PLATFORM_ADMIN
+  ORG_ADMIN
+  COMMUNITY_ADMIN
+  BOARD_MEMBER
+  OWNER
+  TENANT
+  SECURITY
+}
+
+enum MembershipScope {
+  PLATFORM
+  ORGANIZATION
+  COMMUNITY
+}
+
+/// Vincula un User con un rol dentro de un scope.
+/// Un mismo User puede tener varios Memberships (ej: ORG_ADMIN de org A + OWNER de unidad en org B).
+model Membership {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scope           MembershipScope
+  role            Role
+  organizationId  String?
+  organization    Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId     String?
+  community       Community?      @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  active          Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  revokedAt       DateTime?
+
+  // Un usuario solo puede tener UN rol por (scope, scopeId).
+  @@unique([userId, scope, organizationId, communityId])
+  @@index([userId, active])
+  @@index([organizationId, role])
+  @@index([communityId, role])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VEHÍCULOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum VehicleType {
+  CAR
+  MOTORCYCLE
+  TRUCK
+  VAN
+  OTHER
+}
+
+/// Vehículo registrado a nombre de una persona (propietario o inquilino).
+/// Permite asignar estacionamiento y controlar acceso vehicular.
+model Vehicle {
+  id             String      @id @default(cuid())
+  organizationId String
+  personId       String
+  person         Person      @relation(fields: [personId], references: [id], onDelete: Cascade)
+  type           VehicleType @default(CAR)
+  brand          String?
+  model          String?
+  year           Int?
+  color          String?
+  plate          String?     // placa venezolana: ABC-123
+  parkingSpot    String?     // código del puesto asignado
+  notes          String?
+  active         Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([organizationId])
+  @@index([personId])
+}
+
+/// Histórico de propietarios. Una unidad puede haber tenido N propietarios en el tiempo.
+/// startDate/endDate definen el período. endDate null = propietario actual.
+model Ownership {
+  id          String    @id @default(cuid())
+  unitId      String
+  unit        Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  personId    String
+  person      Person    @relation(fields: [personId], references: [id])
+  /// Porcentaje de propiedad (para co-propiedades). Suma debe ser 100% en cualquier fecha.
+  sharePercent Decimal  @db.Decimal(5, 2)
+  startDate   DateTime
+  endDate     DateTime? // null = vigente
+  notes       String?
+  createdAt   DateTime  @default(now())
+
+  @@index([unitId, endDate])
+  @@index([personId])
+}
+
+/// Histórico de inquilinos. Similar a Ownership pero para arriendo.
+model Tenancy {
+  id           String    @id @default(cuid())
+  unitId       String
+  unit         Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  personId     String
+  person       Person    @relation(fields: [personId], references: [id])
+  startDate    DateTime
+  endDate      DateTime? // null = vigente
+  monthlyRentUsd Decimal? @db.Decimal(12, 2) // referencial; el inquilino le paga al dueño
+  notes        String?
+  createdAt    DateTime  @default(now())
+
+  @@index([unitId, endDate])
+  @@index([personId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTH (NextAuth/Auth.js)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CURRENCY & EXCHANGE RATES (global, no tenant)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Currency {
+  VES // Bolívares
+  USD
+}
+
+enum ExchangeSource {
+  BCV // oficial
+  BINANCE_P2P // paralelo
+  MANUAL // ingresada por admin
+}
+
+/// Histórico diario de tasas de cambio. Usado en cada transacción financiera.
+/// La tabla es global (no por organización) — la tasa BCV es la misma para todos.
+model ExchangeRate {
+  id        String         @id @default(cuid())
+  date      DateTime       @db.Date
+  source    ExchangeSource
+  /// Cuántos VES equivalen a 1 USD en esta fecha.
+  vesPerUsd Decimal        @db.Decimal(18, 8)
+  notes     String?
+  createdAt DateTime       @default(now())
+
+  @@unique([date, source])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINANZAS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ExpenseCategory {
+  ELECTRICITY
+  WATER
+  GAS
+  INTERNET
+  CLEANING
+  GARDENING
+  SECURITY
+  ELEVATOR
+  STAFF_PAYROLL
+  ADMINISTRATION
+  INSURANCE
+  REPAIRS
+  RESERVE_FUND
+  TAXES
+  OTHER
+}
+
+/// Gasto común incurrido por la comunidad en un período mensual.
+/// Cuando se "cierra" el mes, los gastos no facturados se prorratean entre las unidades.
+model Expense {
+  id              String          @id @default(cuid())
+  organizationId  String
+  communityId     String
+  community       Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  category        ExpenseCategory
+  description     String
+  // Período al que aplica
+  periodYear      Int
+  periodMonth     Int // 1..12
+  // Doble moneda
+  amountBss       Decimal         @db.Decimal(18, 2)
+  amountUsd       Decimal         @db.Decimal(18, 2)
+  exchangeRate    Decimal         @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  // Documentación
+  supplierName    String?
+  invoiceNumber   String?
+  receiptDate     DateTime?
+  notes           String?
+  // Estado
+  invoicedAt      DateTime? // si null, todavía no se ha prorrateado
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime        @default(now())
+  createdById     String?
+  updatedAt       DateTime        @updatedAt
+
+  invoiceItems InvoiceItem[]
+
+  @@index([organizationId])
+  @@index([communityId, periodYear, periodMonth])
+  @@index([communityId, invoicedAt])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIAL
+  PAID
+  OVERDUE
+  VOIDED
+}
+
+enum InvoiceType {
+  ALIQUOT // Cuota mensual prorrateada de gastos comunes
+  SPECIAL_FEE // Cuota especial (obra extraordinaria)
+  FINE // Multa por violación del reglamento
+  OTHER
+}
+
+/// Factura mensual (recibo de condominio) que se emite a una unidad.
+/// Las líneas (InvoiceItem) detallan los gastos prorrateados.
+model Invoice {
+  id              String        @id @default(cuid())
+  organizationId  String
+  communityId     String
+  unitId          String
+  unit            Unit          @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  invoiceNumber   String // correlativo por comunidad: "2026-04-A101"
+  type            InvoiceType   @default(ALIQUOT)
+  // Período facturado
+  periodYear      Int
+  periodMonth     Int
+  // Fechas
+  issuedAt        DateTime
+  dueDate         DateTime
+  // Totales (suma de items)
+  totalBss        Decimal       @db.Decimal(18, 2)
+  totalUsd        Decimal       @db.Decimal(18, 2)
+  exchangeRate    Decimal       @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  // Pagado (suma de pagos vinculados, mantenido por el servicio)
+  paidBss         Decimal       @default(0) @db.Decimal(18, 2)
+  paidUsd         Decimal       @default(0) @db.Decimal(18, 2)
+  // Estado
+  status          InvoiceStatus @default(ISSUED)
+  voidedAt        DateTime?
+  voidReason      String?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items      InvoiceItem[]
+  payments   PaymentAllocation[]
+  violations Violation[]
+
+  @@unique([communityId, invoiceNumber])
+  @@index([organizationId])
+  @@index([communityId, periodYear, periodMonth])
+  @@index([unitId, status])
+  @@index([status, dueDate])
+}
+
+/// Línea de detalle dentro de una factura. Vincula al Expense origen para auditoría.
+/// Si expenseId es null, es una cuota especial o multa cargada directamente.
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  expenseId   String?
+  expense     Expense? @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+  description String
+  amountBss   Decimal @db.Decimal(18, 2)
+  amountUsd   Decimal @db.Decimal(18, 2)
+  /// Alícuota aplicada en esta línea (snapshot, por si se cambia luego).
+  aliquot     Decimal @db.Decimal(9, 6)
+
+  @@index([invoiceId])
+  @@index([expenseId])
+}
+
+enum PaymentMethod {
+  CASH_BSS
+  CASH_USD
+  TRANSFER_BSS
+  TRANSFER_USD
+  ZELLE
+  PAGO_MOVIL
+  CRYPTO
+  CHECK
+  OTHER
+}
+
+/// Pago realizado por una unidad. Puede aplicarse a una o varias facturas (PaymentAllocation).
+/// Pagos NUNCA se eliminan: se anulan con voidedAt + voidReason (legal).
+model Payment {
+  id              String         @id @default(cuid())
+  organizationId  String
+  communityId     String
+  unitId          String
+  unit            Unit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  // Monto bimonetario
+  amountBss       Decimal        @db.Decimal(18, 2)
+  amountUsd       Decimal        @db.Decimal(18, 2)
+  exchangeRate    Decimal        @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  // Detalles
+  method          PaymentMethod
+  reference       String? // # comprobante, hash crypto, etc.
+  paidAt          DateTime
+  bankAccountId   String?
+  bankAccount     BankAccount?   @relation(fields: [bankAccountId], references: [id])
+  reconciledAt    DateTime?
+  notes           String?
+  // Anulación
+  voidedAt        DateTime?
+  voidedById      String?
+  voidReason      String?
+  createdAt       DateTime       @default(now())
+  createdById     String?
+
+  allocations PaymentAllocation[]
+
+  @@index([organizationId])
+  @@index([communityId, paidAt])
+  @@index([unitId, paidAt])
+  @@index([voidedAt])
+}
+
+/// Distribución de un Payment entre una o más Invoices.
+/// La suma de allocations.amountBss debe igualar Payment.amountBss (validado por servicio).
+model PaymentAllocation {
+  id        String  @id @default(cuid())
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amountBss Decimal @db.Decimal(18, 2)
+  amountUsd Decimal @db.Decimal(18, 2)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+}
+
+model BankAccount {
+  id             String   @id @default(cuid())
+  organizationId String
+  communityId    String
+  bankName       String
+  accountNumber  String
+  accountHolder  String
+  accountType    String // CHECKING | SAVINGS
+  currency       Currency
+  active         Boolean  @default(true)
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  payments Payment[]
+
+  @@index([communityId, active])
+}
+
+enum BudgetStatus {
+  DRAFT
+  APPROVED
+  CLOSED
+}
+
+model Budget {
+  id             String       @id @default(cuid())
+  organizationId String
+  communityId    String
+  year           Int
+  status         BudgetStatus @default(DRAFT)
+  totalUsd       Decimal      @default(0) @db.Decimal(18, 2)
+  approvedAt     DateTime?
+  approvedById   String?
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  items BudgetItem[]
+
+  @@unique([communityId, year])
+  @@index([organizationId])
+}
+
+model BudgetItem {
+  id        String          @id @default(cuid())
+  budgetId  String
+  budget    Budget          @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  category  ExpenseCategory
+  amountUsd Decimal         @db.Decimal(18, 2)
+  notes     String?
+
+  @@index([budgetId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INGRESOS (no prorrateados)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum IncomeCategory {
+  HALL_RENTAL
+  PARKING_FEE
+  GUEST_FEE
+  INTEREST
+  DONATION
+  PENALTY
+  OTHER
+}
+
+/// Ingresos de la comunidad que no se generan por alícuotas (ej: alquiler de salón).
+/// Complementan a Expense para el estado de resultados completo.
+model Income {
+  id              String         @id @default(cuid())
+  organizationId  String
+  communityId     String
+  community       Community      @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  category        IncomeCategory
+  description     String
+  periodYear      Int
+  periodMonth     Int
+  amountBss       Decimal        @db.Decimal(18, 2)
+  amountUsd       Decimal        @db.Decimal(18, 2)
+  exchangeRate    Decimal        @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  reference       String?
+  notes           String?
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime       @default(now())
+  createdById     String?
+  updatedAt       DateTime       @updatedAt
+
+  @@index([organizationId])
+  @@index([communityId, periodYear, periodMonth])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MANTENIMIENTO — WORK ORDERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum WorkOrderStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum WorkOrderPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+/// Contratista o proveedor de mantenimiento registrado en la organización.
+model Contractor {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  specialty      String?
+  phone          String?
+  email          String?
+  rating         Decimal?  @db.Decimal(3, 2) // 0.00 a 5.00
+  notes          String?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workOrders WorkOrder[]
+
+  @@index([organizationId, active])
+}
+
+/// Orden de trabajo (ticket de mantenimiento). Puede venir de un residente o del admin.
+model WorkOrder {
+  id               String            @id @default(cuid())
+  organizationId   String
+  communityId      String
+  community        Community         @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId           String?           // null si es área común
+  unit             Unit?             @relation(fields: [unitId], references: [id])
+  title            String
+  description      String
+  category         ExpenseCategory
+  priority         WorkOrderPriority @default(MEDIUM)
+  status           WorkOrderStatus   @default(OPEN)
+  contractorId     String?
+  contractor       Contractor?       @relation(fields: [contractorId], references: [id])
+  estimatedCostUsd Decimal?          @db.Decimal(18, 2)
+  actualCostUsd    Decimal?          @db.Decimal(18, 2)
+  scheduledAt      DateTime?
+  completedAt      DateTime?
+  reportedById     String?
+  assignedAt       DateTime?
+  notes            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  activities WorkOrderActivity[]
+
+  @@index([organizationId])
+  @@index([communityId, status])
+  @@index([unitId])
+}
+
+model WorkOrderActivity {
+  id          String    @id @default(cuid())
+  workOrderId String
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  actorId     String?
+  type        String    // NOTE | STATUS_CHANGE | ASSIGNMENT | COMPLETION
+  content     String
+  createdAt   DateTime  @default(now())
+
+  @@index([workOrderId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMUNICACIÓN — WHATSAPP + NOTIFICACIONES
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum NotificationChannel {
+  WHATSAPP
+  EMAIL
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+enum NotificationEvent {
+  INVOICE_ISSUED       // Factura emitida
+  PAYMENT_RECEIVED     // Pago registrado
+  PAYMENT_REMINDER     // Recordatorio de cobro
+  OVERDUE_ALERT        // Mora vencida
+  MAINTENANCE_ASSIGNED // Orden asignada
+  MAINTENANCE_DONE     // Orden completada
+  ANNOUNCEMENT         // Aviso general
+  ASSEMBLY_INVITE      // Convocatoria asamblea
+}
+
+/// Template de mensaje editable por organización. Soporta variables {nombre}, {monto}, etc.
+model WhatsAppTemplate {
+  id             String            @id @default(cuid())
+  organizationId String
+  event          NotificationEvent
+  name           String?           // nombre descriptivo del template
+  body           String            // texto con variables: {nombre}, {monto_usd}, {monto_bs}, {factura}, {fecha_vence}
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([organizationId, event])
+  @@index([organizationId])
+}
+
+/// Registro de cada notificación enviada o intentada.
+model Notification {
+  id             String              @id @default(cuid())
+  organizationId String
+  communityId    String?
+  unitId         String?
+  personId       String?             // destinatario
+  person         Person?             @relation(fields: [personId], references: [id])
+  channel        NotificationChannel
+  event          NotificationEvent
+  status         NotificationStatus  @default(PENDING)
+  // Contenido enviado
+  recipientPhone String?
+  recipientEmail String?
+  subject        String?
+  body           String
+  // Respuesta del proveedor
+  externalId     String?             // message ID de Wati/Twilio
+  errorMessage   String?
+  sentAt         DateTime?
+  readAt         DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([personId, status])
+  @@index([unitId])
+}
+
+/// Anuncio general visible en el tablón in-app para todos los residentes de una comunidad.
+model Announcement {
+  id             String   @id @default(cuid())
+  organizationId String
+  communityId    String
+  title          String
+  body           String   @db.Text
+  pinned         Boolean  @default(false)
+  publishedAt    DateTime @default(now())
+  expiresAt      DateTime?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([communityId, publishedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT LOG (global, scoped por organización)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  PERMISSION_DENIED
+  EXPORT
+  PAYMENT_RECORDED
+  PAYMENT_VOIDED
+  INVOICE_ISSUED
+  INVOICE_VOIDED
+  RATE_FETCHED
+  ROLE_GRANTED
+  ROLE_REVOKED
+  FINE_APPLIED
+  MONTHLY_FEE_UPDATED
+}
+
+model AuditLog {
+  id             String       @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorId        String?
+  actor          User?        @relation("AuditLogActor", fields: [actorId], references: [id])
+  action         AuditAction
+  entityType     String // ej: "Unit", "Invoice"
+  entityId       String?
+  before         Json?
+  after          Json?
+  ip             String?
+  userAgent      String?
+  reason         String?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FASE 5 — SEGURIDAD Y ACCESO
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum VisitorStatus {
+  PENDING      // Pre-autorizado, aún no llegó
+  CHECKED_IN   // Ingresó
+  CHECKED_OUT  // Salió
+  DENIED       // Acceso denegado
+  EXPIRED      // Venció sin usar
+}
+
+enum ViolationType {
+  NOISE
+  PARKING
+  PETS
+  COMMON_AREAS
+  ELEVATOR_MISUSE
+  GARBAGE
+  OTHER
+}
+
+// Visitante pre-autorizado por un residente
+model Visitor {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community     @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId         String
+  unit           Unit          @relation(fields: [unitId], references: [id])
+  authorizedById String?       // userId del residente que autoriza
+  authorizedBy   User?         @relation("VisitorAuthorizer", fields: [authorizedById], references: [id])
+
+  // Datos del visitante
+  firstName      String
+  lastName       String
+  idNumber       String?
+  idType         String?       @default("V")
+  phone          String?
+  vehiclePlate   String?
+
+  // Autorización
+  validFrom      DateTime
+  validUntil     DateTime
+  accessCode     String        @unique @default(cuid()) // código de un solo uso
+  purpose        String?       // motivo de la visita
+  notes          String?
+
+  status         VisitorStatus @default(PENDING)
+  checkInAt      DateTime?
+  checkOutAt     DateTime?
+  checkedInById  String?       // userId del guardia que registró ingreso
+  checkedInBy    User?         @relation("VisitorCheckIn", fields: [checkedInById], references: [id])
+
+  accessLogs     AccessLog[]
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([communityId, status])
+  @@index([communityId, validFrom, validUntil])
+  @@index([unitId])
+}
+
+// Registro de accesos (independiente de Visitor para walk-ins)
+model AccessLog {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community     @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId         String?
+  unit           Unit?         @relation(fields: [unitId], references: [id])
+
+  visitorId      String?
+  visitor        Visitor?      @relation(fields: [visitorId], references: [id])
+
+  // Persona que accede (puede ser visitante no registrado)
+  personName     String
+  personId_doc   String?       // número de cédula
+  vehiclePlate   String?
+  purpose        String?
+
+  direction      String        @default("IN")  // IN | OUT
+  deniedReason   String?
+  registeredById String?       // guardia que registra
+  registeredBy   User?         @relation("AccessLogRegistrar", fields: [registeredById], references: [id])
+
+  createdAt      DateTime      @default(now())
+
+  @@index([communityId, createdAt])
+  @@index([unitId, createdAt])
+}
+
+// Reporte de violaciones al reglamento
+model Violation {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community     @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId         String
+  unit           Unit          @relation(fields: [unitId], references: [id])
+
+  type           ViolationType
+  description    String
+  evidenceUrls   String[]      @default([])
+  reportedById   String?
+  reportedBy     User?         @relation("ViolationReporter", fields: [reportedById], references: [id])
+
+  // Multa asociada (opcional)
+  fineInvoiceId  String?
+  fineInvoice    Invoice?      @relation(fields: [fineInvoiceId], references: [id])
+  fineAmountUsd  Decimal?      @db.Decimal(18, 2)
+
+  resolvedAt     DateTime?
+  resolvedNotes  String?
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([communityId, createdAt])
+  @@index([unitId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FASE 6 — GOBERNANZA
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BoardRole {
+  PRESIDENT
+  VICE_PRESIDENT
+  TREASURER
+  SECRETARY
+  VOCAL_1
+  VOCAL_2
+  VOCAL_3
+  ALTERNATE
+}
+
+enum AssemblyStatus {
+  SCHEDULED   // convocada, aún no celebrada
+  IN_PROGRESS // en curso
+  CLOSED      // celebrada y cerrada
+  CANCELLED   // cancelada
+}
+
+enum VoteChoice {
+  FOR
+  AGAINST
+  ABSTAIN
+}
+
+enum DocumentCategory {
+  REGULATION       // Reglamento de condominio
+  MINUTES          // Acta de asamblea
+  CERTIFICATE      // Certificado de no-adeudo
+  BUDGET           // Presupuesto aprobado
+  CONTRACT         // Contrato de servicios
+  LEGAL            // Documento legal / notarial
+  OTHER
+}
+
+// Miembro de la junta directiva
+model BoardMember {
+  id             String    @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  personId       String
+  person         Person    @relation(fields: [personId], references: [id])
+  role           BoardRole
+  startDate      DateTime
+  endDate        DateTime?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([communityId, endDate])
+  @@index([personId])
+}
+
+// Asamblea de propietarios
+model Assembly {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community      @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  scheduledAt    DateTime
+  location       String?
+  quorumRequired Int            @default(50) // porcentaje mínimo (0-100)
+  quorumReached  Boolean?
+  attendeesCount Int?
+  status         AssemblyStatus @default(SCHEDULED)
+  closedAt       DateTime?
+  minutesUrl     String?        // URL del PDF del acta
+  createdById    String?
+  createdBy      User?          @relation("AssemblyCreator", fields: [createdById], references: [id])
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  agendaItems AssemblyAgendaItem[]
+  votes       AssemblyVote[]
+  documents   CommunityDocument[]
+
+  @@index([communityId, scheduledAt])
+  @@index([communityId, status])
+}
+
+// Punto del orden del día
+model AssemblyAgendaItem {
+  id          String   @id @default(cuid())
+  assemblyId  String
+  assembly    Assembly @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  order       Int
+  title       String
+  description String?
+  requiresVote Boolean @default(false)
+  result      String?  // decisión tomada / texto libre
+  votesFor    Int      @default(0)
+  votesAgainst Int     @default(0)
+  votesAbstain Int     @default(0)
+  approved    Boolean?
+  createdAt   DateTime @default(now())
+
+  votes AssemblyVote[]
+
+  @@index([assemblyId, order])
+}
+
+// Voto de un propietario en un punto del orden del día
+model AssemblyVote {
+  id           String             @id @default(cuid())
+  assemblyId   String
+  assembly     Assembly           @relation(fields: [assemblyId], references: [id], onDelete: Cascade)
+  agendaItemId String
+  agendaItem   AssemblyAgendaItem @relation(fields: [agendaItemId], references: [id], onDelete: Cascade)
+  personId     String
+  person       Person             @relation(fields: [personId], references: [id])
+  unitId       String
+  unit         Unit               @relation(fields: [unitId], references: [id])
+  choice       VoteChoice
+  comment      String?
+  createdAt    DateTime           @default(now())
+
+  @@unique([agendaItemId, unitId]) // una unidad = un voto por punto
+  @@index([assemblyId, personId])
+}
+
+// Repositorio documental de la comunidad
+model CommunityDocument {
+  id             String           @id @default(cuid())
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community        @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  category       DocumentCategory
+  title          String
+  description    String?
+  fileUrl        String           // URL en MinIO/S3
+  fileName       String
+  fileSizeBytes  Int?
+  mimeType       String?
+  uploadedById   String?
+  uploadedBy     User?            @relation("DocumentUploader", fields: [uploadedById], references: [id])
+  assemblyId     String?          // si es acta de una asamblea específica
+  assembly       Assembly?        @relation(fields: [assemblyId], references: [id])
+  createdAt      DateTime         @default(now())
+
+  @@index([communityId, category])
+  @@index([communityId, createdAt])
+}
