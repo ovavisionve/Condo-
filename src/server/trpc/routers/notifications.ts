@@ -169,6 +169,44 @@ export const notificationsRouter = router({
       }),
   }),
 
+  /** CRUD de templates de Email por organización. */
+  emailTemplates: router({
+    list: orgProcedure
+      .input(z.object({ organizationId: z.string() }))
+      .query(async ({ input }) => {
+        return db.emailTemplate.findMany({
+          where: { organizationId: input.organizationId },
+          orderBy: { event: "asc" },
+        });
+      }),
+
+    upsert: orgProcedure
+      .input(
+        z.object({
+          organizationId: z.string(),
+          event: z.enum([
+            "INVOICE_ISSUED",
+            "PAYMENT_RECEIVED",
+            "PAYMENT_REMINDER",
+            "OVERDUE_ALERT",
+            "MAINTENANCE_ASSIGNED",
+            "MAINTENANCE_DONE",
+            "ANNOUNCEMENT",
+            "ASSEMBLY_INVITE",
+          ]),
+          subject: z.string().min(1).max(200),
+          body: z.string().min(1).max(5000),
+        }),
+      )
+      .mutation(async ({ input }) => {
+        return db.emailTemplate.upsert({
+          where: { organizationId_event: { organizationId: input.organizationId, event: input.event } },
+          create: { organizationId: input.organizationId, event: input.event, subject: input.subject, body: input.body },
+          update: { subject: input.subject, body: input.body },
+        });
+      }),
+  }),
+
   /** CRUD de anuncios de la comunidad. */
   announcements: router({
     list: orgProcedure

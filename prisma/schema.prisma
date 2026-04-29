@@ -871,6 +871,21 @@ model WhatsAppTemplate {
   @@index([organizationId])
 }
 
+/// Template de email editable por organización. Soporta variables {nombre}, {monto}, etc.
+model EmailTemplate {
+  id             String            @id @default(cuid())
+  organizationId String
+  event          NotificationEvent
+  subject        String            // asunto del email con variables
+  body           String            // cuerpo HTML/texto con variables
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([organizationId, event])
+  @@index([organizationId])
+}
+
 /// Registro de cada notificación enviada o intentada.
 model Notification {
   id             String              @id @default(cuid())

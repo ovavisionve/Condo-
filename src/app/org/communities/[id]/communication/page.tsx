@@ -44,15 +44,39 @@ export default function CommunicationPage() {
             onClick={() => setTab(t)}
             className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === t ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
           >
-            {{ announcements: "Anuncios", reminders: "Recordatorios", templates: "Templates WhatsApp", history: "Historial" }[t]}
+            {{ announcements: "Anuncios", reminders: "Recordatorios", templates: "Plantillas", history: "Historial" }[t]}
           </button>
         ))}
       </div>
 
       {tab === "announcements" && <AnnouncementsTab organizationId={organizationId} communityId={communityId} />}
       {tab === "reminders" && <RemindersTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "templates" && <TemplatesTab organizationId={organizationId} />}
+      {tab === "templates" && <TemplatesSection organizationId={organizationId} />}
       {tab === "history" && <HistoryTab organizationId={organizationId} communityId={communityId} />}
+    </div>
+  );
+}
+
+function TemplatesSection({ organizationId }: { organizationId: string }) {
+  const [channel, setChannel] = useState<"whatsapp" | "email">("whatsapp");
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 border-b pb-3">
+        <button
+          onClick={() => setChannel("whatsapp")}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${channel === "whatsapp" ? "bg-green-600 text-white" : "text-muted-foreground hover:bg-muted"}`}
+        >
+          📱 WhatsApp
+        </button>
+        <button
+          onClick={() => setChannel("email")}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${channel === "email" ? "bg-blue-600 text-white" : "text-muted-foreground hover:bg-muted"}`}
+        >
+          ✉️ Gmail / Email
+        </button>
+      </div>
+      {channel === "whatsapp" && <TemplatesTab organizationId={organizationId} />}
+      {channel === "email" && <EmailTemplatesTab organizationId={organizationId} />}
     </div>
   );
 }
@@ -233,6 +257,140 @@ function TemplatesTab({ organizationId }: { organizationId: string }) {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+const EMAIL_DEFAULT_SUBJECTS: Record<string, string> = {
+  INVOICE_ISSUED:       "Recibo de condominio - {comunidad} - {periodo}",
+  PAYMENT_RECEIVED:     "Confirmación de pago recibido - {comunidad}",
+  PAYMENT_REMINDER:     "Recordatorio de pago pendiente - {comunidad}",
+  OVERDUE_ALERT:        "Aviso de mora - {comunidad}",
+  MAINTENANCE_ASSIGNED: "Orden de mantenimiento asignada: {titulo}",
+  MAINTENANCE_DONE:     "Orden de mantenimiento completada: {titulo}",
+  ANNOUNCEMENT:         "Aviso de la comunidad: {titulo}",
+  ASSEMBLY_INVITE:      "Convocatoria a asamblea - {fecha}",
+};
+
+const EMAIL_DEFAULT_BODIES: Record<string, string> = {
+  INVOICE_ISSUED:       "Estimado/a {nombre},\n\nLe informamos que su recibo de condominio del período {periodo} por un monto de {monto_usd} USD ({monto_bs} Bs) ha sido emitido.\n\nFecha de vencimiento: {fecha_vence}\nN° de factura: {factura}\n\nPor favor realice su pago a tiempo.\n\nAtentamente,\nAdministración",
+  PAYMENT_RECEIVED:     "Estimado/a {nombre},\n\nHemos recibido su pago de {monto_usd} USD correctamente. Gracias por mantenerse al día con sus obligaciones de condominio.\n\nAtentamente,\nAdministración",
+  PAYMENT_REMINDER:     "Estimado/a {nombre},\n\nLe recordamos que tiene un saldo pendiente de {monto_usd} USD. Por favor realice su pago para evitar recargos.\n\nAtentamente,\nAdministración",
+  OVERDUE_ALERT:        "Estimado/a {nombre},\n\nSu cuenta presenta un saldo en mora de {monto_usd} USD. Le solicitamos regularizar su situación a la brevedad posible.\n\nAtentamente,\nAdministración",
+  MAINTENANCE_ASSIGNED: "Estimado/a {nombre},\n\nSu solicitud de mantenimiento \"{titulo}\" ha sido asignada a un técnico y está en proceso de atención.\n\nAtentamente,\nAdministración",
+  MAINTENANCE_DONE:     "Estimado/a {nombre},\n\nSu solicitud de mantenimiento \"{titulo}\" ha sido completada. Si tiene alguna observación, no dude en contactarnos.\n\nAtentamente,\nAdministración",
+  ANNOUNCEMENT:         "Estimados residentes,\n\n{titulo}\n\n{cuerpo}\n\nAtentamente,\nAdministración",
+  ASSEMBLY_INVITE:      "Estimado/a {nombre},\n\nLe convocamos a la asamblea de propietarios a realizarse el {fecha} en {lugar}.\n\nSu participación es importante.\n\nAtentamente,\nJunta Directiva",
+};
+
+function EmailTemplatesTab({ organizationId }: { organizationId: string }) {
+  const list = trpc.notifications.emailTemplates.list.useQuery({ organizationId });
+  const upsert = trpc.notifications.emailTemplates.upsert.useMutation({ onSuccess: () => void list.refetch() });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draftSubject, setDraftSubject] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+
+  const events = Object.keys(EVENT_LABELS) as string[];
+  const templateMap = Object.fromEntries(
+    list.data?.map((t) => [t.event, { subject: t.subject, body: t.body }]) ?? []
+  );
+
+  const startEdit = (event: string) => {
+    setEditing(event);
+    setDraftSubject(templateMap[event]?.subject ?? EMAIL_DEFAULT_SUBJECTS[event] ?? "");
+    setDraftBody(templateMap[event]?.body ?? EMAIL_DEFAULT_BODIES[event] ?? "");
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    await upsert.mutateAsync({
+      organizationId,
+      event: editing as Parameters<typeof upsert.mutateAsync>[0]["event"],
+      subject: draftSubject,
+      body: draftBody,
+    });
+    setEditing(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold">Plantillas de Email (Gmail)</h2>
+        <p className="text-sm text-muted-foreground">
+          Personaliza el asunto y cuerpo de los correos enviados automáticamente. Usa {"{variable}"} para datos dinámicos.
+        </p>
+        <p className="mt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 inline-block">
+          ⚠️ Recuerda configurar las variables de Gmail (SMTP_HOST, SMTP_USER, SMTP_PASS) en Vercel para que los correos se envíen.
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        {events.map((event) => {
+          const saved = templateMap[event];
+          const isCustomized = !!saved;
+          return (
+            <div key={event} className="rounded-lg border bg-card p-4">
+              {editing === event ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium">{EVENT_LABELS[event]}</p>
+                    <div className="flex gap-2">
+                      <button
+                        className="rounded-md border px-3 py-1 text-sm hover:bg-muted"
+                        onClick={() => setEditing(null)}
+                      >
+                        Cancelar
+                      </button>
+                      <Button size="sm" onClick={save} disabled={upsert.isPending}>
+                        {upsert.isPending ? "Guardando..." : "Guardar"}
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{EVENT_HINTS[event]}</p>
+                  <div className="space-y-1">
+                    <Label>Asunto del correo</Label>
+                    <Input
+                      value={draftSubject}
+                      onChange={(e) => setDraftSubject(e.target.value)}
+                      placeholder="Asunto del email..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Cuerpo del mensaje</Label>
+                    <textarea
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      rows={7}
+                      value={draftBody}
+                      onChange={(e) => setDraftBody(e.target.value)}
+                      placeholder="Escribe el cuerpo del email..."
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium">{EVENT_LABELS[event]}</p>
+                    {isCustomized ? (
+                      <>
+                        <p className="mt-1 text-xs text-blue-700 font-medium truncate">
+                          Asunto: {saved.subject}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">{saved.body}</p>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-xs italic text-muted-foreground">Usando plantilla por defecto del sistema</p>
+                    )}
+                    <p className="mt-1 text-xs text-muted-foreground/60">{EVENT_HINTS[event]}</p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => startEdit(event)}>
+                    {isCustomized ? "Editar" : "Personalizar"}
+                  </Button>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
