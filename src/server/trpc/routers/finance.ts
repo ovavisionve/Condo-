@@ -708,4 +708,273 @@ export const financeRouter = router({
       );
       return { bss: balance.bss.toFixed(2), usd: balance.usd.toFixed(2) };
     }),
+
+  // ─── Importación masiva ────────────────────────────────────────────────────
+
+  /** Importar gastos históricos en lote */
+  bulkImportExpenses: orgProcedure
+    .input(
+      orgIdInput.extend({
+        communityId: z.string(),
+        rows: z.array(z.object({
+          periodYear: z.coerce.number().int().min(2000).max(2100),
+          periodMonth: z.coerce.number().int().min(1).max(12),
+          description: z.string().min(1),
+          category: z.enum(EXPENSE_CATEGORIES).default("OTHER"),
+          amountUsd: z.coerce.number().nonnegative(),
+          amountBss: z.coerce.number().nonnegative().optional(),
+          exchangeRate: z.coerce.number().positive().optional(),
+          supplierName: z.string().optional(),
+          invoiceNumber: z.string().optional(),
+          receiptDate: z.string().optional(), // YYYY-MM-DD
+        })).min(1).max(1000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rate = await getCurrentRate("BCV");
+      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
+      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+
+      let created = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]!;
+        try {
+          const amountUsd = new Decimal(row.amountUsd);
+          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
+          const amountBss = row.amountBss != null
+            ? new Decimal(row.amountBss)
+            : amountUsd.mul(effectiveRate);
+          const effectiveSrc: import("@prisma/client").ExchangeSource = row.exchangeRate ? "MANUAL" : src;
+
+          let receiptDate: Date | null = null;
+          if (row.receiptDate) {
+            const d = new Date(row.receiptDate);
+            if (!isNaN(d.getTime())) receiptDate = d;
+          }
+
+          await ctx.db.expense.create({
+            data: {
+              organizationId: input.organizationId,
+              communityId: input.communityId,
+              description: row.description,
+              category: row.category,
+              periodYear: row.periodYear,
+              periodMonth: row.periodMonth,
+              amountUsd: amountUsd.toFixed(2),
+              amountBss: amountBss.toFixed(2),
+              exchangeRate: effectiveRate.toFixed(8),
+              exchangeSource: effectiveSrc,
+              currencyPrimary: "USD",
+              supplierName: row.supplierName ?? null,
+              invoiceNumber: row.invoiceNumber ?? null,
+              receiptDate,
+            },
+          });
+          created++;
+        } catch (e) {
+          errors.push(`Fila ${i + 2}: ${e instanceof Error ? e.message : "error desconocido"}`);
+          skipped++;
+        }
+      }
+      return { created, skipped, errors };
+    }),
+
+  /** Importar deudas históricas como facturas (migración de sistema anterior) */
+  bulkImportInvoices: orgProcedure
+    .input(
+      orgIdInput.extend({
+        communityId: z.string(),
+        rows: z.array(z.object({
+          unitCode: z.string().min(1),
+          description: z.string().min(1),
+          totalUsd: z.coerce.number().positive(),
+          totalBss: z.coerce.number().nonnegative().optional(),
+          exchangeRate: z.coerce.number().positive().optional(),
+          issuedAt: z.string(), // YYYY-MM-DD
+          dueDate: z.string(),  // YYYY-MM-DD
+          paidUsd: z.coerce.number().nonnegative().optional(),
+          notes: z.string().optional(),
+        })).min(1).max(1000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rate = await getCurrentRate("BCV");
+      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
+      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+
+      const units = await ctx.db.unit.findMany({
+        where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
+        select: { id: true, code: true },
+      });
+      const unitMap = new Map(units.map((u) => [u.code.toLowerCase(), u.id]));
+
+      // Obtener base para número de factura correlativo
+      const lastInv = await ctx.db.invoice.findFirst({
+        where: { organizationId: input.organizationId },
+        orderBy: { invoiceNumber: "desc" },
+        select: { invoiceNumber: true },
+      });
+      let seqBase = lastInv
+        ? (parseInt(lastInv.invoiceNumber.replace(/\D/g, ""), 10) || 0)
+        : 0;
+
+      let created = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]!;
+        try {
+          const unitId = unitMap.get(row.unitCode.toLowerCase());
+          if (!unitId) {
+            errors.push(`Fila ${i + 2}: unidad "${row.unitCode}" no encontrada`);
+            skipped++;
+            continue;
+          }
+          const issuedAt = new Date(row.issuedAt);
+          const dueDate = new Date(row.dueDate);
+          if (isNaN(issuedAt.getTime()) || isNaN(dueDate.getTime())) {
+            errors.push(`Fila ${i + 2}: fecha inválida`);
+            skipped++;
+            continue;
+          }
+
+          seqBase++;
+          const invoiceNumber = `IMP-${String(seqBase).padStart(6, "0")}`;
+          const totalUsd = new Decimal(row.totalUsd);
+          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
+          const effectiveSrc: import("@prisma/client").ExchangeSource = row.exchangeRate ? "MANUAL" : src;
+          const totalBss = row.totalBss != null
+            ? new Decimal(row.totalBss)
+            : totalUsd.mul(effectiveRate);
+          const paidUsd = new Decimal(row.paidUsd ?? 0);
+          const paidBss = paidUsd.mul(effectiveRate);
+
+          const pendingUsd = totalUsd.minus(paidUsd);
+          const status: import("@prisma/client").InvoiceStatus = pendingUsd.lte(0)
+            ? "PAID"
+            : paidUsd.gt(0)
+            ? "PARTIAL"
+            : dueDate < new Date()
+            ? "OVERDUE"
+            : "ISSUED";
+
+          await ctx.db.invoice.create({
+            data: {
+              organizationId: input.organizationId,
+              communityId: input.communityId,
+              unitId,
+              invoiceNumber,
+              periodYear: issuedAt.getFullYear(),
+              periodMonth: issuedAt.getMonth() + 1,
+              issuedAt,
+              dueDate,
+              totalUsd: totalUsd.toFixed(2),
+              totalBss: totalBss.toFixed(2),
+              paidUsd: paidUsd.toFixed(2),
+              paidBss: paidBss.toFixed(2),
+              exchangeRate: effectiveRate.toFixed(8),
+              exchangeSource: effectiveSrc,
+              currencyPrimary: "USD",
+              status,
+              notes: row.notes ?? `Importado: ${row.description}`,
+              items: {
+                create: [{
+                  description: row.description,
+                  amountUsd: totalUsd.toFixed(2),
+                  amountBss: totalBss.toFixed(2),
+                  aliquot: "0",
+                }],
+              },
+            },
+          });
+          created++;
+        } catch (e) {
+          errors.push(`Fila ${i + 2}: ${e instanceof Error ? e.message : "error desconocido"}`);
+          skipped++;
+        }
+      }
+      return { created, skipped, errors };
+    }),
+
+  /** Importar pagos históricos en lote */
+  bulkImportPayments: orgProcedure
+    .input(
+      orgIdInput.extend({
+        communityId: z.string(),
+        rows: z.array(z.object({
+          unitCode: z.string().min(1),
+          amountUsd: z.coerce.number().positive(),
+          amountBss: z.coerce.number().nonnegative().optional(),
+          exchangeRate: z.coerce.number().positive().optional(),
+          method: z.enum(PAYMENT_METHODS).default("OTHER"),
+          paidAt: z.string(), // YYYY-MM-DD
+          reference: z.string().optional(),
+          notes: z.string().optional(),
+        })).min(1).max(1000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rate = await getCurrentRate("BCV");
+      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
+      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+
+      const units = await ctx.db.unit.findMany({
+        where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
+        select: { id: true, code: true },
+      });
+      const unitMap = new Map(units.map((u) => [u.code.toLowerCase(), u.id]));
+
+      let created = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]!;
+        try {
+          const unitId = unitMap.get(row.unitCode.toLowerCase());
+          if (!unitId) {
+            errors.push(`Fila ${i + 2}: unidad "${row.unitCode}" no encontrada`);
+            skipped++;
+            continue;
+          }
+          const paidAt = new Date(row.paidAt);
+          if (isNaN(paidAt.getTime())) {
+            errors.push(`Fila ${i + 2}: fecha inválida "${row.paidAt}"`);
+            skipped++;
+            continue;
+          }
+
+          const amountUsd = new Decimal(row.amountUsd);
+          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
+          const amountBss = row.amountBss != null ? new Decimal(row.amountBss) : amountUsd.mul(effectiveRate);
+
+          // Inserción directa (importación histórica — sin notificaciones)
+          await ctx.db.payment.create({
+            data: {
+              organizationId: input.organizationId,
+              communityId: input.communityId,
+              unitId,
+              amountUsd: amountUsd.toFixed(2),
+              amountBss: amountBss.toFixed(2),
+              exchangeRate: effectiveRate.toFixed(8),
+              exchangeSource: (row.exchangeRate ? "MANUAL" : src) as import("@prisma/client").ExchangeSource,
+              currencyPrimary: "USD",
+              method: row.method,
+              reference: row.reference ?? null,
+              paidAt,
+              notes: row.notes ?? null,
+            },
+          });
+          created++;
+        } catch (e) {
+          errors.push(`Fila ${i + 2}: ${e instanceof Error ? e.message : "error desconocido"}`);
+          skipped++;
+        }
+      }
+      return { created, skipped, errors };
+    }),
 });

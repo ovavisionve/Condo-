@@ -155,6 +155,7 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
             <NavItem href={`${base}/governance`} label="Gobernanza" icon="🏛️" />
             <NavItem href={`${base}/communication`} label="Comunicación" icon="📢" />
             <NavItem href={`${base}/reports`} label="Reportes" icon="📈" />
+            <NavItem href={`${base}/import`} label="Importar datos" icon="⬆️" />
           </>
         ) : (
           <>
