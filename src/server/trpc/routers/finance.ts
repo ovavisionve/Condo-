@@ -365,7 +365,7 @@ export const financeRouter = router({
       ),
   }),
 
-  // ─── Multas ────────────────────────────────────────────────────
+  // ─── Multas y cuotas extra ────────────────────────────────────
   fines: router({
     create: orgProcedure
       .input(
@@ -427,6 +427,78 @@ export const financeRouter = router({
               organizationId,
               actorId: ctx.user.id,
               action: "FINE_APPLIED",
+              entityType: "Invoice",
+              entityId: inv.id,
+              after: { unitId, description, amountUsd, notes },
+            },
+          });
+          return inv;
+        });
+      }),
+  }),
+
+  // ─── Cuotas extra por unidad ───────────────────────────────────
+  extraFees: router({
+    create: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          unitId: z.string(),
+          description: z.string().min(3),
+          amountUsd: z.coerce.number().positive(),
+          dueDate: z.coerce.date().transform((d) =>
+            new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0)),
+          ),
+          notes: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, unitId, description, amountUsd, dueDate, notes } = input;
+        const rate = await (await import("@/server/services/exchange")).getCurrentRate("BCV");
+        const usd = new Decimal(amountUsd);
+        const bss = usd.mul(rate.vesPerUsd);
+        const unit = await ctx.db.unit.findFirstOrThrow({
+          where: { id: unitId, communityId, organizationId, deletedAt: null },
+        });
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: communityId, organizationId, deletedAt: null },
+          select: { primaryCurrency: true },
+        });
+        const now = new Date();
+        const invoiceNumber = `EXTRA-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${unit.code}-${Date.now().toString(36).toUpperCase()}`;
+        return ctx.db.$transaction(async (tx) => {
+          const inv = await tx.invoice.create({
+            data: {
+              organizationId,
+              communityId,
+              unitId,
+              invoiceNumber,
+              type: "EXTRA_FEE",
+              periodYear: now.getFullYear(),
+              periodMonth: now.getMonth() + 1,
+              issuedAt: now,
+              dueDate,
+              totalBss: bss.toFixed(2),
+              totalUsd: usd.toFixed(2),
+              exchangeRate: rate.vesPerUsd.toFixed(8),
+              exchangeSource: rate.source,
+              currencyPrimary: community.primaryCurrency,
+              status: "ISSUED",
+              items: {
+                create: [{
+                  description,
+                  amountBss: bss.toFixed(2),
+                  amountUsd: usd.toFixed(2),
+                  aliquot: "100.000000",
+                }],
+              },
+            },
+          });
+          await tx.auditLog.create({
+            data: {
+              organizationId,
+              actorId: ctx.user.id,
+              action: "EXTRA_FEE_APPLIED",
               entityType: "Invoice",
               entityId: inv.id,
               after: { unitId, description, amountUsd, notes },

@@ -41,6 +41,7 @@ export default function UnitDetailPage() {
   const [showAddVehicle, setShowAddVehicle] = useState<string | null>(null); // personId
   const [showAssignPerson, setShowAssignPerson] = useState<"OWNER" | "TENANT" | null>(null);
   const [showFineForm, setShowFineForm] = useState(false);
+  const [showExtraFeeForm, setShowExtraFeeForm] = useState(false);
 
   const { data: unit, refetch } = trpc.org.units.detail.useQuery({ organizationId, unitId });
   const utils = trpc.useUtils();
@@ -233,22 +234,40 @@ export default function UnitDetailPage() {
         </div>
       </div>
 
-      {/* Multas */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold">Aplicar multa</h3>
-          <Button variant="outline" size="sm" onClick={() => setShowFineForm((v) => !v)}>
-            {showFineForm ? "Cancelar" : "+ Multa"}
-          </Button>
+      {/* Multas y cuotas extra */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold">Aplicar multa</h3>
+            <Button variant="outline" size="sm" onClick={() => { setShowFineForm((v) => !v); setShowExtraFeeForm(false); }}>
+              {showFineForm ? "Cancelar" : "+ Multa"}
+            </Button>
+          </div>
+          {showFineForm && (
+            <ApplyFineForm
+              organizationId={organizationId}
+              communityId={communityId}
+              unitId={unitId}
+              onCreated={() => { setShowFineForm(false); void refetch(); void utils.org.units.detail.invalidate(); }}
+            />
+          )}
         </div>
-        {showFineForm && (
-          <ApplyFineForm
-            organizationId={organizationId}
-            communityId={communityId}
-            unitId={unitId}
-            onCreated={() => { setShowFineForm(false); void refetch(); void utils.org.units.detail.invalidate(); }}
-          />
-        )}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold">Cuota extra individual</h3>
+            <Button variant="outline" size="sm" onClick={() => { setShowExtraFeeForm((v) => !v); setShowFineForm(false); }}>
+              {showExtraFeeForm ? "Cancelar" : "+ Cuota extra"}
+            </Button>
+          </div>
+          {showExtraFeeForm && (
+            <ApplyExtraFeeForm
+              organizationId={organizationId}
+              communityId={communityId}
+              unitId={unitId}
+              onCreated={() => { setShowExtraFeeForm(false); void refetch(); void utils.org.units.detail.invalidate(); }}
+            />
+          )}
+        </div>
       </div>
 
       {/* Dialogs */}
@@ -615,8 +634,8 @@ function ApplyFineForm({
   };
 
   return (
-    <form onSubmit={onSubmit} className="rounded-lg border bg-amber-50 border-amber-200 p-4 space-y-3">
-      <p className="text-xs text-amber-700 font-medium">Se creará una factura de tipo MULTA para esta unidad.</p>
+    <form onSubmit={onSubmit} className="rounded-lg border bg-red-50 border-red-200 p-4 space-y-3">
+      <p className="text-xs text-red-700 font-medium">Se creará una factura de tipo MULTA para esta unidad.</p>
       <div className="grid grid-cols-2 gap-3">
         <div className="col-span-2">
           <Label>Descripción de la multa</Label>
@@ -657,8 +676,102 @@ function ApplyFineForm({
       </div>
       {err && <p className="text-sm text-destructive">{err}</p>}
       <div className="flex justify-end">
-        <Button type="submit" disabled={applyFine.isPending} className="bg-amber-600 hover:bg-amber-700">
+        <Button type="submit" disabled={applyFine.isPending} className="bg-red-600 hover:bg-red-700">
           {applyFine.isPending ? "Aplicando..." : "Aplicar multa"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ApplyExtraFeeForm({
+  organizationId,
+  communityId,
+  unitId,
+  onCreated,
+}: {
+  organizationId: string;
+  communityId: string;
+  unitId: string;
+  onCreated: () => void;
+}) {
+  const applyExtra = trpc.finance.extraFees.create.useMutation();
+  const [form, setForm] = useState({
+    description: "",
+    amountUsd: "",
+    dueDate: "",
+    notes: "",
+  });
+  const [err, setErr] = useState<string | null>(null);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await applyExtra.mutateAsync({
+        organizationId,
+        communityId,
+        unitId,
+        description: form.description,
+        amountUsd: Number(form.amountUsd),
+        dueDate: new Date(form.dueDate),
+        notes: form.notes || undefined,
+      });
+      onCreated();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="rounded-lg border bg-orange-50 border-orange-200 p-4 space-y-3">
+      <p className="text-xs text-orange-700 font-medium">
+        Cargo exclusivo para esta unidad (reparación, daño, servicio especial, etc.).
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Label>Descripción del cargo</Label>
+          <Input
+            placeholder="Ej: Reparación de tubería por daño en apto A-101"
+            value={form.description}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            required
+          />
+        </div>
+        <div>
+          <Label>Monto (USD)</Label>
+          <Input
+            type="number"
+            step="0.01"
+            min="0.01"
+            value={form.amountUsd}
+            onChange={(e) => setForm((f) => ({ ...f, amountUsd: e.target.value }))}
+            required
+          />
+        </div>
+        <div>
+          <Label>Fecha de vencimiento</Label>
+          <Input
+            type="date"
+            min={today}
+            value={form.dueDate}
+            onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))}
+            required
+          />
+        </div>
+        <div className="col-span-2">
+          <Label>Notas (opcional)</Label>
+          <Input
+            value={form.notes}
+            onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+          />
+        </div>
+      </div>
+      {err && <p className="text-sm text-destructive">{err}</p>}
+      <div className="flex justify-end">
+        <Button type="submit" disabled={applyExtra.isPending} className="bg-orange-600 hover:bg-orange-700">
+          {applyExtra.isPending ? "Aplicando..." : "Cobrar cuota extra"}
         </Button>
       </div>
     </form>

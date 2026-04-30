@@ -7,6 +7,7 @@ import { notificationsRouter } from "@/server/trpc/routers/notifications";
 import { reportsRouter } from "@/server/trpc/routers/reports";
 import { securityRouter } from "@/server/trpc/routers/security";
 import { governanceRouter } from "@/server/trpc/routers/governance";
+import { portalRouter } from "@/server/trpc/routers/portal";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, ts: new Date() })),
@@ -18,6 +19,7 @@ export const appRouter = router({
   reports: reportsRouter,
   security: securityRouter,
   governance: governanceRouter,
+  portal: portalRouter,
 });
 
 export type AppRouter = typeof appRouter;

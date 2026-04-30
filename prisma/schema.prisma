@@ -231,6 +231,7 @@ model Person {
   notifications Notification[]
   boardMembers  BoardMember[]
   assemblyVotes AssemblyVote[]
+  portalTokens  PortalToken[]
 
   @@unique([organizationId, idType, idNumber])
   @@index([organizationId, lastName, firstName])
@@ -518,9 +519,10 @@ enum InvoiceStatus {
 }
 
 enum InvoiceType {
-  ALIQUOT // Cuota mensual prorrateada de gastos comunes
+  ALIQUOT    // Cuota mensual prorrateada de gastos comunes
   SPECIAL_FEE // Cuota especial (obra extraordinaria)
-  FINE // Multa por violación del reglamento
+  FINE        // Multa por violación del reglamento
+  EXTRA_FEE   // Cuota extra individual (daño, reparación exclusiva, etc.)
   OTHER
 }
 
@@ -952,6 +954,7 @@ enum AuditAction {
   ROLE_GRANTED
   ROLE_REVOKED
   FINE_APPLIED
+  EXTRA_FEE_APPLIED
   MONTHLY_FEE_UPDATED
 }
 
@@ -1252,4 +1255,18 @@ model CommunityDocument {
 
   @@index([communityId, category])
   @@index([communityId, createdAt])
+}
+
+/// Token de acceso al portal del residente.
+/// El residente ingresa su email, recibe el enlace por correo, y puede ver
+/// sus facturas / pagos / saldo sin necesidad de contraseña.
+model PortalToken {
+  id        String   @id @default(cuid())
+  token     String   @unique @default(cuid())
+  personId  String
+  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([personId])
 }
