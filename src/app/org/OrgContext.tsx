@@ -12,23 +12,34 @@ type OrgContextValue = {
 
 const OrgContext = createContext<OrgContextValue | null>(null);
 
-const STORAGE_KEY = "condominios.selectedOrgId";
+// sessionStorage → cada pestaña es independiente (no se sincronizan entre tabs)
+// localStorage → persiste al cerrar el navegador pero se comparte entre todas las pestañas
+const SESSION_KEY = "condominios.selectedOrgId";
+const LOCAL_KEY   = "condominios.selectedOrgId.last";
 
 export function OrgContextProvider({ orgs, children }: { orgs: OrgSummary[]; children: ReactNode }) {
   const [selectedOrgId, setSelectedOrgIdState] = useState<string>(orgs[0]!.id);
 
   // useLayoutEffect corre sincrónicamente antes del primer paint del browser,
   // así los queries de tRPC nunca arrancan con el organizationId incorrecto.
+  // Prioridad: sessionStorage (pestaña actual) → localStorage (última sesión) → primer org
   useLayoutEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const session = sessionStorage.getItem(SESSION_KEY);
+    const local   = localStorage.getItem(LOCAL_KEY);
+    const stored  = session ?? local;
     if (stored && orgs.some((o) => o.id === stored)) {
       setSelectedOrgIdState(stored);
+      // Asegurar que sessionStorage tiene el valor para esta pestaña
+      if (!session) sessionStorage.setItem(SESSION_KEY, stored);
     }
   }, [orgs]);
 
   const setSelectedOrgId = (id: string) => {
     setSelectedOrgIdState(id);
-    if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, id);
+    // sessionStorage: solo afecta esta pestaña
+    sessionStorage.setItem(SESSION_KEY, id);
+    // localStorage: recuerda la última usada para nuevas pestañas/ventanas
+    localStorage.setItem(LOCAL_KEY, id);
   };
 
   return (
