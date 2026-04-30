@@ -80,7 +80,7 @@ export const notificationsRouter = router({
     .query(async ({ input }) => {
       return db.notification.findMany({
         where: { organizationId: input.organizationId, communityId: input.communityId },
-        orderBy: { sentAt: "desc" },
+        orderBy: { createdAt: "desc" },
         take: input.take,
         select: {
           id: true,
@@ -89,7 +89,9 @@ export const notificationsRouter = router({
           status: true,
           body: true,
           sentAt: true,
+          createdAt: true,
           recipientPhone: true,
+          recipientEmail: true,
           errorMessage: true,
           person: { select: { firstName: true, lastName: true } },
         },

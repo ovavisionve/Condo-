@@ -431,14 +431,24 @@ function HistoryTab({ organizationId, communityId }: { organizationId: string; c
             {history.data?.map((n) => (
               <tr key={n.id} className="border-t hover:bg-muted/30">
                 <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                  {n.sentAt ? new Date(n.sentAt).toLocaleString("es-VE") : "—"}
+                  {new Date(n.createdAt).toLocaleString("es-VE")}
                 </td>
                 <td className="px-3 py-2">
-                  {n.person ? `${n.person.firstName} ${n.person.lastName}` : "—"}
+                  <div>{n.person ? `${n.person.firstName} ${n.person.lastName}` : "—"}</div>
+                  {n.recipientEmail && (
+                    <div className="text-xs text-muted-foreground">{n.recipientEmail}</div>
+                  )}
                 </td>
                 <td className="px-3 py-2">{channelLabel[n.channel] ?? n.channel}</td>
                 <td className="px-3 py-2 text-xs">{EVENT_LABELS[n.event] ?? n.event}</td>
-                <td className={`px-3 py-2 font-medium ${statusColors[n.status] ?? ""}`}>{statusLabels[n.status] ?? n.status}</td>
+                <td className={`px-3 py-2 font-medium ${statusColors[n.status] ?? ""}`}>
+                  {statusLabels[n.status] ?? n.status}
+                  {n.errorMessage && (
+                    <div className="text-xs font-normal text-muted-foreground" title={n.errorMessage}>
+                      {n.errorMessage.slice(0, 40)}…
+                    </div>
+                  )}
+                </td>
                 <td className="px-3 py-2 max-w-xs truncate text-muted-foreground" title={n.body}>{n.body}</td>
               </tr>
             ))}
