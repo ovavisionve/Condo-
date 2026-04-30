@@ -26,6 +26,19 @@ const CSV_TEMPLATE = `unidad,nombre,apellido,tipo_id,numero_id,email,telefono,wh
 A-101,Juan,Pérez,CEDULA_V,12345678,juan@email.com,04141234567,584141234567,OWNER
 A-102,María,García,CEDULA_V,87654321,,,584240987654,TENANT`;
 
+// ─── Tipo del residente que devuelve el list ────────────────────────────────
+type PersonData = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  idType: string;
+  idNumber: string;
+  email?: string | null;
+  phone?: string | null;
+  whatsapp?: string | null;
+  vehicles: Array<{ id: string; type: string; plate?: string | null; brand?: string | null; model?: string | null; color?: string | null }>;
+};
+
 export default function ResidentsPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -51,6 +64,10 @@ export default function ResidentsPage() {
   const [whatsapp, setWhatsapp] = useState("");
   const [role, setRole] = useState<"OWNER" | "TENANT">("OWNER");
   const [unitId, setUnitId] = useState("");
+
+  // --- Edición de residente ---
+  const [editPerson, setEditPerson] = useState<PersonData | null>(null);
+  const updatePerson = trpc.org.persons.update.useMutation();
 
   const { data: unitsData } = trpc.org.units.list.useQuery({ organizationId, communityId });
   const units = Array.isArray(unitsData) ? unitsData : [];
@@ -342,6 +359,21 @@ export default function ResidentsPage() {
         </div>
       )}
 
+      {/* Modal de edición */}
+      {editPerson && (
+        <EditPersonModal
+          person={editPerson}
+          organizationId={organizationId}
+          onSave={async (fields) => {
+            await updatePerson.mutateAsync({ organizationId, id: editPerson.id, ...fields });
+            void refetch();
+            setEditPerson(null);
+          }}
+          onClose={() => setEditPerson(null)}
+          isSaving={updatePerson.isPending}
+        />
+      )}
+
       {/* Preview de CSV */}
       {csvRows.length > 0 && (
         <div className="rounded-lg border bg-card p-4 space-y-3">
@@ -408,6 +440,7 @@ export default function ResidentsPage() {
               communityId={communityId}
               unitId={unit.id}
               organizationId={organizationId}
+              onEdit={() => setEditPerson(person)}
               onSendCredentials={(personId) =>
                 sendCredentials.mutateAsync({ organizationId, personId })
               }
@@ -432,6 +465,7 @@ export default function ResidentsPage() {
               unitId={unit.id}
               organizationId={organizationId}
               isTenant
+              onEdit={() => setEditPerson(person)}
               onSendCredentials={(personId) =>
                 sendCredentials.mutateAsync({ organizationId, personId })
               }
@@ -442,6 +476,165 @@ export default function ResidentsPage() {
     </div>
   );
 }
+
+// ─── Modal de edición ──────────────────────────────────────────────────────
+
+function EditPersonModal({
+  person,
+  organizationId,
+  onSave,
+  onClose,
+  isSaving,
+}: {
+  person: PersonData;
+  organizationId: string;
+  onSave: (fields: {
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+    whatsapp?: string;
+  }) => Promise<void>;
+  onClose: () => void;
+  isSaving: boolean;
+}) {
+  const [firstName, setFirstName] = useState(person.firstName);
+  const [lastName, setLastName] = useState(person.lastName);
+  const [email, setEmail] = useState(person.email ?? "");
+  const [phone, setPhone] = useState(person.phone ?? "");
+  const [whatsapp, setWhatsapp] = useState(person.whatsapp ?? "");
+  const [err, setErr] = useState<string | null>(null);
+
+  // Cierra al hacer clic fuera del panel
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  const handleSave = async () => {
+    setErr(null);
+    if (!firstName.trim() || !lastName.trim()) {
+      setErr("Nombre y apellido son obligatorios.");
+      return;
+    }
+    try {
+      await onSave({
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: email.trim() || undefined,
+        phone: phone.trim() || undefined,
+        whatsapp: whatsapp.trim() || undefined,
+      });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error al guardar.");
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={handleBackdropClick}
+    >
+      <div className="w-full max-w-lg rounded-xl border bg-card shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h3 className="font-semibold text-base">Editar residente</h3>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+            aria-label="Cerrar"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-5 space-y-4">
+          {err && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {err}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-firstName">Nombre *</Label>
+              <Input
+                id="edit-firstName"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                disabled={isSaving}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-lastName">Apellido *</Label>
+              <Input
+                id="edit-lastName"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                disabled={isSaving}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-email">
+              Email <span className="text-xs text-muted-foreground">(para facturas y acceso al portal)</span>
+            </Label>
+            <Input
+              id="edit-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="juan@correo.com"
+              disabled={isSaving}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-phone">Teléfono</Label>
+              <Input
+                id="edit-phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="0414-1234567"
+                disabled={isSaving}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-whatsapp">
+                WhatsApp <span className="text-xs text-muted-foreground">internacional</span>
+              </Label>
+              <Input
+                id="edit-whatsapp"
+                value={whatsapp}
+                onChange={(e) => setWhatsapp(e.target.value)}
+                placeholder="584141234567"
+                disabled={isSaving}
+              />
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Para cambiar la cédula ve al detalle de la unidad. La unidad asignada no se modifica aquí.
+          </p>
+        </div>
+
+        {/* Footer */}
+        <div className="flex justify-end gap-2 border-t px-5 py-4">
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>
+            Cancelar
+          </Button>
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? "Guardando..." : "Guardar cambios"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Sección y fila ────────────────────────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -481,19 +674,10 @@ function ResidentRow({
   communityId,
   unitId,
   isTenant = false,
+  onEdit,
   onSendCredentials,
 }: {
-  person: {
-    id: string;
-    firstName: string;
-    lastName: string;
-    idType: string;
-    idNumber: string;
-    email?: string | null;
-    phone?: string | null;
-    whatsapp?: string | null;
-    vehicles: Array<{ id: string; type: string; plate?: string | null; brand?: string | null; model?: string | null; color?: string | null }>;
-  };
+  person: PersonData;
   unitCode: string;
   unitFloor?: number | null;
   unitTower?: string | null;
@@ -501,6 +685,7 @@ function ResidentRow({
   unitId: string;
   organizationId: string;
   isTenant?: boolean;
+  onEdit: () => void;
   onSendCredentials: (personId: string) => Promise<{ ok: boolean; email: string }>;
 }) {
   const [sending, setSending] = useState(false);
@@ -577,9 +762,14 @@ function ResidentRow({
         )}
       </td>
       <td className="px-3 py-2">
-        <Link href={`/org/communities/${communityId}/units/${unitId}`}>
-          <Button size="sm" variant="outline">Ver unidad</Button>
-        </Link>
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="outline" onClick={onEdit}>
+            ✏️ Editar
+          </Button>
+          <Link href={`/org/communities/${communityId}/units/${unitId}`}>
+            <Button size="sm" variant="outline">Ver unidad</Button>
+          </Link>
+        </div>
       </td>
     </tr>
   );
