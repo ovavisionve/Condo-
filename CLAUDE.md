@@ -336,6 +336,17 @@ pnpm prisma migrate reset
   - OrgContext fix: `useEffect` → `useLayoutEffect` (evita race condition del selectedOrgId inicial)
   - org.ts fix: `byId`, `update`, `setMonthlyFee` omiten filtro `organizationId` para PLATFORM_OWNER
   - finance page: optimistic update de cuota con `utils.org.communities.byId.setData` + `new Decimal(val)`
+- [x] **Sesión independencia admin (Sonnet):** todo configurable sin código
+  - Importación masiva 9 tipos: unidades, residentes, migración, facturas, gastos, pagos, vehículos, contratistas, presupuesto
+  - Migración: sharePercent + fechaInicio en ownership + co-propietarios
+  - Sidebar: nueva navegación con sección ⬆️ Importar datos
+  - Edit unit: botón ✏️ por fila → dialogo edita alícuota, torre, piso, área, habitaciones, etc.
+  - Cambio de contraseña: org.changePassword (bcrypt) + UI en /org/settings
+  - Community.dueDaysAfterIssue: días de vencimiento configurables (Finanzas > Configuración)
+  - Expense.customCategory: etiqueta libre cuando category = OTHER (Piscina, Pintura, etc.)
+  - Invoices page: usa dueDaysAfterIssue del condominio en lugar de día-5 fijo
+  - Patrón migración one-shot: crear `/api/admin/apply-migration`, desplegar, llamar con curl, borrar y redesplegar
+  - PDFs ya usan nombre/RIF/dirección/teléfono del condominio (editar en página del edificio)
 
 ---
 
