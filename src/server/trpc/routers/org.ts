@@ -1013,4 +1013,32 @@ export const orgRouter = router({
         return { created, skipped, errors };
       }),
   }),
+
+  /** Cambiar la contraseña del usuario autenticado. */
+  changePassword: protectedProcedure
+    .input(
+      z.object({
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(8, "La contraseña debe tener al menos 8 caracteres"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const user = await ctx.db.user.findUniqueOrThrow({
+        where: { id: ctx.user.id },
+        select: { passwordHash: true },
+      });
+      if (!user.passwordHash) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Esta cuenta no tiene contraseña local. Usa el método de inicio de sesión configurado." });
+      }
+      const valid = await bcrypt.compare(input.currentPassword, user.passwordHash);
+      if (!valid) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "La contraseña actual no es correcta." });
+      }
+      const hash = await bcrypt.hash(input.newPassword, 12);
+      await ctx.db.user.update({
+        where: { id: ctx.user.id },
+        data: { passwordHash: hash },
+      });
+      return { ok: true };
+    }),
 });

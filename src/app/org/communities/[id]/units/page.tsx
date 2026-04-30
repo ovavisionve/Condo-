@@ -16,6 +16,7 @@ export default function UnitsPage() {
   const [showSingle, setShowSingle] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showTower, setShowTower] = useState(false);
+  const [editingUnit, setEditingUnit] = useState<{ id: string; code: string; aliquot: { toString(): string }; tower: string | null; floor: number | null; areaM2: { toString(): string } | null; bedrooms: number | null; bathrooms: number | null; parkingSpots: number | null } | null>(null);
   const [filterTower, setFilterTower] = useState("");
   const [filterFloor, setFilterFloor] = useState("");
 
@@ -98,9 +99,12 @@ export default function UnitsPage() {
                     {owner ? `${owner.firstName} ${owner.lastName}` : "—"}
                   </td>
                   <td className="px-3 py-2">
-                    <Link href={`/org/communities/${communityId}/units/${u.id}`}>
-                      <Button size="sm" variant="outline">Ver</Button>
-                    </Link>
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => setEditingUnit(u)} title="Editar unidad">✏️</Button>
+                      <Link href={`/org/communities/${communityId}/units/${u.id}`}>
+                        <Button size="sm" variant="outline">Ver</Button>
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               );
@@ -135,6 +139,14 @@ export default function UnitsPage() {
           communityId={communityId}
           onClose={() => setShowTower(false)}
           onCreated={() => { setShowTower(false); void list.refetch(); }}
+        />
+      )}
+      {editingUnit && (
+        <EditUnitDialog
+          organizationId={organizationId}
+          unit={editingUnit}
+          onClose={() => setEditingUnit(null)}
+          onSaved={() => { setEditingUnit(null); void list.refetch(); }}
         />
       )}
     </div>
@@ -382,6 +394,103 @@ function TowerUnitsDialog({ organizationId, communityId, onClose, onCreated }: {
             <Button type="submit" disabled={bulk.isPending || totalUnits === 0}>
               {bulk.isPending ? "Creando..." : `Crear ${totalUnits} unidades`}
             </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function EditUnitDialog({ organizationId, unit, onClose, onSaved }: {
+  organizationId: string;
+  unit: { id: string; code: string; aliquot: { toString(): string }; tower: string | null; floor: number | null; areaM2: { toString(): string } | null; bedrooms: number | null; bathrooms: number | null; parkingSpots: number | null };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const update = trpc.org.units.update.useMutation();
+  const [form, setForm] = useState({
+    aliquot: Number(unit.aliquot.toString()).toFixed(6),
+    tower: unit.tower ?? "",
+    floor: unit.floor != null ? String(unit.floor) : "",
+    areaM2: unit.areaM2 ? Number(unit.areaM2.toString()).toFixed(2) : "",
+    bedrooms: unit.bedrooms != null ? String(unit.bedrooms) : "",
+    bathrooms: unit.bathrooms != null ? String(unit.bathrooms) : "",
+    parkingSpots: unit.parkingSpots != null ? String(unit.parkingSpots) : "0",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setOk(false);
+    try {
+      await update.mutateAsync({
+        organizationId,
+        id: unit.id,
+        aliquot: form.aliquot ? Number(form.aliquot) : undefined,
+        tower: form.tower || null,
+        floor: form.floor ? Number(form.floor) : null,
+        areaM2: form.areaM2 ? Number(form.areaM2) : undefined,
+        bedrooms: form.bedrooms ? Number(form.bedrooms) : undefined,
+        bathrooms: form.bathrooms ? Number(form.bathrooms) : undefined,
+        parkingSpots: form.parkingSpots ? Number(form.parkingSpots) : undefined,
+      });
+      setOk(true);
+      setTimeout(onSaved, 600);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error al guardar");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+        <h3 className="mb-1 text-lg font-semibold">Editar unidad — {unit.code}</h3>
+        <p className="mb-4 text-xs text-muted-foreground">El código no es editable. Los campos en blanco no se modifican.</p>
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Alícuota %</Label>
+              <Input type="number" step="0.000001" value={form.aliquot}
+                onChange={(e) => setForm((f) => ({ ...f, aliquot: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Torre</Label>
+              <Input value={form.tower} placeholder="A, B, Norte..."
+                onChange={(e) => setForm((f) => ({ ...f, tower: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Piso</Label>
+              <Input type="number" min={0} value={form.floor}
+                onChange={(e) => setForm((f) => ({ ...f, floor: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Área m²</Label>
+              <Input type="number" step="0.01" value={form.areaM2}
+                onChange={(e) => setForm((f) => ({ ...f, areaM2: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Habitaciones</Label>
+              <Input type="number" value={form.bedrooms}
+                onChange={(e) => setForm((f) => ({ ...f, bedrooms: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Baños</Label>
+              <Input type="number" value={form.bathrooms}
+                onChange={(e) => setForm((f) => ({ ...f, bathrooms: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Estacionamientos</Label>
+              <Input type="number" value={form.parkingSpots}
+                onChange={(e) => setForm((f) => ({ ...f, parkingSpots: e.target.value }))} />
+            </div>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {ok && <p className="text-sm text-green-600">✓ Guardado correctamente</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" disabled={update.isPending}>{update.isPending ? "Guardando..." : "Guardar cambios"}</Button>
           </div>
         </form>
       </div>

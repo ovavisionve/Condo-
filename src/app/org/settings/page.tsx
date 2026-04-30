@@ -7,11 +7,36 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useSession } from "next-auth/react";
 
 export default function OrgSettingsPage() {
   const organizationId = useOrgId();
+  const { data: session } = useSession();
   const { data: smtp, isLoading, refetch } = trpc.org.communities.getSmtp.useQuery({ organizationId });
   const setSmtpMut = trpc.org.communities.setSmtp.useMutation();
+  const changePasswordMut = trpc.org.changePassword.useMutation();
+
+  // Change password state
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwNew2, setPwNew2] = useState("");
+  const [pwMsg, setPwMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwMsg(null);
+    if (pwNew !== pwNew2) {
+      setPwMsg({ type: "error", text: "Las contraseñas nuevas no coinciden." });
+      return;
+    }
+    try {
+      await changePasswordMut.mutateAsync({ currentPassword: pwCurrent, newPassword: pwNew });
+      setPwMsg({ type: "success", text: "✓ Contraseña actualizada correctamente." });
+      setPwCurrent(""); setPwNew(""); setPwNew2("");
+    } catch (err: unknown) {
+      setPwMsg({ type: "error", text: err instanceof Error ? err.message : "Error al cambiar contraseña" });
+    }
+  };
 
   const [host, setHost] = useState("smtp.gmail.com");
   const [port, setPort] = useState("587");
@@ -64,6 +89,67 @@ export default function OrgSettingsPage() {
           Configura el correo electrónico desde el que se envían las notificaciones a los residentes.
         </p>
       </div>
+
+      {/* ── Cambio de contraseña ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>🔑 Cambiar contraseña</CardTitle>
+          <CardDescription>
+            Usuario actual: <strong>{session?.user?.email}</strong>
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+            <div className="space-y-1.5">
+              <Label htmlFor="pw-current">Contraseña actual</Label>
+              <Input
+                id="pw-current"
+                type="password"
+                value={pwCurrent}
+                onChange={(e) => setPwCurrent(e.target.value)}
+                required
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pw-new">Nueva contraseña</Label>
+              <Input
+                id="pw-new"
+                type="password"
+                value={pwNew}
+                onChange={(e) => setPwNew(e.target.value)}
+                required
+                minLength={8}
+                autoComplete="new-password"
+                placeholder="Mínimo 8 caracteres"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pw-new2">Confirmar nueva contraseña</Label>
+              <Input
+                id="pw-new2"
+                type="password"
+                value={pwNew2}
+                onChange={(e) => setPwNew2(e.target.value)}
+                required
+                autoComplete="new-password"
+              />
+            </div>
+            {pwMsg && (
+              <div className={`rounded-md border px-3 py-2 text-sm ${
+                pwMsg.type === "success"
+                  ? "border-green-300 bg-green-50 text-green-800"
+                  : "border-destructive/30 bg-destructive/5 text-destructive"
+              }`}>
+                {pwMsg.text}
+              </div>
+            )}
+            <Button type="submit" disabled={changePasswordMut.isPending}>
+              {changePasswordMut.isPending ? "Actualizando..." : "Cambiar contraseña"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
