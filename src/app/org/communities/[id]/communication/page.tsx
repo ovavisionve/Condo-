@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
@@ -33,26 +33,284 @@ const EVENT_HINTS: Record<string, string> = {
 export default function CommunicationPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
-  const [tab, setTab] = useState<"announcements" | "reminders" | "templates" | "history">("announcements");
+  const [tab, setTab] = useState<"messages" | "announcements" | "reminders" | "templates" | "history">("messages");
+
+  const TAB_LABELS = {
+    messages:      "✉️ Mensajes",
+    announcements: "Anuncios",
+    reminders:     "Recordatorios",
+    templates:     "Plantillas",
+    history:       "Historial",
+  };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-1 border-b pb-2">
-        {(["announcements", "reminders", "templates", "history"] as const).map((t) => (
+      <div className="flex items-center gap-1 border-b pb-2 flex-wrap">
+        {(["messages", "announcements", "reminders", "templates", "history"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === t ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
           >
-            {{ announcements: "Anuncios", reminders: "Recordatorios", templates: "Plantillas", history: "Historial" }[t]}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
 
+      {tab === "messages"      && <DirectMessagesTab organizationId={organizationId} communityId={communityId} />}
       {tab === "announcements" && <AnnouncementsTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "reminders" && <RemindersTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "templates" && <TemplatesSection organizationId={organizationId} />}
-      {tab === "history" && <HistoryTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "reminders"     && <RemindersTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "templates"     && <TemplatesSection organizationId={organizationId} />}
+      {tab === "history"       && <HistoryTab organizationId={organizationId} communityId={communityId} />}
+    </div>
+  );
+}
+
+// ─── Mensajes directos ─────────────────────────────────────────────────────
+
+function DirectMessagesTab({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const personsQ = trpc.org.persons.list.useQuery({ organizationId, communityId });
+  const emailTemplatesQ = trpc.notifications.emailTemplates.list.useQuery({ organizationId });
+  const sendDirect = trpc.notifications.sendDirectEmail.useMutation();
+
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [result, setResult] = useState<{ sent: number; failed: number; errors: string[] } | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  // Construir lista de personas únicas con email
+  const persons = useMemo(() => {
+    const data = personsQ.data;
+    if (!data || typeof data === "object" && !("ownerships" in data)) return [];
+    const d = data as { ownerships: Array<{ person: { id: string; firstName: string; lastName: string; email?: string | null }; unit: { code: string } }>; tenancies: Array<{ person: { id: string; firstName: string; lastName: string; email?: string | null }; unit: { code: string } }> };
+
+    const map = new Map<string, { id: string; name: string; email: string | null; unit: string }>();
+    for (const o of d.ownerships) {
+      const p = o.person;
+      if (!map.has(p.id)) {
+        map.set(p.id, { id: p.id, name: `${p.firstName} ${p.lastName}`, email: p.email ?? null, unit: o.unit.code });
+      }
+    }
+    for (const t of d.tenancies) {
+      const p = t.person;
+      if (!map.has(p.id)) {
+        map.set(p.id, { id: p.id, name: `${p.firstName} ${p.lastName}`, email: p.email ?? null, unit: t.unit.code });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [personsQ.data]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return persons;
+    const q = search.toLowerCase();
+    return persons.filter((p) => p.name.toLowerCase().includes(q) || p.unit.toLowerCase().includes(q));
+  }, [persons, search]);
+
+  const allSelected = filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id));
+  const withEmail    = persons.filter((p) => p.email).length;
+  const selectedWithEmail = persons.filter((p) => selectedIds.has(p.id) && p.email).length;
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filtered.forEach((p) => next.delete(p.id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filtered.forEach((p) => next.add(p.id));
+        return next;
+      });
+    }
+  };
+
+  const toggle = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const loadTemplate = (tpl: { subject: string | null; body: string }) => {
+    if (tpl.subject) setSubject(tpl.subject);
+    setBody(tpl.body);
+    setShowTemplates(false);
+  };
+
+  const send = async () => {
+    if (selectedIds.size === 0 || !subject.trim() || !body.trim()) return;
+    setResult(null);
+    const r = await sendDirect.mutateAsync({
+      organizationId,
+      communityId,
+      personIds: Array.from(selectedIds),
+      subject: subject.trim(),
+      body: body.trim(),
+    });
+    setResult(r);
+    if (r.sent > 0) {
+      setSelectedIds(new Set());
+      setSubject("");
+      setBody("");
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold">Mensajes directos por email</h2>
+        <p className="text-sm text-muted-foreground">
+          Redacta un email personalizado o usa una plantilla y envíaselo a uno o varios residentes.
+        </p>
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        {/* ── Selector de destinatarios ── */}
+        <div className="rounded-lg border bg-card">
+          <div className="flex items-center justify-between border-b px-3 py-2">
+            <span className="text-sm font-medium">
+              Destinatarios&nbsp;
+              <span className="text-muted-foreground">({selectedIds.size} seleccionado{selectedIds.size !== 1 ? "s" : ""}, {selectedWithEmail} con email)</span>
+            </span>
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+              Todos
+            </label>
+          </div>
+          <div className="p-2">
+            <Input
+              placeholder="Buscar por nombre o unidad…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="mb-2 h-8 text-sm"
+            />
+            <div className="max-h-64 overflow-y-auto space-y-0.5">
+              {personsQ.isLoading && <p className="py-4 text-center text-sm text-muted-foreground">Cargando…</p>}
+              {filtered.map((p) => (
+                <label
+                  key={p.id}
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(p.id)}
+                    onChange={() => toggle(p.id)}
+                  />
+                  <span className="flex-1 truncate">{p.name}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{p.unit}</span>
+                  {!p.email && (
+                    <span className="shrink-0 text-xs text-amber-600" title="Sin email registrado">⚠️</span>
+                  )}
+                </label>
+              ))}
+              {filtered.length === 0 && !personsQ.isLoading && (
+                <p className="py-4 text-center text-sm text-muted-foreground">Sin resultados</p>
+              )}
+            </div>
+            {withEmail < persons.length && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                ⚠️ {persons.length - withEmail} residente(s) sin email — no recibirán el mensaje.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* ── Composer ── */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-medium">Redactar email</Label>
+            <div className="relative">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowTemplates((v) => !v)}
+              >
+                📋 Usar plantilla
+              </Button>
+              {showTemplates && (
+                <div className="absolute right-0 top-full z-20 mt-1 w-64 rounded-lg border bg-popover shadow-lg">
+                  <p className="border-b px-3 py-2 text-xs font-semibold text-muted-foreground uppercase">Plantillas guardadas</p>
+                  {emailTemplatesQ.data?.length === 0 && (
+                    <p className="px-3 py-3 text-xs text-muted-foreground">Sin plantillas. Créalas en la pestaña Plantillas.</p>
+                  )}
+                  {emailTemplatesQ.data?.map((tpl) => (
+                    <button
+                      key={tpl.event}
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
+                      onClick={() => loadTemplate(tpl)}
+                    >
+                      <div className="font-medium">{EVENT_LABELS[tpl.event] ?? tpl.event}</div>
+                      <div className="text-xs text-muted-foreground truncate">{tpl.subject}</div>
+                    </button>
+                  ))}
+                  {/* Plantillas por defecto */}
+                  <div className="border-t">
+                    <p className="px-3 py-1 text-xs font-semibold text-muted-foreground uppercase">Por defecto</p>
+                    {Object.entries(EMAIL_DEFAULT_SUBJECTS).map(([event, subj]) => (
+                      <button
+                        key={event}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
+                        onClick={() => loadTemplate({ subject: subj, body: EMAIL_DEFAULT_BODIES[event] ?? "" })}
+                      >
+                        <div className="font-medium">{EVENT_LABELS[event] ?? event}</div>
+                        <div className="text-xs text-muted-foreground truncate">{subj}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Asunto</Label>
+            <Input
+              placeholder="Asunto del correo…"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-xs">Mensaje</Label>
+            <textarea
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              rows={9}
+              placeholder="Escribe tu mensaje aquí…"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+          </div>
+
+          <Button
+            className="w-full"
+            disabled={sendDirect.isPending || selectedIds.size === 0 || !subject.trim() || !body.trim()}
+            onClick={() => void send()}
+          >
+            {sendDirect.isPending
+              ? "Enviando…"
+              : `Enviar a ${selectedIds.size} destinatario${selectedIds.size !== 1 ? "s" : ""}`}
+          </Button>
+
+          {result && (
+            <div className={`rounded-lg border p-3 text-sm ${result.failed === 0 ? "border-green-200 bg-green-50 text-green-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+              <p className="font-medium">
+                ✅ {result.sent} enviado{result.sent !== 1 ? "s" : ""}
+                {result.failed > 0 && ` · ❌ ${result.failed} fallido${result.failed !== 1 ? "s" : ""}`}
+              </p>
+              {result.errors.map((e, i) => (
+                <p key={i} className="mt-1 text-xs">{e}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -346,6 +346,47 @@ export const orgRouter = router({
         if (rest.areaM2 !== undefined) data.areaM2 = new Decimal(rest.areaM2).toFixed(2);
         return ctx.db.unit.update({ where: { id: unit.id }, data: data as never });
       }),
+    /** Envía aviso de cobro (PAYMENT_REMINDER) al propietario activo de la unidad. */
+    sendPaymentNotice: orgProcedure
+      .input(orgIdInput.extend({ unitId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const { notifyPerson } = await import("@/server/services/notifications");
+
+        const [ownership, unit, pendingAgg] = await Promise.all([
+          ctx.db.ownership.findFirst({
+            where: { unitId: input.unitId, endDate: null },
+            select: { personId: true },
+          }),
+          ctx.db.unit.findFirstOrThrow({
+            where: { id: input.unitId, organizationId: input.organizationId },
+            select: { code: true, communityId: true },
+          }),
+          ctx.db.invoice.aggregate({
+            where: { unitId: input.unitId, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+            _sum: { totalUsd: true, paidUsd: true },
+          }),
+        ]);
+
+        if (!ownership) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "No hay propietario activo para esta unidad" });
+        }
+
+        const pendingUsd = (
+          Number(pendingAgg._sum.totalUsd ?? 0) - Number(pendingAgg._sum.paidUsd ?? 0)
+        ).toFixed(2);
+
+        await notifyPerson({
+          organizationId: input.organizationId,
+          communityId: unit.communityId,
+          unitId: input.unitId,
+          personId: ownership.personId,
+          event: "PAYMENT_REMINDER",
+          vars: { monto_usd: pendingUsd },
+        });
+
+        return { ok: true, pendingUsd };
+      }),
+
     /** Detalle completo de una unidad: propietario actual, inquilino, vehículos, facturas, pagos. */
     detail: orgProcedure
       .input(orgIdInput.extend({ unitId: z.string() }))

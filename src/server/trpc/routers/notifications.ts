@@ -263,4 +263,119 @@ export const notificationsRouter = router({
         });
       }),
   }),
+
+  /**
+   * Envía un email personalizado (o basado en plantilla) a una lista de
+   * personas de la comunidad. Registra cada envío en Notification para auditoría.
+   */
+  sendDirectEmail: orgProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        communityId: z.string(),
+        personIds: z.array(z.string()).min(1).max(200),
+        subject: z.string().min(1).max(200),
+        body: z.string().min(1).max(8000),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { sendEmail } = await import("@/server/services/email");
+
+      const [persons, org] = await Promise.all([
+        db.person.findMany({
+          where: { id: { in: input.personIds }, organizationId: input.organizationId },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        }),
+        db.organization.findUnique({
+          where: { id: input.organizationId },
+          select: {
+            name: true,
+            smtpHost: true, smtpPort: true, smtpUser: true,
+            smtpPass: true, smtpFrom: true, smtpSecure: true,
+          },
+        }),
+      ]);
+
+      const orgSmtp =
+        org?.smtpHost && org.smtpUser && org.smtpPass
+          ? {
+              host: org.smtpHost,
+              port: org.smtpPort ?? 587,
+              user: org.smtpUser,
+              pass: org.smtpPass,
+              from: org.smtpFrom ?? org.smtpUser,
+              secure: org.smtpSecure ?? false,
+            }
+          : null;
+
+      let sent = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (const person of persons) {
+        if (!person.email) {
+          errors.push(`${person.firstName} ${person.lastName}: sin email registrado`);
+          failed++;
+          continue;
+        }
+
+        // Construir HTML preservando saltos de línea del cuerpo
+        const safeBody = input.body
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\n/g, "<br>");
+
+        const html = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+  <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);">
+    <div style="background:#1e293b;padding:20px 32px;">
+      <h1 style="margin:0;color:#fff;font-size:18px;font-weight:700;">${input.subject}</h1>
+      <p style="margin:4px 0 0;color:#94a3b8;font-size:12px;">${org?.name ?? ""}</p>
+    </div>
+    <div style="padding:28px 32px;color:#374151;font-size:14px;line-height:1.7;">
+      ${safeBody}
+    </div>
+    <div style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:16px 32px;text-align:center;">
+      <p style="margin:0;color:#9ca3af;font-size:11px;">Mensaje enviado desde el sistema de administración de ${org?.name ?? ""}. Por favor no responda a este correo.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+        const result = await sendEmail({
+          to: person.email,
+          subject: input.subject,
+          html,
+          text: input.body,
+          orgSmtp,
+        });
+
+        // Registrar en historial de notificaciones
+        await db.notification.create({
+          data: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            personId: person.id,
+            channel: "EMAIL",
+            event: "ANNOUNCEMENT",
+            body: input.body.slice(0, 500),
+            recipientEmail: person.email,
+            status: result.success ? "SENT" : "FAILED",
+            errorMessage: result.error ?? null,
+            sentAt: new Date(),
+          },
+        });
+
+        if (result.success) sent++;
+        else {
+          failed++;
+          errors.push(`${person.firstName} ${person.lastName}: ${result.error ?? "error"}`);
+        }
+      }
+
+      return { sent, failed, errors };
+    }),
 });

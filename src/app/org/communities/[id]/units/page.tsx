@@ -9,6 +9,33 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+function PaymentNoticeButton({ organizationId, unitId, hasOwner }: { organizationId: string; unitId: string; hasOwner: boolean }) {
+  const [sent, setSent] = useState<boolean | null>(null);
+  const send = trpc.org.units.sendPaymentNotice.useMutation({
+    onSuccess: () => setSent(true),
+    onError: () => setSent(false),
+  });
+
+  if (!hasOwner) return null;
+
+  return (
+    <button
+      title="Enviar aviso de cobro"
+      disabled={send.isPending || sent === true}
+      onClick={() => send.mutate({ organizationId, unitId })}
+      className={`rounded px-1.5 py-1 text-sm transition-colors ${
+        sent === true
+          ? "cursor-default text-green-600"
+          : sent === false
+          ? "cursor-default text-destructive"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+      }`}
+    >
+      {send.isPending ? "⏳" : sent === true ? "✅" : sent === false ? "❌" : "📧"}
+    </button>
+  );
+}
+
 export default function UnitsPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -99,8 +126,13 @@ export default function UnitsPage() {
                     {owner ? `${owner.firstName} ${owner.lastName}` : "—"}
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 items-center">
                       <Button size="sm" variant="ghost" onClick={() => setEditingUnit(u)} title="Editar unidad">✏️</Button>
+                      <PaymentNoticeButton
+                        organizationId={organizationId}
+                        unitId={u.id}
+                        hasOwner={u.ownerships.length > 0}
+                      />
                       <Link href={`/org/communities/${communityId}/units/${u.id}`}>
                         <Button size="sm" variant="outline">Ver</Button>
                       </Link>
