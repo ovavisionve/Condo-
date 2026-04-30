@@ -38,12 +38,7 @@ function buildUnitDefs() {
   return units; // 188
 }
 
-export async function GET(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export async function GET(_req: Request) {
   const log: string[] = [];
   try {
     // 1. Plan PRO
