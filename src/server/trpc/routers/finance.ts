@@ -998,6 +998,8 @@ export const financeRouter = router({
           phone:       z.string().optional(),
           whatsapp:    z.string().optional(),
           role:        z.enum(["OWNER", "TENANT"]).default("OWNER"),
+          sharePercent: z.coerce.number().min(1).max(100).default(100), // % de copropiedad
+          fechaInicio: z.string().optional(), // YYYY-MM-DD — fecha real de inicio de propiedad
           // Deuda (opcional — si deudaUsd > 0 se crea una factura)
           deudaUsd:    z.coerce.number().nonnegative().default(0),
           deudaBs:     z.coerce.number().nonnegative().optional(),
@@ -1075,14 +1077,29 @@ export const financeRouter = router({
             },
           });
 
-          // 3. Asignar a unidad (ownership o tenancy)
+          // 3. Asignar a unidad (ownership o tenancy) con fecha y porcentaje reales
+          const startDate = row.fechaInicio
+            ? (() => { const d = new Date(row.fechaInicio!); return isNaN(d.getTime()) ? new Date() : d; })()
+            : new Date();
+
           if (row.role === "OWNER") {
             const exists = await ctx.db.ownership.findFirst({
               where: { unitId, personId: person.id, endDate: null },
             });
             if (!exists) {
               await ctx.db.ownership.create({
-                data: { unitId, personId: person.id, sharePercent: "100", startDate: new Date() },
+                data: {
+                  unitId,
+                  personId: person.id,
+                  sharePercent: String(row.sharePercent ?? 100),
+                  startDate,
+                },
+              });
+            } else {
+              // Actualizar porcentaje y fecha si ya existía
+              await ctx.db.ownership.update({
+                where: { id: exists.id },
+                data: { sharePercent: String(row.sharePercent ?? 100), startDate },
               });
             }
           } else {
@@ -1091,7 +1108,7 @@ export const financeRouter = router({
             });
             if (!exists) {
               await ctx.db.tenancy.create({
-                data: { unitId, personId: person.id, startDate: new Date() },
+                data: { unitId, personId: person.id, startDate },
               });
             }
           }
@@ -1158,5 +1175,59 @@ export const financeRouter = router({
         }
       }
       return { residents, invoices, skipped, errors };
+    }),
+
+  /** Importar presupuesto anual en lote (crea o reemplaza el presupuesto del año) */
+  bulkImportBudget: orgProcedure
+    .input(
+      orgIdInput.extend({
+        communityId: z.string(),
+        year: z.number().int().min(2000).max(2100),
+        rows: z.array(z.object({
+          category:  z.enum(EXPENSE_CATEGORIES),
+          amountUsd: z.coerce.number().positive(),
+          notes:     z.string().optional(),
+        })).min(1).max(50),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Upsert del presupuesto para el año
+      const budget = await ctx.db.budget.upsert({
+        where: { communityId_year: { communityId: input.communityId, year: input.year } },
+        update: { status: "DRAFT", notes: `Importado — ${input.rows.length} partidas` },
+        create: {
+          organizationId: input.organizationId,
+          communityId:    input.communityId,
+          year:           input.year,
+          status:         "DRAFT",
+          notes:          `Importado — ${input.rows.length} partidas`,
+        },
+      });
+
+      // Borrar items existentes y recrear
+      await ctx.db.budgetItem.deleteMany({ where: { budgetId: budget.id } });
+
+      const { Decimal: D } = await import("decimal.js");
+      let totalUsd = new D(0);
+
+      const items = input.rows.map((r) => {
+        totalUsd = totalUsd.plus(r.amountUsd);
+        return {
+          budgetId:  budget.id,
+          category:  r.category,
+          amountUsd: new D(r.amountUsd).toFixed(2),
+          notes:     r.notes?.trim() || null,
+        };
+      });
+
+      await ctx.db.budgetItem.createMany({ data: items });
+
+      // Actualizar total
+      await ctx.db.budget.update({
+        where: { id: budget.id },
+        data: { totalUsd: totalUsd.toFixed(2) },
+      });
+
+      return { budgetId: budget.id, year: input.year, items: items.length, totalUsd: totalUsd.toFixed(2) };
     }),
 });

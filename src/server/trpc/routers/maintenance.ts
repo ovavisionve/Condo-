@@ -178,4 +178,53 @@ export const maintenanceRouter = router({
         }),
       ),
   }),
+
+  /** Importar contratistas/proveedores en lote */
+  bulkImportContractors: orgProcedure
+    .input(
+      orgIdInput.extend({
+        rows: z.array(z.object({
+          name:      z.string().min(1),
+          specialty: z.string().optional(),
+          phone:     z.string().optional(),
+          email:     z.string().email().optional().or(z.literal("")),
+          rating:    z.coerce.number().min(0).max(5).optional(),
+          notes:     z.string().optional(),
+        })).min(1).max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      let created = 0, skipped = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]!;
+        try {
+          const exists = await ctx.db.contractor.findFirst({
+            where: { organizationId: input.organizationId, name: row.name.trim() },
+          });
+          if (exists) {
+            errors.push(`Fila ${i + 2}: "${row.name}" ya existe (omitido)`);
+            skipped++;
+            continue;
+          }
+          await ctx.db.contractor.create({
+            data: {
+              organizationId: input.organizationId,
+              name:      row.name.trim(),
+              specialty: row.specialty?.trim() || null,
+              phone:     row.phone?.trim()     || null,
+              email:     row.email?.trim()     || null,
+              rating:    row.rating != null ? row.rating.toFixed(2) : null,
+              notes:     row.notes?.trim()     || null,
+            },
+          });
+          created++;
+        } catch (e) {
+          errors.push(`Fila ${i + 2}: ${e instanceof Error ? e.message : "error"}`);
+          skipped++;
+        }
+      }
+      return { created, skipped, errors };
+    }),
 });

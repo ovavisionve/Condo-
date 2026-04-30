@@ -7,15 +7,18 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 
 // ─── Tipos de importación disponibles ────────────────────────────────────────
-type Tab = "migration" | "units" | "residents" | "invoices" | "expenses" | "payments";
+type Tab = "migration" | "units" | "residents" | "invoices" | "expenses" | "payments" | "vehicles" | "contractors" | "budget";
 
 const TABS: { id: Tab; label: string; icon: string; highlight?: boolean }[] = [
-  { id: "migration", label: "Migración completa", icon: "🚀", highlight: true },
-  { id: "units",     label: "Unidades",            icon: "🏠" },
-  { id: "residents", label: "Solo residentes",      icon: "👥" },
-  { id: "invoices",  label: "Solo deudas",          icon: "📄" },
-  { id: "expenses",  label: "Gastos históricos",    icon: "📋" },
-  { id: "payments",  label: "Pagos históricos",     icon: "💳" },
+  { id: "migration",   label: "Migración completa", icon: "🚀", highlight: true },
+  { id: "units",       label: "Unidades",            icon: "🏠" },
+  { id: "residents",   label: "Solo residentes",     icon: "👥" },
+  { id: "invoices",    label: "Solo deudas",         icon: "📄" },
+  { id: "expenses",    label: "Gastos históricos",   icon: "📋" },
+  { id: "payments",    label: "Pagos históricos",    icon: "💳" },
+  { id: "vehicles",    label: "Vehículos",           icon: "🚗" },
+  { id: "contractors", label: "Contratistas",        icon: "🔧" },
+  { id: "budget",      label: "Presupuesto anual",   icon: "📊" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -222,42 +225,92 @@ export default function ImportPage() {
   const [tab, setTab] = useState<Tab>("units");
 
   // Preview rows por tab
-  const [migrationRows, setMigrationRows] = useState<Record<string, string>[]>([]);
-  const [unitsRows,     setUnitsRows]     = useState<Record<string, string>[]>([]);
-  const [residentsRows, setResidentsRows] = useState<Record<string, string>[]>([]);
-  const [invoicesRows,  setInvoicesRows]  = useState<Record<string, string>[]>([]);
-  const [expensesRows,  setExpensesRows]  = useState<Record<string, string>[]>([]);
-  const [paymentsRows,  setPaymentsRows]  = useState<Record<string, string>[]>([]);
+  const [migrationRows,   setMigrationRows]   = useState<Record<string, string>[]>([]);
+  const [unitsRows,       setUnitsRows]       = useState<Record<string, string>[]>([]);
+  const [residentsRows,   setResidentsRows]   = useState<Record<string, string>[]>([]);
+  const [invoicesRows,    setInvoicesRows]    = useState<Record<string, string>[]>([]);
+  const [expensesRows,    setExpensesRows]    = useState<Record<string, string>[]>([]);
+  const [paymentsRows,    setPaymentsRows]    = useState<Record<string, string>[]>([]);
+  const [vehiclesRows,    setVehiclesRows]    = useState<Record<string, string>[]>([]);
+  const [contractorsRows, setContractorsRows] = useState<Record<string, string>[]>([]);
+  const [budgetRows,      setBudgetRows]      = useState<Record<string, string>[]>([]);
+  const [budgetYear,      setBudgetYear]      = useState(new Date().getFullYear());
 
   // Mutations
-  const bulkMigration = trpc.finance.bulkImportMigration.useMutation();
-  const bulkUnits     = trpc.org.units.bulkCreate.useMutation();
-  const bulkResidents = trpc.org.persons.bulkImport.useMutation();
-  const bulkInvoices  = trpc.finance.bulkImportInvoices.useMutation();
-  const bulkExpenses  = trpc.finance.bulkImportExpenses.useMutation();
-  const bulkPayments  = trpc.finance.bulkImportPayments.useMutation();
+  const bulkMigration   = trpc.finance.bulkImportMigration.useMutation();
+  const bulkUnits       = trpc.org.units.bulkCreate.useMutation();
+  const bulkResidents   = trpc.org.persons.bulkImport.useMutation();
+  const bulkInvoices    = trpc.finance.bulkImportInvoices.useMutation();
+  const bulkExpenses    = trpc.finance.bulkImportExpenses.useMutation();
+  const bulkPayments    = trpc.finance.bulkImportPayments.useMutation();
+  const bulkVehicles    = trpc.org.vehicles.bulkImport.useMutation();
+  const bulkContractors = trpc.maintenance.bulkImportContractors.useMutation();
+  const bulkBudget      = trpc.finance.bulkImportBudget.useMutation();
 
   // ── Migración completa (residente + deuda) ────────────────────────
   const handleImportMigration = (rows: Record<string, string>[]) => {
     const mapped = rows.map((r) => ({
-      unitCode:    String(r.unidad      ?? r.unitCode    ?? "").trim(),
-      firstName:   String(r.nombre      ?? r.firstName   ?? "").trim(),
-      lastName:    String(r.apellido    ?? r.lastName    ?? "").trim(),
-      idType:      (r.tipo_cedula ?? r.idType ?? "CEDULA_V") as "CEDULA_V" | "CEDULA_E" | "RIF" | "PASSPORT" | "OTHER",
-      idNumber:    String(r.cedula      ?? r.idNumber    ?? "").trim(),
-      email:       String(r.email       ?? "").trim()  || undefined,
-      phone:       String(r.telefono    ?? r.phone      ?? "").trim() || undefined,
-      whatsapp:    String(r.whatsapp    ?? "").trim()  || undefined,
-      role:        (r.rol ?? r.role ?? "OWNER") as "OWNER" | "TENANT",
-      deudaUsd:    Number(r.deuda_usd   ?? r.deudaUsd   ?? 0),
-      deudaBs:     r.deuda_bs  !== "" && r.deuda_bs  != null ? Number(r.deuda_bs)  : undefined,
-      tasa:        r.tasa      !== "" && r.tasa      != null ? Number(r.tasa)      : undefined,
-      descripcion: String(r.descripcion ?? "").trim() || undefined,
-      fechaVence:  String(r.fecha_vence ?? r.fechaVence ?? "").trim() || undefined,
-      pagadoUsd:   Number(r.pagado_usd  ?? r.pagadoUsd  ?? 0),
-      notas:       String(r.notas       ?? "").trim() || undefined,
+      unitCode:     String(r.unidad       ?? r.unitCode    ?? "").trim(),
+      firstName:    String(r.nombre       ?? r.firstName   ?? "").trim(),
+      lastName:     String(r.apellido     ?? r.lastName    ?? "").trim(),
+      idType:       (r.tipo_cedula ?? r.idType ?? "CEDULA_V") as "CEDULA_V" | "CEDULA_E" | "RIF" | "PASSPORT" | "OTHER",
+      idNumber:     String(r.cedula       ?? r.idNumber    ?? "").trim(),
+      email:        String(r.email        ?? "").trim()   || undefined,
+      phone:        String(r.telefono     ?? r.phone      ?? "").trim() || undefined,
+      whatsapp:     String(r.whatsapp     ?? "").trim()   || undefined,
+      role:         (r.rol ?? r.role ?? "OWNER") as "OWNER" | "TENANT",
+      sharePercent: r.porcentaje !== "" && r.porcentaje != null ? Number(r.porcentaje) : 100,
+      fechaInicio:  String(r.fecha_inicio ?? r.fechaInicio ?? "").trim() || undefined,
+      deudaUsd:     Number(r.deuda_usd    ?? r.deudaUsd   ?? 0),
+      deudaBs:      r.deuda_bs  !== "" && r.deuda_bs  != null ? Number(r.deuda_bs)  : undefined,
+      tasa:         r.tasa      !== "" && r.tasa      != null ? Number(r.tasa)      : undefined,
+      descripcion:  String(r.descripcion  ?? "").trim() || undefined,
+      fechaVence:   String(r.fecha_vence  ?? r.fechaVence ?? "").trim() || undefined,
+      pagadoUsd:    Number(r.pagado_usd   ?? r.pagadoUsd  ?? 0),
+      notas:        String(r.notas        ?? "").trim() || undefined,
     }));
     bulkMigration.mutate({ organizationId, communityId, rows: mapped });
+  };
+
+  // ── Vehículos ─────────────────────────────────────────────────────
+  const handleImportVehicles = (rows: Record<string, string>[]) => {
+    const mapped = rows.map((r) => ({
+      cedula:      String(r.cedula      ?? "").trim()  || undefined,
+      unitCode:    String(r.unidad      ?? r.unitCode  ?? "").trim() || undefined,
+      type:        (r.tipo ?? r.type ?? "CAR") as "CAR" | "MOTORCYCLE" | "TRUCK" | "VAN" | "OTHER",
+      brand:       String(r.marca       ?? r.brand     ?? "").trim() || undefined,
+      model:       String(r.modelo      ?? r.model     ?? "").trim() || undefined,
+      year:        r.año !== "" && r.año != null ? Number(r.año ?? r.year) : undefined,
+      color:       String(r.color       ?? "").trim()  || undefined,
+      plate:       String(r.placa       ?? r.plate     ?? "").trim() || undefined,
+      parkingSpot: String(r.puesto      ?? r.parkingSpot ?? "").trim() || undefined,
+      notes:       String(r.notas       ?? r.notes     ?? "").trim() || undefined,
+    }));
+    bulkVehicles.mutate({ organizationId, communityId, rows: mapped });
+  };
+
+  // ── Contratistas ──────────────────────────────────────────────────
+  const handleImportContractors = (rows: Record<string, string>[]) => {
+    const mapped = rows.map((r) => ({
+      name:      String(r.nombre     ?? r.name      ?? "").trim(),
+      specialty: String(r.especialidad ?? r.specialty ?? "").trim() || undefined,
+      phone:     String(r.telefono   ?? r.phone     ?? "").trim() || undefined,
+      email:     String(r.email      ?? "").trim()  || undefined,
+      rating:    r.calificacion !== "" && r.calificacion != null ? Number(r.calificacion ?? r.rating) : undefined,
+      notes:     String(r.notas     ?? r.notes      ?? "").trim() || undefined,
+    }));
+    bulkContractors.mutate({ organizationId, rows: mapped });
+  };
+
+  // ── Presupuesto ───────────────────────────────────────────────────
+  const handleImportBudget = (rows: Record<string, string>[]) => {
+    const mapped = rows.map((r) => ({
+      category:  (r.categoria ?? r.category ?? "OTHER") as "ELECTRICITY" | "WATER" | "GAS" | "INTERNET" | "CLEANING" | "GARDENING" | "SECURITY" | "ELEVATOR" | "STAFF_PAYROLL" | "ADMINISTRATION" | "INSURANCE" | "REPAIRS" | "RESERVE_FUND" | "TAXES" | "OTHER",
+      amountUsd: Number(r.monto_usd ?? r.amountUsd ?? 0),
+      notes:     String(r.notas ?? r.notes ?? "").trim() || undefined,
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    bulkBudget.mutate({ organizationId, communityId, year: budgetYear, rows: mapped as any });
   };
 
   // ── Unidades ──────────────────────────────────────────────────────
@@ -391,7 +444,9 @@ export default function ImportPage() {
               { key: "email",       label: "Correo electrónico",                                   required: false },
               { key: "telefono",    label: "Teléfono",                                             required: false },
               { key: "whatsapp",    label: "WhatsApp",                                             required: false },
-              { key: "rol",         label: "OWNER (propietario) / TENANT (inquilino)",             required: false, note: "por defecto OWNER" },
+              { key: "rol",          label: "OWNER (propietario) / TENANT (inquilino)",            required: false, note: "por defecto OWNER" },
+              { key: "porcentaje",   label: "% de copropiedad (ej: 50 si hay 2 dueños iguales)",  required: false, note: "por defecto 100" },
+              { key: "fecha_inicio", label: "Fecha real de inicio de propiedad (YYYY-MM-DD)",     required: false, note: "por defecto hoy" },
               { key: "deuda_usd",   label: "Deuda total en USD (0 si no debe nada)",              required: false, note: "si > 0 se crea factura" },
               { key: "deuda_bs",    label: "Deuda en Bs (opcional, se calcula con tasa)",         required: false },
               { key: "tasa",        label: "Tasa USD→Bs al momento de la deuda",                  required: false },
@@ -401,12 +456,13 @@ export default function ImportPage() {
               { key: "notas",       label: "Notas adicionales",                                    required: false },
             ]}
             onDownloadTemplate={() => downloadXlsx(
-              ["unidad","nombre","apellido","cedula","tipo_cedula","email","telefono","whatsapp","rol","deuda_usd","deuda_bs","tasa","descripcion","fecha_vence","pagado_usd","notas"],
+              ["unidad","nombre","apellido","cedula","tipo_cedula","email","telefono","whatsapp","rol","porcentaje","fecha_inicio","deuda_usd","deuda_bs","tasa","descripcion","fecha_vence","pagado_usd","notas"],
               [
-                ["A-101","María",   "González","12345678","CEDULA_V","maria@email.com","04141234567","04141234567","OWNER","100.00","","","Cuotas pendientes 2025","2025-12-31","0",   ""],
-                ["A-102","Pedro",   "Pérez",   "23456789","CEDULA_V","pedro@email.com","04161234567","",            "OWNER","50.00", "","","Deuda acumulada",       "2025-06-30","20.00","Pagó parcial en efectivo"],
-                ["B-201","Empresa", "SRL",     "J-123456","RIF",     "admin@emp.com",  "",            "",            "OWNER","0",    "","","",                      "",           "0",   "Sin deuda pendiente"],
-                ["B-202","Luis",    "Torres",  "34567890","CEDULA_V","",               "04143333333","04143333333","OWNER","200.00","","","3 meses sin pagar",     "2025-11-30","0",   ""],
+                ["A-101","María",   "González","12345678","CEDULA_V","maria@email.com","04141234567","04141234567","OWNER","100","2020-01-15","100.00","","","Cuotas pendientes 2025","2025-12-31","0",   ""],
+                ["A-101","José",    "González","11111111","CEDULA_V","jose@email.com", "",            "",            "OWNER","0", "2020-01-15","0",    "","","",                      "",           "0",   "Co-propietario (mismo apartamento)"],
+                ["A-102","Pedro",   "Pérez",   "23456789","CEDULA_V","pedro@email.com","04161234567","",            "OWNER","100","2019-06-01","50.00", "","","Deuda acumulada",       "2025-06-30","20.00","Pagó parcial en efectivo"],
+                ["B-201","Empresa", "SRL",     "J-123456","RIF",     "admin@emp.com",  "",            "",            "OWNER","100","2021-03-10","0",    "","","",                      "",           "0",   "Sin deuda pendiente"],
+                ["B-202","Luis",    "Torres",  "34567890","CEDULA_V","",               "04143333333","04143333333","OWNER","100","2018-08-20","200.00","","","3 meses sin pagar",     "2025-11-30","0",   ""],
               ],
               "plantilla_migracion_completa.xlsx",
             )}
@@ -581,6 +637,151 @@ export default function ImportPage() {
             previewRows={expensesRows}
             setPreviewRows={setExpensesRows}
           />
+        )}
+
+        {/* ─── VEHÍCULOS ─── */}
+        {tab === "vehicles" && (
+          <ImportPanel
+            title="Vehículos"
+            description={
+              <span>
+                Importa el registro vehicular del edificio. Puedes identificar al dueño del vehículo
+                por <strong>cédula</strong> (recomendado) o por <strong>unidad</strong> (usa el propietario activo).
+                Si el mismo residente tiene varios vehículos, agrega una fila por cada uno.
+                Tipos válidos: CAR / MOTORCYCLE / TRUCK / VAN / OTHER
+              </span>
+            }
+            fields={[
+              { key: "cedula",   label: "Cédula del dueño del vehículo (prioridad)",    required: false, note: "o usa unidad" },
+              { key: "unidad",   label: "Código de unidad (si no viene la cédula)",     required: false },
+              { key: "tipo",     label: "Tipo: CAR / MOTORCYCLE / TRUCK / VAN / OTHER", required: false, note: "por defecto CAR" },
+              { key: "marca",    label: "Marca (ej: Toyota, Ford, Chevrolet)",          required: false },
+              { key: "modelo",   label: "Modelo (ej: Corolla, F-150, Aveo)",            required: false },
+              { key: "año",      label: "Año del vehículo",                             required: false },
+              { key: "color",    label: "Color",                                        required: false },
+              { key: "placa",    label: "Placa (ej: ABC-123)",                          required: false },
+              { key: "puesto",   label: "Puesto de estacionamiento asignado",           required: false },
+              { key: "notas",    label: "Notas",                                        required: false },
+            ]}
+            onDownloadTemplate={() => downloadXlsx(
+              ["cedula","unidad","tipo","marca","modelo","año","color","placa","puesto","notas"],
+              [
+                ["12345678","A-101","CAR",        "Toyota",   "Corolla", 2020,"Blanco",  "ABC-123","P-01",""],
+                ["12345678","A-101","MOTORCYCLE",  "Yamaha",   "FZ-S",    2019,"Negro",   "XYZ-456","",   "Segunda moto del mismo residente"],
+                ["23456789","A-102","CAR",         "Ford",     "EcoSport",2021,"Gris",    "DEF-789","P-02",""],
+                ["34567890","B-201","TRUCK",        "Chevrolet","NHR",     2018,"Blanco",  "GHI-321","P-10","Camioneta de carga"],
+                ["",        "B-202","CAR",          "Honda",    "Civic",   2022,"Azul",    "JKL-654","P-03","Buscar por unidad"],
+              ],
+              "plantilla_vehiculos.xlsx",
+            )}
+            onImport={handleImportVehicles}
+            isPending={bulkVehicles.isPending}
+            result={bulkVehicles.data ?? null}
+            previewRows={vehiclesRows}
+            setPreviewRows={setVehiclesRows}
+          />
+        )}
+
+        {/* ─── CONTRATISTAS ─── */}
+        {tab === "contractors" && (
+          <ImportPanel
+            title="Contratistas y proveedores"
+            description={
+              <span>
+                Importa tu directorio de proveedores de confianza para tenerlos disponibles en el módulo
+                de Mantenimiento. La <strong>calificación</strong> es de 0 a 5 estrellas.
+                Si el contratista ya existe con el mismo nombre exacto, se omite.
+              </span>
+            }
+            fields={[
+              { key: "nombre",       label: "Nombre del contratista o empresa",         required: true },
+              { key: "especialidad", label: "Especialidad (ej: Plomería, Electricidad)", required: false },
+              { key: "telefono",     label: "Teléfono de contacto",                     required: false },
+              { key: "email",        label: "Correo electrónico",                       required: false },
+              { key: "calificacion", label: "Calificación de 0 a 5",                   required: false },
+              { key: "notas",        label: "Notas o comentarios",                      required: false },
+            ]}
+            onDownloadTemplate={() => downloadXlsx(
+              ["nombre","especialidad","telefono","email","calificacion","notas"],
+              [
+                ["TecnoAscensor CA",    "Ascensores y elevadores",  "04141234567","ascensor@email.com", "4.5","Contrato anual vigente"],
+                ["Fontanería Rápida",   "Plomería",                 "04161234567","",                  "4.0","Disponible 24/7"],
+                ["Eléctricos del Este", "Electricidad",             "04241234567","elec@email.com",     "5.0","Certificado CADAFE"],
+                ["Jardines y Más",      "Jardinería y limpieza",    "04121234567","",                  "3.5","Viene los martes"],
+                ["Pinturas Express",    "Pintura",                  "04161111111","paint@email.com",    "4.0",""],
+              ],
+              "plantilla_contratistas.xlsx",
+            )}
+            onImport={handleImportContractors}
+            isPending={bulkContractors.isPending}
+            result={bulkContractors.data ?? null}
+            previewRows={contractorsRows}
+            setPreviewRows={setContractorsRows}
+          />
+        )}
+
+        {/* ─── PRESUPUESTO ANUAL ─── */}
+        {tab === "budget" && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium">Año del presupuesto:</label>
+              <input
+                type="number"
+                value={budgetYear}
+                onChange={(e) => setBudgetYear(Number(e.target.value))}
+                className="w-24 rounded-md border px-3 py-1.5 text-sm"
+                min={2020} max={2100}
+              />
+              <span className="text-xs text-amber-600">⚠️ Si ya existe un presupuesto para este año, sus partidas serán reemplazadas.</span>
+            </div>
+            <ImportPanel
+              title={`Presupuesto anual ${budgetYear}`}
+              description={
+                <span>
+                  Importa las partidas del presupuesto anual. Cada fila es una categoría de gasto con su
+                  monto estimado en USD. Si ya existe un presupuesto para el año seleccionado,
+                  <strong> sus partidas serán reemplazadas</strong> por las del archivo.
+                  Categorías válidas: ELECTRICITY / WATER / GAS / INTERNET / CLEANING / GARDENING /
+                  SECURITY / ELEVATOR / STAFF_PAYROLL / ADMINISTRATION / INSURANCE / REPAIRS / RESERVE_FUND / TAXES / OTHER
+                </span>
+              }
+              fields={[
+                { key: "categoria",  label: "Categoría (ver lista arriba)", required: true },
+                { key: "monto_usd",  label: "Monto presupuestado en USD",   required: true },
+                { key: "notas",      label: "Notas o descripción",          required: false },
+              ]}
+              onDownloadTemplate={() => downloadXlsx(
+                ["categoria","monto_usd","notas"],
+                [
+                  ["ELECTRICITY",   "540.00",  "CORPOELEC — 12 meses × $45"],
+                  ["WATER",         "240.00",  "HIDROCAPITAL — 12 meses × $20"],
+                  ["STAFF_PAYROLL", "1800.00", "Conserje 12 meses × $150"],
+                  ["CLEANING",      "600.00",  "Empresa de limpieza mensual"],
+                  ["ELEVATOR",      "960.00",  "Mantenimiento TecnoAscensor"],
+                  ["ADMINISTRATION","300.00",  "Gastos administrativos varios"],
+                  ["INSURANCE",     "200.00",  "Póliza del edificio"],
+                  ["REPAIRS",       "500.00",  "Fondo para reparaciones"],
+                  ["RESERVE_FUND",  "400.00",  "Aporte al fondo de reserva"],
+                  ["OTHER",         "200.00",  "Imprevistos"],
+                ],
+                `plantilla_presupuesto_${budgetYear}.xlsx`,
+              )}
+              onImport={handleImportBudget}
+              isPending={bulkBudget.isPending}
+              result={
+                bulkBudget.data
+                  ? {
+                      created: bulkBudget.data.items,
+                      skipped: 0,
+                      errors: [],
+                      extra: `Total presupuestado: $${bulkBudget.data.totalUsd} USD · Año ${bulkBudget.data.year}`,
+                    }
+                  : null
+              }
+              previewRows={budgetRows}
+              setPreviewRows={setBudgetRows}
+            />
+          </div>
         )}
 
         {/* ─── PAGOS HISTÓRICOS ─── */}

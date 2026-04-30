@@ -912,5 +912,105 @@ export const orgRouter = router({
         const { id, organizationId: _org, ...data } = input;
         return ctx.db.vehicle.update({ where: { id }, data });
       }),
+
+    /** Importar vehículos en lote. Se busca el dueño por cédula o por unidad (propietario activo). */
+    bulkImport: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          rows: z.array(z.object({
+            // Identificación del dueño — cedula tiene prioridad; si no, usa unitCode
+            cedula:      z.string().optional(),
+            unitCode:    z.string().optional(),
+            // Datos del vehículo
+            type:        z.enum(["CAR", "MOTORCYCLE", "TRUCK", "VAN", "OTHER"]).default("CAR"),
+            brand:       z.string().optional(),
+            model:       z.string().optional(),
+            year:        z.coerce.number().int().min(1950).max(2100).optional(),
+            color:       z.string().optional(),
+            plate:       z.string().optional(),
+            parkingSpot: z.string().optional(),
+            notes:       z.string().optional(),
+          })).min(1).max(1000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        // Cargar unidades de la comunidad (para lookup por código)
+        const units = await ctx.db.unit.findMany({
+          where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
+          select: { id: true, code: true },
+        });
+        const unitMap = new Map(units.map((u) => [u.code.toLowerCase(), u.id]));
+
+        let created = 0, skipped = 0;
+        const errors: string[] = [];
+
+        for (let i = 0; i < input.rows.length; i++) {
+          const row = input.rows[i]!;
+          try {
+            let personId: string | null = null;
+
+            // 1. Buscar por cédula si viene
+            if (row.cedula?.trim()) {
+              const person = await ctx.db.person.findFirst({
+                where: { organizationId: input.organizationId, idNumber: row.cedula.trim() },
+                select: { id: true },
+              });
+              if (person) personId = person.id;
+            }
+
+            // 2. Fallback: buscar propietario activo de la unidad
+            if (!personId && row.unitCode?.trim()) {
+              const unitId = unitMap.get(row.unitCode.trim().toLowerCase());
+              if (unitId) {
+                const ownership = await ctx.db.ownership.findFirst({
+                  where: { unitId, endDate: null },
+                  select: { personId: true },
+                  orderBy: { startDate: "desc" },
+                });
+                if (ownership) personId = ownership.personId;
+              }
+            }
+
+            if (!personId) {
+              errors.push(`Fila ${i + 2}: no se encontró residente (cedula="${row.cedula ?? ""}" unidad="${row.unitCode ?? ""}")`);
+              skipped++;
+              continue;
+            }
+
+            // Evitar duplicar placa para la misma persona
+            if (row.plate?.trim()) {
+              const dup = await ctx.db.vehicle.findFirst({
+                where: { organizationId: input.organizationId, personId, plate: row.plate.trim() },
+              });
+              if (dup) {
+                errors.push(`Fila ${i + 2}: placa "${row.plate}" ya registrada para este residente (omitida)`);
+                skipped++;
+                continue;
+              }
+            }
+
+            await ctx.db.vehicle.create({
+              data: {
+                organizationId: input.organizationId,
+                personId,
+                type:        row.type,
+                brand:       row.brand?.trim()       || null,
+                model:       row.model?.trim()       || null,
+                year:        row.year                ?? null,
+                color:       row.color?.trim()       || null,
+                plate:       row.plate?.trim()       || null,
+                parkingSpot: row.parkingSpot?.trim() || null,
+                notes:       row.notes?.trim()       || null,
+              },
+            });
+            created++;
+          } catch (e) {
+            errors.push(`Fila ${i + 2}: ${e instanceof Error ? e.message : "error"}`);
+            skipped++;
+          }
+        }
+        return { created, skipped, errors };
+      }),
   }),
 });
