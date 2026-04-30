@@ -291,9 +291,23 @@ function TowerUnitsDialog({ organizationId, communityId, onClose, onCreated }: {
     e.preventDefault();
     setError(null);
     const finalAliquot = Number(aliquot) || Number(autoAliquot);
-    const payload = units.map((u) => ({ code: u.code, aliquot: finalAliquot, type: u.type as "APARTMENT" }));
+    const payload = units.map((u) => ({
+      code: u.code,
+      aliquot: finalAliquot,
+      type: u.type as "APARTMENT",
+      floor: u.floor,
+      tower: u.tower,
+    }));
     try {
-      await bulk.mutateAsync({ organizationId, communityId, units: payload });
+      const result = await bulk.mutateAsync({ organizationId, communityId, units: payload });
+      if (result.skipped > 0 && result.count === 0) {
+        setError(`Todas las unidades (${result.skipped}) ya existen. No se creó ninguna nueva.`);
+        return;
+      }
+      if (result.skipped > 0) {
+        setError(`Se crearon ${result.count} unidades nuevas. ${result.skipped} ya existían y se omitieron.`);
+        return;
+      }
       onCreated();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error");

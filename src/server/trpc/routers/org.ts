@@ -198,6 +198,8 @@ export const orgRouter = router({
                 code: z.string().min(1),
                 aliquot: z.coerce.number().positive().max(100),
                 type: z.enum(["APARTMENT", "HOUSE", "COMMERCIAL", "PARKING", "STORAGE", "OTHER"]).default("APARTMENT"),
+                floor: z.coerce.number().int().nonnegative().optional(),
+                tower: z.string().max(10).optional(),
               }),
             )
             .min(1)
@@ -212,32 +214,27 @@ export const orgRouter = router({
             deletedAt: null,
           },
         });
-        const sumAliquot = input.units.reduce((s, u) => s + u.aliquot, 0);
-        if (sumAliquot > 100.0001) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `La suma de alícuotas no puede exceder 100% (recibido: ${sumAliquot.toFixed(4)}%)`,
-          });
-        }
         return ctx.db.$transaction(async (tx) => {
-          const created = await Promise.all(
-            input.units.map((u) =>
-              tx.unit.create({
-                data: {
-                  organizationId: input.organizationId,
-                  communityId: community.id,
-                  code: u.code,
-                  type: u.type,
-                  aliquot: new Decimal(u.aliquot).toFixed(6),
-                } as never,
-              }),
-            ),
-          );
-          await tx.community.update({
-            where: { id: community.id },
-            data: { totalUnits: { increment: created.length } },
+          // createMany con skipDuplicates para no fallar si la unidad ya existe
+          const result = await (tx.unit as { createMany: Function }).createMany({
+            data: input.units.map((u) => ({
+              organizationId: input.organizationId,
+              communityId: community.id,
+              code: u.code,
+              type: u.type,
+              aliquot: new Decimal(u.aliquot).toFixed(6),
+              ...(u.floor != null ? { floor: u.floor } : {}),
+              ...(u.tower ? { tower: u.tower } : {}),
+            })),
+            skipDuplicates: true,
           });
-          return { count: created.length };
+          if (result.count > 0) {
+            await tx.community.update({
+              where: { id: community.id },
+              data: { totalUnits: { increment: result.count } },
+            });
+          }
+          return { count: result.count, skipped: input.units.length - result.count };
         });
       }),
     update: orgProcedure
@@ -593,9 +590,9 @@ export const orgRouter = router({
         }
 
         const portalUrl = `${process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app"}/portal`;
-
         const { sendEmail } = await import("@/server/services/email");
-        await sendEmail({
+
+        const emailResult = await sendEmail({
           to: person.email,
           subject: "Tu acceso al Portal del Residente",
           html: `
@@ -624,6 +621,13 @@ export const orgRouter = router({
           `,
           text: `Hola ${person.firstName}, tu acceso al portal: ${portalUrl} — Usuario: ${person.email} — Contraseña: ${rawPassword}`,
         });
+
+        if (!emailResult.success) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Cuenta creada pero no se pudo enviar el email: ${emailResult.error ?? "error SMTP"}. Verifica las credenciales del servidor de correo.`,
+          });
+        }
 
         await ctx.db.auditLog.create({
           data: {
