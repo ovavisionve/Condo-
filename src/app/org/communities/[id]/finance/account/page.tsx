@@ -24,6 +24,8 @@ export default function AccountStatementPage() {
     { organizationId, unitId },
     { enabled: Boolean(unitId) },
   );
+  const rate = trpc.finance.exchange.current.useQuery({ organizationId });
+  const todayRate = Number(rate.data?.vesPerUsd ?? 0);
 
   const unit = units.data?.find((u) => u.id === unitId);
 
@@ -58,15 +60,21 @@ export default function AccountStatementPage() {
           {/* Saldo actual */}
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-lg border bg-card p-4">
-              <div className="text-sm text-muted-foreground">Saldo pendiente USD</div>
-              <div className={`text-3xl font-bold ${Number(balance.data?.usd ?? 0) > 0 ? "text-destructive" : "text-green-600"}`}>
+              <div className="text-sm text-muted-foreground">Saldo pendiente (USD)</div>
+              <div className={`text-3xl font-bold ${Number(balance.data?.usd ?? 0) > 0.005 ? "text-destructive" : "text-green-600"}`}>
                 ${Number(balance.data?.usd ?? 0).toFixed(2)}
               </div>
+              <div className="text-xs text-muted-foreground mt-1">Monto fijo en dólares</div>
             </div>
             <div className="rounded-lg border bg-card p-4">
-              <div className="text-sm text-muted-foreground">Saldo pendiente Bs</div>
-              <div className={`text-3xl font-bold ${Number(balance.data?.bss ?? 0) > 0 ? "text-destructive" : "text-green-600"}`}>
-                Bs {Number(balance.data?.bss ?? 0).toFixed(2)}
+              <div className="text-sm text-muted-foreground">Equivalente en Bs (hoy)</div>
+              <div className={`text-3xl font-bold ${Number(balance.data?.usd ?? 0) > 0.005 ? "text-destructive" : "text-green-600"}`}>
+                Bs {(Number(balance.data?.usd ?? 0) * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {todayRate > 0
+                  ? `Tasa BCV hoy: ${todayRate.toFixed(2)} Bs/$ · Actualizado diariamente`
+                  : "Cargando tasa BCV..."}
               </div>
             </div>
           </div>
@@ -83,9 +91,9 @@ export default function AccountStatementPage() {
                     <th className="px-3 py-2"># Factura</th>
                     <th className="px-3 py-2">Período</th>
                     <th className="px-3 py-2 text-right">Total USD</th>
-                    <th className="px-3 py-2 text-right">Total Bs</th>
                     <th className="px-3 py-2 text-right">Pagado USD</th>
                     <th className="px-3 py-2 text-right">Pendiente USD</th>
+                    <th className="px-3 py-2 text-right">Pendiente Bs (hoy)</th>
                     <th className="px-3 py-2">Estado</th>
                     <th className="px-3 py-2">Vence</th>
                   </tr>
@@ -93,15 +101,18 @@ export default function AccountStatementPage() {
                 <tbody>
                   {invoices.data?.map((inv) => {
                     const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    const pendingBsHoy = pending * todayRate;
                     return (
                       <tr key={inv.id} className="border-t">
                         <td className="px-3 py-2 font-medium">{inv.invoiceNumber}</td>
                         <td className="px-3 py-2 text-muted-foreground">{inv.periodMonth}/{inv.periodYear}</td>
                         <td className="px-3 py-2 text-right">${Number(inv.totalUsd.toString()).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right">{Number(inv.totalBss.toString()).toFixed(2)}</td>
                         <td className="px-3 py-2 text-right text-green-700">${Number(inv.paidUsd.toString()).toFixed(2)}</td>
-                        <td className={`px-3 py-2 text-right ${pending > 0 ? "font-medium text-destructive" : "text-green-600"}`}>
+                        <td className={`px-3 py-2 text-right ${pending > 0.005 ? "font-medium text-destructive" : "text-green-600"}`}>
                           ${pending.toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right text-xs text-muted-foreground">
+                          {pending > 0.005 ? `Bs ${pendingBsHoy.toLocaleString("es-VE", { maximumFractionDigits: 2 })}` : "—"}
                         </td>
                         <td className="px-3 py-2">
                           <StatusBadge status={inv.status} />

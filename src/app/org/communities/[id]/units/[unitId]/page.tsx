@@ -44,6 +44,8 @@ export default function UnitDetailPage() {
   const [showExtraFeeForm, setShowExtraFeeForm] = useState(false);
 
   const { data: unit, refetch } = trpc.org.units.detail.useQuery({ organizationId, unitId });
+  const rate = trpc.finance.exchange.current.useQuery({ organizationId });
+  const todayRate = Number(rate.data?.vesPerUsd ?? 0);
   const utils = trpc.useUtils();
 
   if (!unit) return <div className="text-muted-foreground">Cargando...</div>;
@@ -87,7 +89,14 @@ export default function UnitDetailPage() {
             <div className={`text-xl font-bold ${balance.usd > 0.005 ? "text-destructive" : "text-green-700"}`}>
               ${balance.usd.toFixed(2)}
             </div>
-            <div className="text-xs text-muted-foreground">Bs {balance.bss.toFixed(2)}</div>
+            {todayRate > 0 && (
+              <div className={`text-sm font-medium ${balance.usd > 0.005 ? "text-destructive/80" : "text-green-600"}`}>
+                Bs {(balance.usd * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
+              </div>
+            )}
+            <div className="text-xs text-muted-foreground">
+              {todayRate > 0 ? `Tasa hoy: ${todayRate.toFixed(2)} Bs/$` : ""}
+            </div>
           </div>
         </div>
       </div>

@@ -18,6 +18,8 @@ export default function InvoicesPage() {
   const list = trpc.finance.invoices.list.useQuery({ organizationId, communityId, year, month });
   const issue = trpc.finance.invoices.issueMonth.useMutation();
   const sendEmail = trpc.finance.invoices.sendByEmail.useMutation();
+  const rate = trpc.finance.exchange.current.useQuery({ organizationId });
+  const todayRate = Number(rate.data?.vesPerUsd ?? 0);
   const utils = trpc.useUtils();
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -75,6 +77,7 @@ export default function InvoicesPage() {
           <p className="text-sm text-muted-foreground">
             Período {month}/{year} ·
             {totals && ` Emitido $${totals.usd.toFixed(2)} · Cobrado $${totals.paidUsd.toFixed(2)} · Pendiente $${(totals.usd - totals.paidUsd).toFixed(2)}`}
+            {totals && todayRate > 0 && ` · Bs pendiente hoy: ${((totals.usd - totals.paidUsd) * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}`}
           </p>
         </div>
         <div className="flex items-end gap-2">
@@ -105,8 +108,9 @@ export default function InvoicesPage() {
               <th className="px-3 py-2"># Factura</th>
               <th className="px-3 py-2">Unidad</th>
               <th className="px-3 py-2 text-right">Total USD</th>
-              <th className="px-3 py-2 text-right">Total Bs</th>
               <th className="px-3 py-2 text-right">Pagado USD</th>
+              <th className="px-3 py-2 text-right">Pendiente USD</th>
+              <th className="px-3 py-2 text-right">Pendiente Bs (hoy)</th>
               <th className="px-3 py-2">Estado</th>
               <th className="px-3 py-2">Vence</th>
               <th className="px-3 py-2"></th>
@@ -120,8 +124,23 @@ export default function InvoicesPage() {
                   <td className="px-3 py-2 font-medium">{inv.invoiceNumber}</td>
                   <td className="px-3 py-2">{inv.unit.code}</td>
                   <td className="px-3 py-2 text-right">${Number(inv.totalUsd.toString()).toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right">{Number(inv.totalBss.toString()).toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right">${Number(inv.paidUsd.toString()).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right text-green-700">${Number(inv.paidUsd.toString()).toFixed(2)}</td>
+                  {(() => {
+                    const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    const pendingBsHoy = pending * todayRate;
+                    return (
+                      <>
+                        <td className={`px-3 py-2 text-right ${pending > 0.005 ? "font-medium text-destructive" : "text-green-600"}`}>
+                          ${pending.toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right text-xs text-muted-foreground">
+                          {pending > 0.005 && todayRate > 0
+                            ? `Bs ${pendingBsHoy.toLocaleString("es-VE", { maximumFractionDigits: 2 })}`
+                            : "—"}
+                        </td>
+                      </>
+                    );
+                  })()}
                   <td className="px-3 py-2">
                     <StatusBadge status={inv.status} />
                   </td>
@@ -147,7 +166,7 @@ export default function InvoicesPage() {
               );
             })}
             {list.data?.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">Sin facturas. Emite el mes para generarlas.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">Sin facturas. Emite el mes para generarlas.</td></tr>
             )}
           </tbody>
         </table>
