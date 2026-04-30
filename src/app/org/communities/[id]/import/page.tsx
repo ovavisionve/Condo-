@@ -7,14 +7,15 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 
 // ─── Tipos de importación disponibles ────────────────────────────────────────
-type Tab = "units" | "residents" | "invoices" | "expenses" | "payments";
+type Tab = "migration" | "units" | "residents" | "invoices" | "expenses" | "payments";
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "units",     label: "Unidades",          icon: "🏠" },
-  { id: "residents", label: "Residentes",         icon: "👥" },
-  { id: "invoices",  label: "Deudas históricas",  icon: "📄" },
-  { id: "expenses",  label: "Gastos históricos",  icon: "📋" },
-  { id: "payments",  label: "Pagos históricos",   icon: "💳" },
+const TABS: { id: Tab; label: string; icon: string; highlight?: boolean }[] = [
+  { id: "migration", label: "Migración completa", icon: "🚀", highlight: true },
+  { id: "units",     label: "Unidades",            icon: "🏠" },
+  { id: "residents", label: "Solo residentes",      icon: "👥" },
+  { id: "invoices",  label: "Solo deudas",          icon: "📄" },
+  { id: "expenses",  label: "Gastos históricos",    icon: "📋" },
+  { id: "payments",  label: "Pagos históricos",     icon: "💳" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -58,15 +59,18 @@ function parseXlsxFile(file: File): Promise<Record<string, string>[]> {
 }
 
 // ─── Resultado de importación ─────────────────────────────────────────────────
-function ImportResult({ result }: { result: { created: number; skipped: number; errors: string[] } | null }) {
+function ImportResult({ result }: { result: { created: number; skipped: number; errors: string[]; extra?: string } | null }) {
   if (!result) return null;
   return (
     <div className="mt-4 space-y-2">
-      <div className="rounded-lg border bg-green-50 border-green-200 px-4 py-3 text-sm">
-        <span className="font-semibold text-green-700">✅ {result.created} registros importados</span>
-        {result.skipped > 0 && (
-          <span className="ml-3 text-amber-700">⚠️ {result.skipped} omitidos</span>
-        )}
+      <div className="rounded-lg border bg-green-50 border-green-200 px-4 py-3 text-sm space-y-0.5">
+        <div>
+          <span className="font-semibold text-green-700">✅ {result.created} registros importados</span>
+          {result.skipped > 0 && (
+            <span className="ml-3 text-amber-700">⚠️ {result.skipped} omitidos</span>
+          )}
+        </div>
+        {result.extra && <div className="text-green-600 text-xs">{result.extra}</div>}
       </div>
       {result.errors.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 space-y-1 max-h-40 overflow-y-auto">
@@ -95,7 +99,7 @@ function ImportPanel({
   onDownloadTemplate: () => void;
   onImport: (rows: Record<string, string>[]) => void;
   isPending: boolean;
-  result: { created: number; skipped: number; errors: string[] } | null;
+  result: { created: number; skipped: number; errors: string[]; extra?: string } | null;
   previewRows: Record<string, string>[];
   setPreviewRows: (r: Record<string, string>[]) => void;
 }) {
@@ -218,6 +222,7 @@ export default function ImportPage() {
   const [tab, setTab] = useState<Tab>("units");
 
   // Preview rows por tab
+  const [migrationRows, setMigrationRows] = useState<Record<string, string>[]>([]);
   const [unitsRows,     setUnitsRows]     = useState<Record<string, string>[]>([]);
   const [residentsRows, setResidentsRows] = useState<Record<string, string>[]>([]);
   const [invoicesRows,  setInvoicesRows]  = useState<Record<string, string>[]>([]);
@@ -225,11 +230,35 @@ export default function ImportPage() {
   const [paymentsRows,  setPaymentsRows]  = useState<Record<string, string>[]>([]);
 
   // Mutations
+  const bulkMigration = trpc.finance.bulkImportMigration.useMutation();
   const bulkUnits     = trpc.org.units.bulkCreate.useMutation();
   const bulkResidents = trpc.org.persons.bulkImport.useMutation();
   const bulkInvoices  = trpc.finance.bulkImportInvoices.useMutation();
   const bulkExpenses  = trpc.finance.bulkImportExpenses.useMutation();
   const bulkPayments  = trpc.finance.bulkImportPayments.useMutation();
+
+  // ── Migración completa (residente + deuda) ────────────────────────
+  const handleImportMigration = (rows: Record<string, string>[]) => {
+    const mapped = rows.map((r) => ({
+      unitCode:    String(r.unidad      ?? r.unitCode    ?? "").trim(),
+      firstName:   String(r.nombre      ?? r.firstName   ?? "").trim(),
+      lastName:    String(r.apellido    ?? r.lastName    ?? "").trim(),
+      idType:      (r.tipo_cedula ?? r.idType ?? "CEDULA_V") as "CEDULA_V" | "CEDULA_E" | "RIF" | "PASSPORT" | "OTHER",
+      idNumber:    String(r.cedula      ?? r.idNumber    ?? "").trim(),
+      email:       String(r.email       ?? "").trim()  || undefined,
+      phone:       String(r.telefono    ?? r.phone      ?? "").trim() || undefined,
+      whatsapp:    String(r.whatsapp    ?? "").trim()  || undefined,
+      role:        (r.rol ?? r.role ?? "OWNER") as "OWNER" | "TENANT",
+      deudaUsd:    Number(r.deuda_usd   ?? r.deudaUsd   ?? 0),
+      deudaBs:     r.deuda_bs  !== "" && r.deuda_bs  != null ? Number(r.deuda_bs)  : undefined,
+      tasa:        r.tasa      !== "" && r.tasa      != null ? Number(r.tasa)      : undefined,
+      descripcion: String(r.descripcion ?? "").trim() || undefined,
+      fechaVence:  String(r.fecha_vence ?? r.fechaVence ?? "").trim() || undefined,
+      pagadoUsd:   Number(r.pagado_usd  ?? r.pagadoUsd  ?? 0),
+      notas:       String(r.notas       ?? "").trim() || undefined,
+    }));
+    bulkMigration.mutate({ organizationId, communityId, rows: mapped });
+  };
 
   // ── Unidades ──────────────────────────────────────────────────────
   const handleImportUnits = (rows: Record<string, string>[]) => {
@@ -328,6 +357,8 @@ export default function ImportPage() {
             className={`px-4 py-2 text-sm border-b-2 transition-colors ${
               tab === t.id
                 ? "border-blue-600 text-blue-700 font-medium"
+                : t.highlight
+                ? "border-transparent text-blue-600 font-medium hover:text-blue-700"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -338,6 +369,63 @@ export default function ImportPage() {
 
       {/* Contenido según tab */}
       <div className="max-w-4xl">
+
+        {/* ─── MIGRACIÓN COMPLETA ─── */}
+        {tab === "migration" && (
+          <ImportPanel
+            title="Migración completa — Residente + Deuda en un solo Excel"
+            description={
+              <span>
+                <strong>Ideal para migrar desde otro sistema.</strong> Cada fila crea el residente,
+                lo asigna a su unidad y, si tiene deuda (<code>deuda_usd</code> &gt; 0), genera
+                automáticamente su factura pendiente con el estado correcto
+                (PAID / PARTIAL / OVERDUE / ISSUED). Si el residente ya existe se actualizan sus datos.
+              </span>
+            }
+            fields={[
+              { key: "unidad",      label: "Código de la unidad (debe existir ya en el sistema)", required: true },
+              { key: "nombre",      label: "Primer nombre del residente",                          required: true },
+              { key: "apellido",    label: "Apellido",                                             required: true },
+              { key: "cedula",      label: "Número de cédula / RIF / pasaporte",                   required: true },
+              { key: "tipo_cedula", label: "CEDULA_V / CEDULA_E / RIF / PASSPORT / OTHER",        required: false, note: "por defecto CEDULA_V" },
+              { key: "email",       label: "Correo electrónico",                                   required: false },
+              { key: "telefono",    label: "Teléfono",                                             required: false },
+              { key: "whatsapp",    label: "WhatsApp",                                             required: false },
+              { key: "rol",         label: "OWNER (propietario) / TENANT (inquilino)",             required: false, note: "por defecto OWNER" },
+              { key: "deuda_usd",   label: "Deuda total en USD (0 si no debe nada)",              required: false, note: "si > 0 se crea factura" },
+              { key: "deuda_bs",    label: "Deuda en Bs (opcional, se calcula con tasa)",         required: false },
+              { key: "tasa",        label: "Tasa USD→Bs al momento de la deuda",                  required: false },
+              { key: "descripcion", label: "Concepto de la deuda (ej: Cuotas pendientes 2025)",   required: false },
+              { key: "fecha_vence", label: "Fecha de vencimiento de la deuda (YYYY-MM-DD)",       required: false },
+              { key: "pagado_usd",  label: "Monto ya abonado en USD (si hubo pagos parciales)",   required: false },
+              { key: "notas",       label: "Notas adicionales",                                    required: false },
+            ]}
+            onDownloadTemplate={() => downloadXlsx(
+              ["unidad","nombre","apellido","cedula","tipo_cedula","email","telefono","whatsapp","rol","deuda_usd","deuda_bs","tasa","descripcion","fecha_vence","pagado_usd","notas"],
+              [
+                ["A-101","María",   "González","12345678","CEDULA_V","maria@email.com","04141234567","04141234567","OWNER","100.00","","","Cuotas pendientes 2025","2025-12-31","0",   ""],
+                ["A-102","Pedro",   "Pérez",   "23456789","CEDULA_V","pedro@email.com","04161234567","",            "OWNER","50.00", "","","Deuda acumulada",       "2025-06-30","20.00","Pagó parcial en efectivo"],
+                ["B-201","Empresa", "SRL",     "J-123456","RIF",     "admin@emp.com",  "",            "",            "OWNER","0",    "","","",                      "",           "0",   "Sin deuda pendiente"],
+                ["B-202","Luis",    "Torres",  "34567890","CEDULA_V","",               "04143333333","04143333333","OWNER","200.00","","","3 meses sin pagar",     "2025-11-30","0",   ""],
+              ],
+              "plantilla_migracion_completa.xlsx",
+            )}
+            onImport={handleImportMigration}
+            isPending={bulkMigration.isPending}
+            result={
+              bulkMigration.data
+                ? {
+                    created: bulkMigration.data.residents,
+                    skipped: bulkMigration.data.skipped,
+                    errors:  bulkMigration.data.errors,
+                    extra:   `${bulkMigration.data.invoices} factura(s) de deuda generada(s)`,
+                  }
+                : null
+            }
+            previewRows={migrationRows}
+            setPreviewRows={setMigrationRows}
+          />
+        )}
 
         {/* ─── UNIDADES ─── */}
         {tab === "units" && (

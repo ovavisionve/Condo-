@@ -977,4 +977,186 @@ export const financeRouter = router({
       }
       return { created, skipped, errors };
     }),
+
+  /**
+   * Migración completa: residente + deuda en un solo Excel.
+   * Por cada fila: upsert person → asignar unidad → crear factura si hay deuda.
+   */
+  bulkImportMigration: orgProcedure
+    .input(
+      orgIdInput.extend({
+        communityId: z.string(),
+        rows: z.array(z.object({
+          // Unidad
+          unitCode:    z.string().min(1),
+          // Persona
+          firstName:   z.string().min(1),
+          lastName:    z.string().min(1),
+          idType:      z.enum(["CEDULA_V", "CEDULA_E", "RIF", "PASSPORT", "OTHER"]).default("CEDULA_V"),
+          idNumber:    z.string().min(1),
+          email:       z.string().email().optional().or(z.literal("")),
+          phone:       z.string().optional(),
+          whatsapp:    z.string().optional(),
+          role:        z.enum(["OWNER", "TENANT"]).default("OWNER"),
+          // Deuda (opcional — si deudaUsd > 0 se crea una factura)
+          deudaUsd:    z.coerce.number().nonnegative().default(0),
+          deudaBs:     z.coerce.number().nonnegative().optional(),
+          tasa:        z.coerce.number().positive().optional(),
+          descripcion: z.string().optional(),
+          fechaVence:  z.string().optional(), // YYYY-MM-DD
+          pagadoUsd:   z.coerce.number().nonnegative().default(0),
+          notas:       z.string().optional(),
+        })).min(1).max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const rate = await getCurrentRate("BCV");
+      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
+      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+
+      // Cargar mapa de unidades
+      const units = await ctx.db.unit.findMany({
+        where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
+        select: { id: true, code: true },
+      });
+      const unitMap = new Map(units.map((u) => [u.code.toLowerCase(), u.id]));
+
+      // Base para número de factura
+      const lastInv = await ctx.db.invoice.findFirst({
+        where: { organizationId: input.organizationId, invoiceNumber: { startsWith: "IMP-" } },
+        orderBy: { invoiceNumber: "desc" },
+        select: { invoiceNumber: true },
+      });
+      let seqBase = lastInv
+        ? (parseInt(lastInv.invoiceNumber.replace(/\D/g, ""), 10) || 0)
+        : 0;
+
+      let residents = 0;
+      let invoices  = 0;
+      let skipped   = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]!;
+        try {
+          // 1. Encontrar unidad
+          const unitId = unitMap.get(row.unitCode.toLowerCase());
+          if (!unitId) {
+            errors.push(`Fila ${i + 2}: unidad "${row.unitCode}" no encontrada`);
+            skipped++;
+            continue;
+          }
+
+          // 2. Upsert persona
+          const person = await ctx.db.person.upsert({
+            where: {
+              organizationId_idType_idNumber: {
+                organizationId: input.organizationId,
+                idType: row.idType,
+                idNumber: row.idNumber,
+              },
+            },
+            update: {
+              firstName: row.firstName,
+              lastName:  row.lastName,
+              email:     row.email || null,
+              phone:     row.phone || null,
+              whatsapp:  row.whatsapp || null,
+            },
+            create: {
+              organizationId: input.organizationId,
+              firstName: row.firstName,
+              lastName:  row.lastName,
+              idType:    row.idType,
+              idNumber:  row.idNumber,
+              email:     row.email || null,
+              phone:     row.phone || null,
+              whatsapp:  row.whatsapp || null,
+            },
+          });
+
+          // 3. Asignar a unidad (ownership o tenancy)
+          if (row.role === "OWNER") {
+            const exists = await ctx.db.ownership.findFirst({
+              where: { unitId, personId: person.id, endDate: null },
+            });
+            if (!exists) {
+              await ctx.db.ownership.create({
+                data: { unitId, personId: person.id, sharePercent: "100", startDate: new Date() },
+              });
+            }
+          } else {
+            const exists = await ctx.db.tenancy.findFirst({
+              where: { unitId, personId: person.id, endDate: null },
+            });
+            if (!exists) {
+              await ctx.db.tenancy.create({
+                data: { unitId, personId: person.id, startDate: new Date() },
+              });
+            }
+          }
+          residents++;
+
+          // 4. Crear factura de deuda si aplica
+          if (row.deudaUsd > 0) {
+            const totalUsd = new Decimal(row.deudaUsd);
+            const paidUsd  = new Decimal(row.pagadoUsd);
+            const effectiveRate = row.tasa ? new Decimal(row.tasa) : rateVal;
+            const effectiveSrc: import("@prisma/client").ExchangeSource = row.tasa ? "MANUAL" : src;
+            const totalBss = row.deudaBs != null
+              ? new Decimal(row.deudaBs)
+              : totalUsd.mul(effectiveRate);
+            const paidBss  = paidUsd.mul(effectiveRate);
+
+            // Fecha de vencimiento: la indicada o hace 1 mes (ya vencida por ser histórica)
+            const dueDate = row.fechaVence
+              ? new Date(row.fechaVence)
+              : (() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d; })();
+
+            const pending = totalUsd.minus(paidUsd);
+            const status: import("@prisma/client").InvoiceStatus =
+              pending.lte(0)   ? "PAID" :
+              paidUsd.gt(0)    ? "PARTIAL" :
+              dueDate < new Date() ? "OVERDUE" :
+              "ISSUED";
+
+            seqBase++;
+            await ctx.db.invoice.create({
+              data: {
+                organizationId: input.organizationId,
+                communityId:    input.communityId,
+                unitId,
+                invoiceNumber:  `IMP-${String(seqBase).padStart(6, "0")}`,
+                periodYear:     new Date().getFullYear(),
+                periodMonth:    new Date().getMonth() + 1,
+                issuedAt:       new Date(),
+                dueDate,
+                totalUsd: totalUsd.toFixed(2),
+                totalBss: totalBss.toFixed(2),
+                paidUsd:  paidUsd.toFixed(2),
+                paidBss:  paidBss.toFixed(2),
+                exchangeRate:   effectiveRate.toFixed(8),
+                exchangeSource: effectiveSrc,
+                currencyPrimary: "USD",
+                status,
+                notes: row.notas ?? `Migrado desde sistema anterior — ${row.firstName} ${row.lastName}`,
+                items: {
+                  create: [{
+                    description: row.descripcion ?? `Deuda pendiente — ${row.firstName} ${row.lastName}`,
+                    amountUsd:   totalUsd.toFixed(2),
+                    amountBss:   totalBss.toFixed(2),
+                    aliquot:     "0",
+                  }],
+                },
+              },
+            });
+            invoices++;
+          }
+        } catch (e) {
+          errors.push(`Fila ${i + 2} (${row.unitCode} / ${row.idNumber}): ${e instanceof Error ? e.message : "error"}`);
+          skipped++;
+        }
+      }
+      return { residents, invoices, skipped, errors };
+    }),
 });
