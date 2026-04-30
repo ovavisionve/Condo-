@@ -44,24 +44,6 @@ export function OrgContextProvider({ orgs, children }: { orgs: OrgSummary[]; chi
 
   return (
     <OrgContext.Provider value={{ orgs, selectedOrgId, setSelectedOrgId }}>
-      <div className="border-b bg-background">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-6 py-2 text-sm">
-          <span className="text-muted-foreground">Organización:</span>
-          {orgs.length === 1 ? (
-            <strong>{orgs[0]!.name}</strong>
-          ) : (
-            <select
-              value={selectedOrgId}
-              onChange={(e) => setSelectedOrgId(e.target.value)}
-              className="rounded border bg-background px-2 py-1"
-            >
-              {orgs.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-          )}
-        </div>
-      </div>
       {children}
     </OrgContext.Provider>
   );

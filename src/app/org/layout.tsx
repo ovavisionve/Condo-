@@ -1,10 +1,8 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
-import { auth, signOut } from "@/server/auth/config";
+import { auth } from "@/server/auth/config";
 import { canManageOrganization, isPlatform } from "@/server/auth/permissions";
-import { Button } from "@/components/ui/button";
-import { NotificationBell } from "@/components/NotificationBell";
 import { OrgContextProvider } from "./OrgContext";
+import { AppSidebar } from "@/components/admin/AppSidebar";
 import { db } from "@/server/db/client";
 
 export default async function OrgLayout({ children }: { children: React.ReactNode }) {
@@ -13,10 +11,8 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
 
   const memberships = session.user.memberships ?? [];
   const isPlat = memberships.some((m) => isPlatform(m.role));
-  // Permitir ORG_ADMIN, COMMUNITY_ADMIN (personal con cargo) y PLATFORM roles
   const canManage = memberships.some((m) => canManageOrganization(m.role));
   if (!canManage) redirect("/");
-  // Solo ORG_ADMIN+ puede gestionar personal
   const isOrgAdmin = memberships.some((m) => isPlatform(m.role) || m.role === "ORG_ADMIN");
 
   const orgs = isPlat
@@ -44,38 +40,13 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
 
   return (
     <OrgContextProvider orgs={orgs}>
-      <div className="min-h-screen bg-muted/30">
-        <header className="border-b bg-background">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-            <div className="flex items-center gap-6">
-              <Link href="/org" className="text-lg font-semibold">
-                Condominios <span className="text-sm text-muted-foreground">/ Org</span>
-              </Link>
-              <nav className="flex gap-4 text-sm">
-                <Link href="/org" className="hover:underline">Edificios</Link>
-                {isOrgAdmin && (
-                  <>
-                    <Link href="/org/members" className="hover:underline">Personal</Link>
-                    <Link href="/org/settings" className="hover:underline">Configuración</Link>
-                  </>
-                )}
-              </nav>
-            </div>
-            <div className="flex items-center gap-3">
-              <NotificationBell />
-              <span className="text-sm text-muted-foreground">{session.user.email}</span>
-              <form
-                action={async () => {
-                  "use server";
-                  await signOut({ redirectTo: "/login" });
-                }}
-              >
-                <Button variant="outline" size="sm" type="submit">Salir</Button>
-              </form>
-            </div>
+      <div className="flex h-screen overflow-hidden bg-gray-50">
+        <AppSidebar userEmail={session.user.email ?? ""} isOrgAdmin={isOrgAdmin} />
+        <main className="flex-1 overflow-y-auto">
+          <div className="p-6 max-w-5xl mx-auto">
+            {children}
           </div>
-        </header>
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+        </main>
       </div>
     </OrgContextProvider>
   );
