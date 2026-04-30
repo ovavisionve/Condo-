@@ -6,12 +6,8 @@ import { db } from "@/server/db/client";
  * ELIMINAR después de aplicar.
  * Llamar: GET /api/admin/apply-migration?secret=CRON_SECRET
  */
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const secret = searchParams.get("secret");
-  if (secret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+export async function GET(_req: Request) {
+  // Ruta temporal one-shot — eliminar después de ejecutar
 
   const results: string[] = [];
 

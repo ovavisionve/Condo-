@@ -50,3 +50,4 @@ logs/
 .cache
 
 .vercel
+.env*.local
