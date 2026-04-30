@@ -12,7 +12,7 @@ const db = new PrismaClient();
 
 // ── Propietarios de prueba ─────────────────────────────────────────────────
 const OWNERS = [
-  { firstName: "Luis",      lastName: "Ilarraza",   idNumber: "12.345.678", email: "ovavision.ve@gmail.com",     phone: "04141234567", whatsapp: "584141234567" },
+  { firstName: "Luis",      lastName: "Ilarraza",   idNumber: "12.345.678", email: "luissilvalaguna1@gmail.com", phone: "04141234567", whatsapp: "584141234567" },
   { firstName: "María",     lastName: "González",   idNumber: "10.234.567", email: "maria.gonzalez@ejemplo.com", phone: "04242345678", whatsapp: "584242345678" },
   { firstName: "José",      lastName: "Rodríguez",  idNumber: "8.123.456",  email: "jose.rodriguez@ejemplo.com", phone: "04143456789", whatsapp: "584143456789" },
   { firstName: "Ana",       lastName: "Martínez",   idNumber: "15.432.109", email: "ana.martinez@ejemplo.com",   phone: "04124567890", whatsapp: "584124567890" },
@@ -147,7 +147,7 @@ async function main() {
 
   // Unidades donde asignaremos los propietarios (variadas entre las 2 torres)
   const TARGET_UNITS = [
-    "A-1A", "A-5B", "A-10C", "A-15D", "A-20A",
+    "A-15C", "A-5B", "A-10C", "A-20A", "A-2D",
     "B-1B", "B-6C", "B-12D", "B-18A", "A-24PH1",
   ];
 
@@ -202,7 +202,7 @@ async function main() {
 ╠══════════════════════════════════════════════════════════╣
 ║  Para probar el portal de residentes:                    ║
 ║  → https://condominios-theta.vercel.app/portal           ║
-║  → Email: ovavision.ve@gmail.com (Unidad A-1A)           ║
+║  → Email: luissilvalaguna1@gmail.com (Unidad A-15C)      ║
 ╚══════════════════════════════════════════════════════════╝
 `);
 }

@@ -335,3 +335,110 @@ pnpm prisma migrate reset
 - **Entorno:** Windows. Bash disponible. Prisma con Node 22+ (Node 24 ha dado problemas en otros proyectos según memoria).
 - **Puertos locales:** Postgres 5435, Redis 6380, App 3000, MinIO 9000/9001. (Evitar 5434 que usa otro proyecto.)
 - **Package manager:** pnpm.
+
+---
+
+## 14. Producción y deploy
+
+### 14.1 Infraestructura
+
+| Servicio | Detalle |
+|---|---|
+| **Vercel** | Cuenta `luis-projects-f851f1b5`, proyecto `condominios`, prj `prj_HxTN21gH7jdpyy9dKFQ9t61GUE3f` |
+| **URL prod** | `https://condominios-theta.vercel.app` |
+| **Supabase** | Proyecto **Innova** — `nawbxhpndosiigzpnwlt.supabase.co` |
+| **DB** | Postgres en Supabase (pooler 6543 transaccional, 5432 directo) |
+| **SMTP** | Hotmail `opppe56hugochavez@hotmail.com` (host `smtp-mail.outlook.com`, port 587, pass `hugochavez2026`) |
+| **Cron** | Vercel Cron — `/api/cron/bcv` (tasa BCV diaria) y `/api/cron/publish-invoices` (publicar borradores día 1) |
+
+### 14.2 Variables Vercel (production)
+
+Encriptadas en Vercel (no se leen con `vercel env pull`, valores empty):
+- `DATABASE_URL`, `NEXTAUTH_SECRET`, `CRON_SECRET`, `EMAIL_FROM`, `PLATFORM_OWNER_EMAIL`
+
+Visibles:
+- `NEXTAUTH_URL=https://condominios-theta.vercel.app`
+- `SMTP_*` (Hotmail)
+- `VERCEL_ENV=production`
+
+### 14.3 Schema en Supabase Innova
+
+- Aplicado vía **Supabase SQL Editor** (no por `prisma migrate deploy` directo — los pooler/passwords de Supabase fallaron en conexión directa por línea de comandos).
+- Archivo de referencia: `supabase_innova_completo.sql` en raíz del repo (también guardado como `Para que leas Claude pendejo.txt` en Downloads).
+- Pattern: `DROP TABLE IF EXISTS ... CASCADE` + `DROP TYPE ... CASCADE` al inicio para reset idempotente, luego CREATE de tablas, índices, FKs, marcador en `_prisma_migrations`, y seed de Plan FREE/STANDARD/PRO + User platform owner.
+
+### 14.4 Auth / Password hashing
+
+- **Auth provider:** NextAuth Credentials, validación con `bcryptjs` (`bcrypt.compare`).
+- **Migración:** commit `4829c4d` cambió de argon2id → bcryptjs (rounds=12).
+- **Hash bcrypt para `admin1234`** (seed del platform owner): `$2b$12$9Qfau.ZWENkNuQcKz5Z0ZeXBvVysuhu0115SqDjEUF/3gEyxRzQKa`
+- **CRÍTICO:** si el seed SQL trae hash argon2id, el login va a fallar. Siempre usar bcrypt en producción. Para arreglar:
+  ```sql
+  UPDATE "User"
+  SET "passwordHash" = '$2b$12$9Qfau.ZWENkNuQcKz5Z0ZeXBvVysuhu0115SqDjEUF/3gEyxRzQKa'
+  WHERE email = 'admin@condominios.local';
+  ```
+
+### 14.5 Onboarding "Los Arrayanes" (Naguanagua, Valencia)
+
+Comunidad real del usuario para producción.
+- **Org slug:** `los-arrayanes`
+- **Plan:** PRO
+- **Estructura:** 188 unidades = 2 torres (A, B) × (23 pisos × 4 aptos A/B/C/D + piso 24 con 2 PH) = 94 × 2
+- **Nomenclatura:** `{torre}-{piso}{letra}` (ej. `A-15C`), PHs `{torre}-24PH1` / `{torre}-24PH2`
+- **Cuota mensual:** USD 20
+- **10 propietarios de prueba** (primer registro = Luis Ilarraza, unidad A-15C, email `luissilvalaguna1@gmail.com`)
+
+**Mecanismo de seeding:**
+- Script local: `scripts/seed-arrayanes.ts` (requiere DATABASE_URL apuntando a Supabase, conexión directa falla con pooler).
+- Ruta API temporal: `src/app/api/admin/seed-arrayanes/route.ts` — se ejecuta UNA vez vía HTTP desde Vercel (que sí tiene la DATABASE_URL real). **Eliminar después de usar.** Commit original `6c172d0`.
+- Para llamar: `GET https://condominios-theta.vercel.app/api/admin/seed-arrayanes` con `Authorization: Bearer ${CRON_SECRET}`. Si CRON_SECRET no se conoce, modificar la ruta para no requerir auth, deployar, llamar, y volver a quitar.
+
+### 14.6 Routes principales
+
+| Ruta | Rol mínimo |
+|---|---|
+| `/` | Redirect: PLATFORM → `/platform`, ORG_ADMIN → `/org`, otros → `/portal` |
+| `/login` | público |
+| `/platform` | PLATFORM_OWNER / PLATFORM_ADMIN |
+| `/platform/organizations` | PLATFORM |
+| `/platform/plans` | PLATFORM |
+| `/org` | ORG_ADMIN |
+| `/org/communities/[id]/...` | COMMUNITY_ADMIN+ (units, residents, finance, maintenance, security, governance, reports, communication) |
+| `/portal` | OWNER / TENANT |
+| `/api/cron/bcv` | cron Vercel (Bearer CRON_SECRET) |
+| `/api/cron/publish-invoices` | cron Vercel día 1 |
+| `/api/trpc/[trpc]` | tRPC handler |
+
+### 14.7 Deploy workflow
+
+```bash
+# Desde el dir del proyecto en Windows
+vercel deploy --prod
+```
+- No hay remote git configurado (`git remote -v` vacío). El deploy es **vía Vercel CLI**, no por push a GitHub.
+- Todos los commits son locales en master. Cuenta CLI: `luisilarraza21`.
+
+### 14.8 Commits recientes (últimos 10)
+
+```
+6c172d0 temp: seed route Los Arrayanes para produccion (eliminar despues)
+bd8a1fc feat: mostrar Bs al cambio del dia en vistas del admin
+dcd9ddb feat: portal residente + cuota extra por unidad
+9921396 fix: usar dolarapi.com como fuente principal de tasa BCV
+b6e87d6 feat: boton actualizar tasa BCV + fallback MANUAL en issueMonthlyInvoices
+5037492 Add scheduled invoice publishing: draft mode + cron on day 1 of month
+221513a Connect email channel to notification service - sends via Hotmail on every event
+4acf1df Add email templates: schema, router, UI with WhatsApp/Email sub-tabs in Communication
+c065b2d Translate all English enum labels to Spanish throughout the UI
+4829c4d migrate: argon2id -> bcryptjs en passwordHash
+```
+
+### 14.9 Lecciones aprendidas (para no repetir)
+
+1. **Mantener este CLAUDE.md actualizado** después de cada feature/sesión grande. Las compactaciones de contexto borran todo lo demás.
+2. **Conexión directa a Supabase desde CLI Windows falla siempre** (autenticación con dot/encoding). Usar SQL Editor del dashboard.
+3. **`vercel env pull` devuelve valores vacíos** para secretos encriptados. Si necesitas el valor real, redeploy con cambios temporales o usar dashboard Vercel.
+4. **Seed de password siempre con bcrypt** (rounds=12). Nunca dejar argon2 en seed que vaya a producción.
+5. **Antes de aplicar SQL grande en Supabase, agregar DROP CASCADE al inicio** para idempotencia (evita error 42710 "type already exists").
+6. **El root page redirige a `/portal` si no hay memberships** — si "todos los links van al portal" es porque el usuario no tiene sesión válida (login falla por hash incorrecto).
