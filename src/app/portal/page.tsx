@@ -40,8 +40,10 @@ function ResidentLoginForm({ onBack }: { onBack: () => void }) {
     setLoading(false);
     if (res?.error) {
       setError("Email o contraseña incorrectos. Si olvidaste tu contraseña, contacta a la administración.");
+      return;
     }
-    // Si ok, useSession detectará el cambio y el componente padre re-renderizará
+    // Recargar la página para que getBySession lea la nueva sesión del cookie
+    window.location.href = "/portal";
   };
 
   return (
