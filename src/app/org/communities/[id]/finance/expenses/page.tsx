@@ -44,6 +44,12 @@ const CAT_LABELS: Record<string, string> = {
   OTHER:          "Otro",
 };
 
+/** Devuelve la etiqueta a mostrar: si es OTHER y hay customCategory, muestra esa. */
+function categoryLabel(category: string, customCategory?: string | null) {
+  if (category === "OTHER" && customCategory?.trim()) return customCategory.trim();
+  return CAT_LABELS[category] ?? category;
+}
+
 const today = new Date();
 
 export default function ExpensesPage() {
@@ -101,7 +107,7 @@ export default function ExpensesPage() {
           <tbody>
             {list.data?.map((e) => (
               <tr key={e.id} className="border-t">
-                <td className="px-3 py-2">{CAT_LABELS[e.category] ?? e.category}</td>
+                <td className="px-3 py-2">{categoryLabel(e.category, (e as { customCategory?: string | null }).customCategory)}</td>
                 <td className="px-3 py-2">{e.description}</td>
                 <td className="px-3 py-2 text-muted-foreground">{e.supplierName ?? "—"}</td>
                 <td className="px-3 py-2 text-right">${Number(e.amountUsd.toString()).toFixed(2)}</td>
@@ -157,6 +163,7 @@ function NewExpenseDialog({
 }) {
   const [form, setForm] = useState({
     category: "ELECTRICITY" as (typeof CATS)[number],
+    customCategory: "",
     description: "",
     amount: "",
     currencyPrimary: "USD" as "USD" | "VES",
@@ -176,6 +183,9 @@ function NewExpenseDialog({
         organizationId,
         communityId,
         category: form.category,
+        customCategory: form.category === "OTHER" && form.customCategory.trim()
+          ? form.customCategory.trim()
+          : undefined,
         description: form.description,
         periodYear: form.periodYear,
         periodMonth: form.periodMonth,
@@ -202,7 +212,7 @@ function NewExpenseDialog({
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={form.category}
-                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number] }))}
+                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number], customCategory: "" }))}
               >
                 {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c] ?? c}</option>)}
               </select>
@@ -212,6 +222,20 @@ function NewExpenseDialog({
               <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
             </div>
           </div>
+
+          {/* Campo extra solo cuando categoría = OTHER */}
+          {form.category === "OTHER" && (
+            <div>
+              <Label>¿Qué tipo de gasto es? <span className="text-muted-foreground text-xs">(nombre de la categoría)</span></Label>
+              <Input
+                placeholder="Ej: Piscina, Planta eléctrica, Pintura..."
+                value={form.customCategory}
+                onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
+                maxLength={80}
+              />
+            </div>
+          )}
+
           <div>
             <Label>Descripción</Label>
             <Input aria-label="Descripción" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />

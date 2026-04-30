@@ -26,6 +26,7 @@ export default function InvoicesPage() {
   const organizationId = useOrgId();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
+  const community = trpc.org.communities.byId.useQuery({ organizationId, id: communityId });
   const list = trpc.finance.invoices.list.useQuery({ organizationId, communityId, year, month });
   const issue = trpc.finance.invoices.issueMonth.useMutation();
   const sendEmail = trpc.finance.invoices.sendByEmail.useMutation();
@@ -61,7 +62,9 @@ export default function InvoicesPage() {
   const onIssue = async (asDraft = false) => {
     setError(null);
     setSuccess(null);
-    const dueDate = new Date(year, month, 5); // día 5 del mes siguiente como vencimiento
+    const dueDays = (community.data as { dueDaysAfterIssue?: number } | undefined)?.dueDaysAfterIssue ?? 5;
+    const issuedDate = new Date();
+    const dueDate = new Date(issuedDate.getTime() + dueDays * 24 * 60 * 60 * 1000);
     try {
       const r = await issue.mutateAsync({
         organizationId,

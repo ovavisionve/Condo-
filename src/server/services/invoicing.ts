@@ -50,6 +50,7 @@ export type CreateExpenseInput = {
   amount: Decimal.Value;
   currencyPrimary: Currency;
   exchangeSource?: ExchangeSource;
+  customCategory?: string;
   supplierName?: string;
   invoiceNumber?: string;
   receiptDate?: Date;
@@ -68,6 +69,7 @@ export async function registerExpense(input: CreateExpenseInput) {
       organizationId: input.organizationId,
       communityId: input.communityId,
       category: input.category,
+      customCategory: input.customCategory ?? null,
       description: input.description,
       periodYear: input.periodYear,
       periodMonth: input.periodMonth,

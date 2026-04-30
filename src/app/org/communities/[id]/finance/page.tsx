@@ -19,6 +19,7 @@ export default function FinanceDashboard() {
   const setManual = trpc.finance.exchange.setManual.useMutation();
   const refreshBcv = trpc.finance.exchange.refreshBcv.useMutation();
   const setFee = trpc.org.communities.setMonthlyFee.useMutation();
+  const updateCommunity = trpc.org.communities.update.useMutation();
   const utils = trpc.useUtils();
   const [manualVal, setManualVal] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -27,6 +28,9 @@ export default function FinanceDashboard() {
   const [feeVal, setFeeVal] = useState("");
   const [feeErr, setFeeErr] = useState<string | null>(null);
   const [feeOk, setFeeOk] = useState(false);
+  const [dueDaysVal, setDueDaysVal] = useState("");
+  const [dueDaysErr, setDueDaysErr] = useState<string | null>(null);
+  const [dueDaysOk, setDueDaysOk] = useState(false);
 
   const onSetFee = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,6 +79,25 @@ export default function FinanceDashboard() {
   };
 
   const currentFee = community.data?.monthlyFeeUsd ? Number(community.data.monthlyFeeUsd).toFixed(2) : null;
+  const currentDueDays = (community.data as { dueDaysAfterIssue?: number } | undefined)?.dueDaysAfterIssue ?? 5;
+
+  const onSetDueDays = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDueDaysErr(null);
+    setDueDaysOk(false);
+    try {
+      await updateCommunity.mutateAsync({
+        organizationId,
+        id: communityId,
+        dueDaysAfterIssue: Number(dueDaysVal),
+      });
+      setDueDaysOk(true);
+      setDueDaysVal("");
+      void utils.org.communities.byId.invalidate();
+    } catch (e: unknown) {
+      setDueDaysErr(e instanceof Error ? e.message : "Error");
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -108,6 +131,38 @@ export default function FinanceDashboard() {
           </form>
           {feeErr && <p className="mt-2 text-sm text-destructive">{feeErr}</p>}
           {feeOk && <p className="mt-2 text-sm text-green-600">✓ Cuota actualizada. Se aplicará en la próxima emisión de facturas.</p>}
+        </CardContent>
+      </Card>
+
+      {/* ── Días de vencimiento ──────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Días de vencimiento de facturas</CardTitle>
+          <CardDescription>
+            Actualmente: <strong>{currentDueDays} días</strong> después de la fecha de emisión.
+            {" "}Las facturas emitidas hoy vencerían el día {new Date(new Date().setDate(new Date().getDate() + currentDueDays)).toLocaleDateString("es-VE")}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSetDueDays} className="flex items-end gap-2 max-w-sm">
+            <div className="flex-1">
+              <Label>Nuevo valor (días)</Label>
+              <Input
+                type="number"
+                min="1"
+                max="365"
+                placeholder={String(currentDueDays)}
+                value={dueDaysVal}
+                onChange={(e) => { setDueDaysVal(e.target.value); setDueDaysOk(false); }}
+                required
+              />
+            </div>
+            <Button type="submit" disabled={updateCommunity.isPending}>
+              {updateCommunity.isPending ? "..." : "Actualizar"}
+            </Button>
+          </form>
+          {dueDaysErr && <p className="mt-2 text-sm text-destructive">{dueDaysErr}</p>}
+          {dueDaysOk && <p className="mt-2 text-sm text-green-600">✓ Actualizado. Se aplicará en la próxima emisión de facturas.</p>}
         </CardContent>
       </Card>
 

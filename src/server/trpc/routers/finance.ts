@@ -116,6 +116,7 @@ export const financeRouter = router({
         orgIdInput.extend({
           communityId: z.string(),
           category: z.enum(EXPENSE_CATEGORIES),
+          customCategory: z.string().max(80).optional(),
           description: z.string().min(2),
           periodYear: z.number().int().min(2020).max(2100),
           periodMonth: z.number().int().min(1).max(12),

@@ -129,8 +129,10 @@ model Community {
   towersCount     Int          @default(1)
   primaryCurrency  Currency     @default(USD)
   // Cuota mensual fija por unidad (si está seteada, se agrega a cada factura del período)
-  monthlyFeeUsd    Decimal?     @db.Decimal(18,2)
-  monthlyFeeSetAt  DateTime?
+  monthlyFeeUsd       Decimal?  @db.Decimal(18,2)
+  monthlyFeeSetAt     DateTime?
+  // Configuración de facturación
+  dueDaysAfterIssue   Int       @default(5)  // días desde emisión hasta vencimiento de la factura
   // Metadata
   foundedAt       DateTime?
   notes           String?
@@ -494,6 +496,7 @@ model Expense {
   communityId     String
   community       Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
   category        ExpenseCategory
+  customCategory  String?         // etiqueta libre cuando category = OTHER
   description     String
   // Período al que aplica
   periodYear      Int
