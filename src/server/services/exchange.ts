@@ -86,17 +86,52 @@ export async function setManualRate(
 }
 
 /**
- * Fetch BCV oficial — scraping directo de www.bcv.org.ve
- *
- * Estructura real del BCV:
- *   <div id="dolar" ...>
- *     <div class="centrado"><strong> 485,22510000 </strong></div>
- *   </div>
- *
- * Parsing: regex en dos pasos para aislar el bloque #dolar y extraer el número.
- * El BCV usa coma como separador decimal (formato venezolano): "485,22510000".
+ * Fetch BCV oficial — intenta dos fuentes en orden:
+ *   1. ve.dolarapi.com  (API pública, funciona desde servidores externos)
+ *   2. Scraping directo de www.bcv.org.ve (funciona en local, puede bloquearse en prod)
  */
 async function fetchBcvRate(): Promise<Decimal | null> {
+  // Fuente 1: ve.dolarapi.com — API pública venezolana que publica la tasa BCV oficial
+  const fromApi = await fetchFromDolarApi();
+  if (fromApi) return fromApi;
+
+  // Fuente 2: scraping directo del BCV (funciona en redes venezolanas / local)
+  const fromScrape = await fetchBcvScrape();
+  return fromScrape;
+}
+
+/** Intenta obtener la tasa desde ve.dolarapi.com */
+async function fetchFromDolarApi(): Promise<Decimal | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) return null;
+      // Respuesta: { fuente, nombre, promedio, promedioCompra, promedioVenta, fechaActualizacion }
+      const data = (await res.json()) as { promedio?: number; promedioVenta?: number };
+      const value = data.promedio ?? data.promedioVenta;
+      if (!value || !isFinite(value) || value < 1) return null;
+      console.info("[exchange] Tasa BCV obtenida de dolarapi.com:", value);
+      return new Decimal(value);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    console.warn("[exchange] dolarapi.com falló:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Scraping directo de www.bcv.org.ve (fallback).
+ * El BCV usa coma como separador decimal: "490,22510000".
+ */
+async function fetchBcvScrape(): Promise<Decimal | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -116,15 +151,15 @@ async function fetchBcvRate(): Promise<Decimal | null> {
     } finally {
       clearTimeout(timeout);
     }
-
     const rate = parseBcvHtml(html);
     if (rate === null) {
-      console.warn("[exchange] BCV: no se pudo extraer tasa del HTML");
+      console.warn("[exchange] BCV scraping: no se pudo extraer tasa del HTML");
       return null;
     }
+    console.info("[exchange] Tasa BCV obtenida por scraping:", rate);
     return new Decimal(rate);
   } catch (err) {
-    console.warn("[exchange] fetch BCV falló:", err instanceof Error ? err.message : err);
+    console.warn("[exchange] BCV scraping falló:", err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -160,7 +195,7 @@ export async function refreshBcvRate(): Promise<RateInfo> {
   const fetched = await fetchBcvRate();
   if (!fetched) {
     throw new Error(
-      "No se pudo obtener la tasa del BCV. El sitio puede estar caído o bloqueado. Intenta de nuevo en unos minutos.",
+      "No se pudo obtener la tasa automáticamente (dolarapi.com y BCV no respondieron). Ingresa la tasa manualmente.",
     );
   }
   const date = dateOnly(new Date());
