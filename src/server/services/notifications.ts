@@ -21,11 +21,35 @@ interface NotifyParams {
 
 /** Envía una notificación a una persona según los templates configurados. */
 export async function notifyPerson(params: NotifyParams): Promise<void> {
-  const person = await db.person.findUnique({
-    where: { id: params.personId },
-    select: { firstName: true, lastName: true, whatsapp: true, email: true },
-  });
+  const [person, org] = await Promise.all([
+    db.person.findUnique({
+      where: { id: params.personId },
+      select: { firstName: true, lastName: true, whatsapp: true, email: true },
+    }),
+    db.organization.findUnique({
+      where: { id: params.organizationId },
+      select: {
+        name: true,
+        smtpHost: true, smtpPort: true, smtpUser: true,
+        smtpPass: true, smtpFrom: true, smtpSecure: true,
+      },
+    }),
+  ]);
   if (!person) return;
+
+  // SMTP de la organización (tiene prioridad sobre el global)
+  const orgSmtp = org?.smtpHost && org.smtpUser && org.smtpPass
+    ? {
+        host: org.smtpHost,
+        port: org.smtpPort ?? 587,
+        user: org.smtpUser,
+        pass: org.smtpPass,
+        from: org.smtpFrom ?? org.smtpUser,
+        secure: org.smtpSecure,
+      }
+    : null;
+
+  const orgName = org?.name ?? "Administración del Condominio";
 
   const [waTemplate, emailTemplate] = await Promise.all([
     db.whatsAppTemplate.findUnique({
@@ -74,8 +98,8 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
       to: person.email,
       subject: emailSubject,
       html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#374151;max-width:600px;margin:0 auto;padding:24px;">
-        <div style="background:#1e293b;padding:20px 24px;border-radius:8px 8px 0 0;">
-          <p style="margin:0;color:#fff;font-size:18px;font-weight:700;">Residencias Hugo Chávez Frías</p>
+        <div style="background:#1e3a5f;padding:20px 24px;border-radius:8px 8px 0 0;">
+          <p style="margin:0;color:#fff;font-size:18px;font-weight:700;">${orgName}</p>
         </div>
         <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
           ${emailBody.replace(/\n/g, "<br>")}
@@ -83,6 +107,7 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
         <p style="margin-top:16px;color:#9ca3af;font-size:11px;text-align:center;">Correo automático — No responder</p>
       </div>`,
       text: emailBody,
+      orgSmtp,
     });
 
     await db.notification.create({

@@ -556,8 +556,8 @@ export const financeRouter = router({
         });
         const now = new Date();
         const invoiceNumber = `EXTRA-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${unit.code}-${Date.now().toString(36).toUpperCase()}`;
-        return ctx.db.$transaction(async (tx) => {
-          const inv = await tx.invoice.create({
+        const inv = await ctx.db.$transaction(async (tx) => {
+          const created = await tx.invoice.create({
             data: {
               organizationId,
               communityId,
@@ -590,12 +590,38 @@ export const financeRouter = router({
               actorId: ctx.user.id,
               action: "EXTRA_FEE_APPLIED",
               entityType: "Invoice",
-              entityId: inv.id,
+              entityId: created.id,
               after: { unitId, description, amountUsd, notes },
             },
           });
-          return inv;
+          return created;
         });
+
+        // Notificar al propietario activo (fire-and-forget)
+        void (async () => {
+          const { notifyPerson } = await import("@/server/services/notifications");
+          const ownership = await ctx.db.ownership.findFirst({
+            where: { unitId, endDate: null },
+            select: { personId: true },
+          });
+          if (!ownership) return;
+          await notifyPerson({
+            organizationId,
+            communityId,
+            unitId,
+            personId: ownership.personId,
+            event: "INVOICE_ISSUED",
+            vars: {
+              monto_usd: inv.totalUsd.toString(),
+              monto_bs: inv.totalBss.toString(),
+              fecha_vence: dueDate.toLocaleDateString("es-VE"),
+              factura: inv.invoiceNumber,
+              descripcion: description,
+            },
+          }).catch(() => {/* ignorar errores de notificación */});
+        })();
+
+        return inv;
       }),
   }),
 
