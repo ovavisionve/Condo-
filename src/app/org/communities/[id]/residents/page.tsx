@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useRef, useState } from "react";
+import { useRef, useState, useMemo } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../OrgContext";
@@ -26,7 +26,13 @@ const CSV_TEMPLATE = `unidad,nombre,apellido,tipo_id,numero_id,email,telefono,wh
 A-101,Juan,Pérez,CEDULA_V,12345678,juan@email.com,04141234567,584141234567,OWNER
 A-102,María,García,CEDULA_V,87654321,,,584240987654,TENANT`;
 
-// ─── Tipo del residente que devuelve el list ────────────────────────────────
+type DebtInfo = {
+  pendingUsd: string;
+  overdueCount: number;
+  pendingCount: number;
+  lastPaymentAt: Date | string | null;
+};
+
 type PersonData = {
   id: string;
   firstName: string;
@@ -39,6 +45,28 @@ type PersonData = {
   vehicles: Array<{ id: string; type: string; plate?: string | null; brand?: string | null; model?: string | null; color?: string | null }>;
 };
 
+// ─── Badge de deuda ────────────────────────────────────────────────────────
+function DebtBadge({ debt }: { debt: DebtInfo }) {
+  const pending = Number(debt.pendingUsd);
+  if (pending <= 0.005) {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">✓ Solvente</span>;
+  }
+  if (debt.overdueCount > 0) {
+    return (
+      <div className="space-y-0.5">
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+          ⚠ ${pending.toFixed(2)} · {debt.overdueCount} vencida{debt.overdueCount !== 1 ? "s" : ""}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+      ${pending.toFixed(2)} · {debt.pendingCount} pendiente{debt.pendingCount !== 1 ? "s" : ""}
+    </span>
+  );
+}
+
 export default function ResidentsPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -46,6 +74,7 @@ export default function ResidentsPage() {
   const [csvRows, setCsvRows] = useState<ReturnType<typeof parseCSV>>([]);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<{ created: number; skipped: number; errors: string[] } | null>(null);
+  const [search, setSearch] = useState("");
 
   const { data, refetch } = trpc.org.persons.list.useQuery({ organizationId, communityId });
   const bulkImport = trpc.org.persons.bulkImport.useMutation();
@@ -78,15 +107,8 @@ export default function ResidentsPage() {
   const sendCredentials = trpc.org.persons.sendPortalCredentials.useMutation();
 
   const resetForm = () => {
-    setFirstName("");
-    setLastName("");
-    setIdType("CEDULA_V");
-    setIdNumber("");
-    setEmail("");
-    setPhone("");
-    setWhatsapp("");
-    setRole("OWNER");
-    setUnitId("");
+    setFirstName(""); setLastName(""); setIdType("CEDULA_V"); setIdNumber("");
+    setEmail(""); setPhone(""); setWhatsapp(""); setRole("OWNER"); setUnitId("");
     setFormMsg(null);
   };
 
@@ -100,30 +122,17 @@ export default function ResidentsPage() {
     try {
       const person = await createPerson.mutateAsync({
         organizationId,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        idType,
-        idNumber: idNumber.trim(),
+        firstName: firstName.trim(), lastName: lastName.trim(),
+        idType, idNumber: idNumber.trim(),
         email: email.trim() || undefined,
         phone: phone.trim() || undefined,
         whatsapp: whatsapp.trim() || undefined,
       });
       const today = new Date();
       if (role === "OWNER") {
-        await assignOwner.mutateAsync({
-          organizationId,
-          unitId,
-          personId: person.id,
-          sharePercent: 100,
-          startDate: today,
-        });
+        await assignOwner.mutateAsync({ organizationId, unitId, personId: person.id, sharePercent: 100, startDate: today });
       } else {
-        await assignTenant.mutateAsync({
-          organizationId,
-          unitId,
-          personId: person.id,
-          startDate: today,
-        });
+        await assignTenant.mutateAsync({ organizationId, unitId, personId: person.id, startDate: today });
       }
       void refetch();
       setFormMsg({ type: "success", text: `Residente ${person.firstName} ${person.lastName} agregado correctamente.` });
@@ -140,67 +149,89 @@ export default function ResidentsPage() {
     ? { ownerships: data.ownerships, tenancies: data.tenancies }
     : { ownerships: [], tenancies: [] };
 
+  // Estadísticas de deuda
+  const totalOwners = residents.ownerships.length;
+  const totalTenants = residents.tenancies.length;
+  const deudores = [
+    ...residents.ownerships.filter((o) => Number((o as { debt?: DebtInfo }).debt?.pendingUsd ?? "0") > 0.005),
+    ...residents.tenancies.filter((t) => Number((t as { debt?: DebtInfo }).debt?.pendingUsd ?? "0") > 0.005),
+  ];
+  const morosos = [
+    ...residents.ownerships.filter((o) => ((o as { debt?: DebtInfo }).debt?.overdueCount ?? 0) > 0),
+    ...residents.tenancies.filter((t) => ((t as { debt?: DebtInfo }).debt?.overdueCount ?? 0) > 0),
+  ];
+  const totalDeudaUsd = [
+    ...residents.ownerships,
+    ...residents.tenancies,
+  ].reduce((s, r) => s + Number((r as { debt?: DebtInfo }).debt?.pendingUsd ?? "0"), 0);
+
+  // Filtro por búsqueda
+  const filterFn = (r: { person: PersonData; unit: { code: string } }) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      r.person.firstName.toLowerCase().includes(q) ||
+      r.person.lastName.toLowerCase().includes(q) ||
+      r.unit.code.toLowerCase().includes(q) ||
+      (r.person.idNumber?.toLowerCase().includes(q) ?? false)
+    );
+  };
+
+  const filteredOwnerships = useMemo(
+    () => residents.ownerships.filter(filterFn),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [residents.ownerships, search]
+  );
+  const filteredTenancies = useMemo(
+    () => residents.tenancies.filter(filterFn),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [residents.tenancies, search]
+  );
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      const rows = parseCSV(text);
-      setCsvRows(rows);
-      setImportError(null);
-      setImportResult(null);
+      setCsvRows(parseCSV(text));
+      setImportError(null); setImportResult(null);
     };
     reader.readAsText(file, "utf-8");
   };
 
   const handleImport = async () => {
-    if (csvRows.length < 2) {
-      setImportError("El archivo debe tener encabezado + al menos una fila de datos");
-      return;
-    }
+    if (csvRows.length < 2) { setImportError("El archivo debe tener encabezado + al menos una fila de datos"); return; }
     const [header, ...dataRows] = csvRows;
     if (!header) return;
-
-    const idxUnit = header.findIndex((h) => h.toLowerCase().includes("unidad") || h.toLowerCase() === "unit");
+    const idxUnit  = header.findIndex((h) => h.toLowerCase().includes("unidad") || h.toLowerCase() === "unit");
     const idxFirst = header.findIndex((h) => h.toLowerCase().includes("nombre") || h.toLowerCase().includes("first"));
-    const idxLast = header.findIndex((h) => h.toLowerCase().includes("apellido") || h.toLowerCase().includes("last"));
-    const idxIdType = header.findIndex((h) => h.toLowerCase().includes("tipo_id") || h.toLowerCase().includes("id_type"));
+    const idxLast  = header.findIndex((h) => h.toLowerCase().includes("apellido") || h.toLowerCase().includes("last"));
+    const idxIdType= header.findIndex((h) => h.toLowerCase().includes("tipo_id") || h.toLowerCase().includes("id_type"));
     const idxIdNum = header.findIndex((h) => h.toLowerCase().includes("numero_id") || h.toLowerCase().includes("id_number") || h.toLowerCase() === "cedula");
     const idxEmail = header.findIndex((h) => h.toLowerCase().includes("email") || h.toLowerCase().includes("correo"));
     const idxPhone = header.findIndex((h) => h.toLowerCase().includes("telefono") || h.toLowerCase().includes("phone") || h.toLowerCase().includes("tel"));
-    const idxWa = header.findIndex((h) => h.toLowerCase().includes("whatsapp") || h.toLowerCase().includes("wa"));
-    const idxRole = header.findIndex((h) => h.toLowerCase().includes("rol") || h.toLowerCase().includes("role") || h.toLowerCase().includes("tipo"));
-
+    const idxWa    = header.findIndex((h) => h.toLowerCase().includes("whatsapp") || h.toLowerCase().includes("wa"));
+    const idxRole  = header.findIndex((h) => h.toLowerCase().includes("rol") || h.toLowerCase().includes("role") || h.toLowerCase().includes("tipo"));
     if (idxUnit < 0 || idxFirst < 0 || idxLast < 0 || idxIdNum < 0) {
-      setImportError("Columnas requeridas: unidad, nombre, apellido, numero_id");
-      return;
+      setImportError("Columnas requeridas: unidad, nombre, apellido, numero_id"); return;
     }
-
     const rows = dataRows
       .filter((r) => r.some((c) => c.trim()))
       .map((r) => ({
-        unitCode: r[idxUnit] ?? "",
-        firstName: r[idxFirst] ?? "",
-        lastName: r[idxLast] ?? "",
+        unitCode: r[idxUnit] ?? "", firstName: r[idxFirst] ?? "", lastName: r[idxLast] ?? "",
         idType: (idxIdType >= 0 ? r[idxIdType] : "CEDULA_V") as "CEDULA_V" | "CEDULA_E" | "RIF" | "PASSPORT" | "OTHER",
         idNumber: r[idxIdNum] ?? "",
-        email: idxEmail >= 0 && r[idxEmail] ? r[idxEmail] : undefined,
-        phone: idxPhone >= 0 && r[idxPhone] ? r[idxPhone] : undefined,
-        whatsapp: idxWa >= 0 && r[idxWa] ? r[idxWa] : undefined,
+        email:    idxEmail >= 0 && r[idxEmail]  ? r[idxEmail]  : undefined,
+        phone:    idxPhone >= 0 && r[idxPhone]  ? r[idxPhone]  : undefined,
+        whatsapp: idxWa    >= 0 && r[idxWa]     ? r[idxWa]     : undefined,
         role: ((idxRole >= 0 ? r[idxRole]?.toUpperCase() : "OWNER") === "TENANT" ? "TENANT" : "OWNER") as "OWNER" | "TENANT",
       }))
       .filter((r) => r.unitCode && r.firstName && r.lastName && r.idNumber);
-
-    if (rows.length === 0) {
-      setImportError("No se encontraron filas válidas");
-      return;
-    }
-
+    if (rows.length === 0) { setImportError("No se encontraron filas válidas"); return; }
     try {
       const result = await bulkImport.mutateAsync({ organizationId, communityId, rows });
-      setImportResult(result);
-      setCsvRows([]);
+      setImportResult(result); setCsvRows([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       void refetch();
     } catch (err: unknown) {
@@ -212,19 +243,18 @@ export default function ResidentsPage() {
     const blob = new Blob([CSV_TEMPLATE], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = "plantilla_residentes.csv";
-    a.click();
+    a.href = url; a.download = "plantilla_residentes.csv"; a.click();
     URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* ── Encabezado ── */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Residentes</h2>
           <p className="text-sm text-muted-foreground">
-            {residents.ownerships.length} propietario(s) · {residents.tenancies.length} inquilino(s) activos
+            {totalOwners} propietario(s) · {totalTenants} inquilino(s) activos
           </p>
         </div>
         <div className="flex gap-2">
@@ -232,37 +262,64 @@ export default function ResidentsPage() {
           <label>
             <input ref={fileInputRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFileChange} />
             <Button variant="outline" type="button" onClick={() => fileInputRef.current?.click()}>
-              Importar CSV/Excel
+              Importar CSV
             </Button>
           </label>
-          <Button
-            type="button"
-            onClick={() => { setShowForm((v) => !v); setFormMsg(null); }}
-          >
+          <Button type="button" onClick={() => { setShowForm((v) => !v); setFormMsg(null); }}>
             {showForm ? "Cancelar" : "+ Agregar residente"}
           </Button>
         </div>
       </div>
 
-      {/* Mensaje de éxito/error tras guardar */}
+      {/* ── Tarjetas de resumen financiero ── */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground">Deuda total del edificio</p>
+          <p className={`text-xl font-bold ${totalDeudaUsd > 0 ? "text-red-600" : "text-green-700"}`}>
+            ${totalDeudaUsd.toFixed(2)}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground">Unidades con deuda</p>
+          <p className={`text-xl font-bold ${deudores.length > 0 ? "text-amber-600" : "text-green-700"}`}>
+            {deudores.length} <span className="text-sm font-normal">de {totalOwners + totalTenants}</span>
+          </p>
+        </div>
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground">Unidades en mora</p>
+          <p className={`text-xl font-bold ${morosos.length > 0 ? "text-red-600" : "text-green-700"}`}>
+            {morosos.length} <span className="text-sm font-normal">con facturas vencidas</span>
+          </p>
+        </div>
+      </div>
+
+      {/* ── Buscador ── */}
+      <div className="relative max-w-sm">
+        <span className="absolute inset-y-0 left-3 flex items-center text-muted-foreground text-sm">🔍</span>
+        <Input
+          className="pl-8"
+          placeholder="Buscar por nombre, unidad o cédula..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
+      {/* ── Mensaje de éxito/error tras guardar ── */}
       {formMsg && !showForm && (
         <div className={`rounded-lg border p-4 text-sm ${formMsg.type === "success" ? "border-green-300 bg-green-50 text-green-800" : "border-destructive/30 bg-destructive/5 text-destructive"}`}>
           {formMsg.text}
         </div>
       )}
 
-      {/* Formulario manual: Agregar residente */}
+      {/* ── Formulario manual ── */}
       {showForm && (
         <div className="rounded-lg border bg-card p-5 space-y-5">
           <h3 className="font-semibold text-base">Agregar residente manualmente</h3>
-
           {formMsg && (
             <div className={`rounded-md border px-3 py-2 text-sm ${formMsg.type === "success" ? "border-green-300 bg-green-50 text-green-800" : "border-destructive/30 bg-destructive/5 text-destructive"}`}>
               {formMsg.text}
             </div>
           )}
-
-          {/* Datos de la persona */}
           <div>
             <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Datos personales</p>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -276,12 +333,8 @@ export default function ResidentsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="res-idType">Tipo de ID</Label>
-                <select
-                  id="res-idType"
-                  value={idType}
-                  onChange={(e) => setIdType(e.target.value as typeof idType)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
+                <select id="res-idType" value={idType} onChange={(e) => setIdType(e.target.value as typeof idType)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm">
                   <option value="CEDULA_V">V- (Cédula venezolana)</option>
                   <option value="CEDULA_E">E- (Cédula extranjera)</option>
                   <option value="PASSPORT">Pasaporte</option>
@@ -297,7 +350,7 @@ export default function ResidentsPage() {
                 <Input id="res-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="juan@correo.com" />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="res-phone">Teléfono <span className="text-muted-foreground text-xs">ej. 0414-1234567</span></Label>
+                <Label htmlFor="res-phone">Teléfono</Label>
                 <Input id="res-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0414-1234567" />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
@@ -306,31 +359,21 @@ export default function ResidentsPage() {
               </div>
             </div>
           </div>
-
-          {/* Asignación a unidad */}
           <div>
             <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Asignación a unidad</p>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="res-role">Rol</Label>
-                <select
-                  id="res-role"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value as "OWNER" | "TENANT")}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
+                <select id="res-role" value={role} onChange={(e) => setRole(e.target.value as "OWNER" | "TENANT")}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm">
                   <option value="OWNER">Propietario</option>
                   <option value="TENANT">Inquilino</option>
                 </select>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="res-unit">Unidad *</Label>
-                <select
-                  id="res-unit"
-                  value={unitId}
-                  onChange={(e) => setUnitId(e.target.value)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
+                <select id="res-unit" value={unitId} onChange={(e) => setUnitId(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm">
                   <option value="">Seleccionar unidad...</option>
                   {units.map((u) => (
                     <option key={u.id} value={u.id}>
@@ -341,15 +384,8 @@ export default function ResidentsPage() {
               </div>
             </div>
           </div>
-
-          {/* Acciones */}
           <div className="flex justify-end gap-2 pt-1">
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => { setShowForm(false); resetForm(); }}
-              disabled={formLoading}
-            >
+            <Button variant="outline" type="button" onClick={() => { setShowForm(false); resetForm(); }} disabled={formLoading}>
               Cancelar
             </Button>
             <Button type="button" onClick={handleAddResident} disabled={formLoading}>
@@ -359,7 +395,7 @@ export default function ResidentsPage() {
         </div>
       )}
 
-      {/* Modal de edición */}
+      {/* ── Modal de edición ── */}
       {editPerson && (
         <EditPersonModal
           person={editPerson}
@@ -374,13 +410,11 @@ export default function ResidentsPage() {
         />
       )}
 
-      {/* Preview de CSV */}
+      {/* ── Preview de CSV ── */}
       {csvRows.length > 0 && (
         <div className="rounded-lg border bg-card p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">
-              {csvRows.length - 1} fila(s) detectadas para importar
-            </p>
+            <p className="text-sm font-medium">{csvRows.length - 1} fila(s) detectadas</p>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => { setCsvRows([]); if (fileInputRef.current) fileInputRef.current.value = ""; }}>
                 Cancelar
@@ -404,14 +438,11 @@ export default function ResidentsPage() {
                 ))}
               </tbody>
             </table>
-            {csvRows.length > 7 && (
-              <p className="mt-1 text-xs text-muted-foreground">... y {csvRows.length - 7} filas más</p>
-            )}
           </div>
         </div>
       )}
 
-      {/* Resultado de importación */}
+      {/* ── Resultado de importación ── */}
       {importResult && (
         <div className="rounded-lg border border-green-300 bg-green-50 p-4">
           <p className="font-medium text-green-800">
@@ -425,264 +456,118 @@ export default function ResidentsPage() {
         </div>
       )}
 
-      {/* Propietarios */}
-      <Section title="Propietarios activos">
-        {residents.ownerships.length === 0 ? (
-          <EmptyRow msg="Sin propietarios registrados" />
-        ) : (
-          residents.ownerships.map(({ person, unit }) => (
-            <ResidentRow
-              key={person.id}
-              person={person}
-              unitCode={unit.code}
-              unitFloor={unit.floor}
-              unitTower={unit.tower}
-              communityId={communityId}
-              unitId={unit.id}
-              organizationId={organizationId}
-              onEdit={() => setEditPerson(person)}
-              onSendCredentials={(personId) =>
-                sendCredentials.mutateAsync({ organizationId, personId })
-              }
-            />
-          ))
-        )}
-      </Section>
+      {/* ── Tabla propietarios ── */}
+      <ResidentsTable
+        title="Propietarios activos"
+        rows={filteredOwnerships}
+        communityId={communityId}
+        organizationId={organizationId}
+        onEdit={(p) => setEditPerson(p)}
+        onSendCredentials={(personId) =>
+          sendCredentials.mutateAsync({ organizationId, personId })
+        }
+      />
 
-      {/* Inquilinos */}
-      <Section title="Inquilinos activos">
-        {residents.tenancies.length === 0 ? (
-          <EmptyRow msg="Sin inquilinos registrados" />
-        ) : (
-          residents.tenancies.map(({ person, unit }) => (
-            <ResidentRow
-              key={person.id}
-              person={person}
-              unitCode={unit.code}
-              unitFloor={unit.floor}
-              unitTower={unit.tower}
-              communityId={communityId}
-              unitId={unit.id}
-              organizationId={organizationId}
-              isTenant
-              onEdit={() => setEditPerson(person)}
-              onSendCredentials={(personId) =>
-                sendCredentials.mutateAsync({ organizationId, personId })
-              }
-            />
-          ))
-        )}
-      </Section>
+      {/* ── Tabla inquilinos ── */}
+      <ResidentsTable
+        title="Inquilinos activos"
+        rows={filteredTenancies}
+        communityId={communityId}
+        organizationId={organizationId}
+        isTenant
+        onEdit={(p) => setEditPerson(p)}
+        onSendCredentials={(personId) =>
+          sendCredentials.mutateAsync({ organizationId, personId })
+        }
+      />
     </div>
   );
 }
 
-// ─── Modal de edición ──────────────────────────────────────────────────────
+// ─── Tabla reutilizable ─────────────────────────────────────────────────────
 
-function EditPersonModal({
-  person,
+function ResidentsTable({
+  title,
+  rows,
+  communityId,
   organizationId,
-  onSave,
-  onClose,
-  isSaving,
+  isTenant = false,
+  onEdit,
+  onSendCredentials,
 }: {
-  person: PersonData;
+  title: string;
+  rows: Array<{
+    person: PersonData;
+    unit: { id: string; code: string; floor?: number | null; tower?: string | null };
+    debt?: DebtInfo;
+  }>;
+  communityId: string;
   organizationId: string;
-  onSave: (fields: {
-    firstName?: string;
-    lastName?: string;
-    email?: string;
-    phone?: string;
-    whatsapp?: string;
-  }) => Promise<void>;
-  onClose: () => void;
-  isSaving: boolean;
+  isTenant?: boolean;
+  onEdit: (p: PersonData) => void;
+  onSendCredentials: (personId: string) => Promise<{ ok: boolean; email: string }>;
 }) {
-  const [firstName, setFirstName] = useState(person.firstName);
-  const [lastName, setLastName] = useState(person.lastName);
-  const [email, setEmail] = useState(person.email ?? "");
-  const [phone, setPhone] = useState(person.phone ?? "");
-  const [whatsapp, setWhatsapp] = useState(person.whatsapp ?? "");
-  const [err, setErr] = useState<string | null>(null);
-
-  // Cierra al hacer clic fuera del panel
-  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose();
-  };
-
-  const handleSave = async () => {
-    setErr(null);
-    if (!firstName.trim() || !lastName.trim()) {
-      setErr("Nombre y apellido son obligatorios.");
-      return;
-    }
-    try {
-      await onSave({
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        email: email.trim() || undefined,
-        phone: phone.trim() || undefined,
-        whatsapp: whatsapp.trim() || undefined,
-      });
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : "Error al guardar.");
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={handleBackdropClick}
-    >
-      <div className="w-full max-w-lg rounded-xl border bg-card shadow-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <h3 className="font-semibold text-base">Editar residente</h3>
-          <button
-            onClick={onClose}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-            aria-label="Cerrar"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-5 space-y-4">
-          {err && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {err}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-firstName">Nombre *</Label>
-              <Input
-                id="edit-firstName"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                disabled={isSaving}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-lastName">Apellido *</Label>
-              <Input
-                id="edit-lastName"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                disabled={isSaving}
-              />
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-email">
-              Email <span className="text-xs text-muted-foreground">(para facturas y acceso al portal)</span>
-            </Label>
-            <Input
-              id="edit-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="juan@correo.com"
-              disabled={isSaving}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-phone">Teléfono</Label>
-              <Input
-                id="edit-phone"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="0414-1234567"
-                disabled={isSaving}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-whatsapp">
-                WhatsApp <span className="text-xs text-muted-foreground">internacional</span>
-              </Label>
-              <Input
-                id="edit-whatsapp"
-                value={whatsapp}
-                onChange={(e) => setWhatsapp(e.target.value)}
-                placeholder="584141234567"
-                disabled={isSaving}
-              />
-            </div>
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Para cambiar la cédula ve al detalle de la unidad. La unidad asignada no se modifica aquí.
-          </p>
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end gap-2 border-t px-5 py-4">
-          <Button variant="outline" onClick={onClose} disabled={isSaving}>
-            Cancelar
-          </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
-            {isSaving ? "Guardando..." : "Guardar cambios"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Sección y fila ────────────────────────────────────────────────────────
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
       <h3 className="mb-2 text-sm font-semibold">{title}</h3>
-      <div className="overflow-hidden rounded-lg border bg-card">
+      <div className="overflow-x-auto rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left">
             <tr>
               <th className="px-3 py-2">Nombre</th>
-              <th className="px-3 py-2">ID</th>
+              <th className="px-3 py-2">Cédula</th>
               <th className="px-3 py-2">Contacto</th>
               <th className="px-3 py-2">Unidad</th>
+              <th className="px-3 py-2">Deuda</th>
+              <th className="px-3 py-2">Último pago</th>
               <th className="px-3 py-2">Vehículos</th>
-              <th className="px-3 py-2">Portal</th>
-              <th className="px-3 py-2"></th>
+              <th className="px-3 py-2">Acciones</th>
             </tr>
           </thead>
-          <tbody>{children}</tbody>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
+                  Sin resultados
+                </td>
+              </tr>
+            )}
+            {rows.map(({ person, unit, debt }) => (
+              <ResidentRow
+                key={person.id}
+                person={person}
+                unit={unit}
+                debt={debt}
+                communityId={communityId}
+                organizationId={organizationId}
+                isTenant={isTenant}
+                onEdit={() => onEdit(person)}
+                onSendCredentials={onSendCredentials}
+              />
+            ))}
+          </tbody>
         </table>
       </div>
     </div>
   );
 }
 
-function EmptyRow({ msg }: { msg: string }) {
-  return (
-    <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">{msg}</td></tr>
-  );
-}
+// ─── Fila de residente ──────────────────────────────────────────────────────
 
 function ResidentRow({
   person,
-  unitCode,
-  unitFloor,
-  unitTower,
+  unit,
+  debt,
   communityId,
-  unitId,
+  organizationId,
   isTenant = false,
   onEdit,
   onSendCredentials,
 }: {
   person: PersonData;
-  unitCode: string;
-  unitFloor?: number | null;
-  unitTower?: string | null;
+  unit: { id: string; code: string; floor?: number | null; tower?: string | null };
+  debt?: DebtInfo;
   communityId: string;
-  unitId: string;
   organizationId: string;
   isTenant?: boolean;
   onEdit: () => void;
@@ -691,11 +576,13 @@ function ResidentRow({
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  const [reminding, setReminding] = useState(false);
+  const [reminderSent, setReminderSent] = useState(false);
+
+  const sendReminder = trpc.org.persons.sendReminder.useMutation();
 
   const handleSendAccess = async () => {
-    setSending(true);
-    setSent(null);
-    setSendErr(null);
+    setSending(true); setSent(null); setSendErr(null);
     try {
       const result = await onSendCredentials(person.id);
       setSent(result.email);
@@ -706,13 +593,26 @@ function ResidentRow({
     }
   };
 
+  const handleSendReminder = async () => {
+    setReminding(true); setReminderSent(false);
+    try {
+      await sendReminder.mutateAsync({ organizationId, personId: person.id, unitId: unit.id });
+      setReminderSent(true);
+      setTimeout(() => setReminderSent(false), 4000);
+    } finally {
+      setReminding(false);
+    }
+  };
+
+  const hasPendingDebt = Number(debt?.pendingUsd ?? "0") > 0.005;
+
   return (
-    <tr className="border-t">
+    <tr className="border-t hover:bg-muted/20">
       <td className="px-3 py-2">
         <div className="font-medium">{person.firstName} {person.lastName}</div>
         {isTenant && <div className="text-xs text-amber-700">Inquilino</div>}
       </td>
-      <td className="px-3 py-2 text-muted-foreground text-xs">
+      <td className="px-3 py-2 text-xs text-muted-foreground">
         {person.idType}: {person.idNumber}
       </td>
       <td className="px-3 py-2 text-xs">
@@ -722,10 +622,18 @@ function ResidentRow({
         {!person.email && !person.phone && !person.whatsapp && <span className="text-muted-foreground">—</span>}
       </td>
       <td className="px-3 py-2">
-        <div className="font-medium">{unitCode}</div>
+        <div className="font-medium">{unit.code}</div>
         <div className="text-xs text-muted-foreground">
-          {unitTower && `T${unitTower} `}{unitFloor != null && `Piso ${unitFloor}`}
+          {unit.tower && `T${unit.tower} `}{unit.floor != null && `Piso ${unit.floor}`}
         </div>
+      </td>
+      <td className="px-3 py-2">
+        {debt ? <DebtBadge debt={debt} /> : <span className="text-muted-foreground text-xs">—</span>}
+      </td>
+      <td className="px-3 py-2 text-xs text-muted-foreground">
+        {debt?.lastPaymentAt
+          ? new Date(debt.lastPaymentAt).toLocaleDateString("es-VE")
+          : <span className="text-red-500">Sin pagos</span>}
       </td>
       <td className="px-3 py-2">
         {person.vehicles.length === 0 ? (
@@ -742,35 +650,119 @@ function ResidentRow({
           </div>
         )}
       </td>
-      {/* Portal access */}
       <td className="px-3 py-2">
-        {person.email ? (
-          <div className="space-y-0.5">
+        <div className="flex flex-wrap gap-1">
+          <Button size="sm" variant="outline" onClick={onEdit}>✏️</Button>
+          <Link href={`/org/communities/${communityId}/units/${unit.id}`}>
+            <Button size="sm" variant="outline" title="Ver unidad">🏠</Button>
+          </Link>
+          {person.email && (
             <button
               onClick={handleSendAccess}
               disabled={sending}
-              className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
-              title="Crear/actualizar acceso y enviar credenciales por email"
+              className="rounded-md border px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 whitespace-nowrap"
+              title="Enviar acceso al portal"
             >
-              {sending ? "Enviando..." : "📧 Enviar acceso"}
+              {sending ? "..." : sent ? "✓ Enviado" : "📧"}
             </button>
-            {sent && <div className="text-xs text-green-700">✓ Enviado a {sent}</div>}
-            {sendErr && <div className="text-xs text-destructive">{sendErr}</div>}
-          </div>
-        ) : (
-          <span className="text-xs text-muted-foreground" title="Agrega un email al residente primero">Sin email</span>
-        )}
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex gap-1.5">
-          <Button size="sm" variant="outline" onClick={onEdit}>
-            ✏️ Editar
-          </Button>
-          <Link href={`/org/communities/${communityId}/units/${unitId}`}>
-            <Button size="sm" variant="outline">Ver unidad</Button>
-          </Link>
+          )}
+          {hasPendingDebt && (person.email || person.whatsapp) && (
+            <button
+              onClick={handleSendReminder}
+              disabled={reminding}
+              className="rounded-md border px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 disabled:opacity-50 whitespace-nowrap"
+              title="Enviar recordatorio de pago"
+            >
+              {reminding ? "..." : reminderSent ? "✓ Enviado" : "🔔 Recordar"}
+            </button>
+          )}
+          {sendErr && <div className="text-xs text-destructive w-full">{sendErr}</div>}
         </div>
       </td>
     </tr>
+  );
+}
+
+// ─── Modal de edición ──────────────────────────────────────────────────────
+
+function EditPersonModal({
+  person, organizationId, onSave, onClose, isSaving,
+}: {
+  person: PersonData;
+  organizationId: string;
+  onSave: (fields: { firstName?: string; lastName?: string; email?: string; phone?: string; whatsapp?: string }) => Promise<void>;
+  onClose: () => void;
+  isSaving: boolean;
+}) {
+  const [firstName, setFirstName] = useState(person.firstName);
+  const [lastName, setLastName]   = useState(person.lastName);
+  const [email, setEmail]         = useState(person.email ?? "");
+  const [phone, setPhone]         = useState(person.phone ?? "");
+  const [whatsapp, setWhatsapp]   = useState(person.whatsapp ?? "");
+  const [err, setErr] = useState<string | null>(null);
+
+  void organizationId;
+
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  const handleSave = async () => {
+    setErr(null);
+    if (!firstName.trim() || !lastName.trim()) { setErr("Nombre y apellido son obligatorios."); return; }
+    try {
+      await onSave({
+        firstName: firstName.trim(), lastName: lastName.trim(),
+        email: email.trim() || undefined, phone: phone.trim() || undefined,
+        whatsapp: whatsapp.trim() || undefined,
+      });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error al guardar.");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={handleBackdropClick}>
+      <div className="w-full max-w-lg rounded-xl border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h3 className="font-semibold text-base">Editar residente</h3>
+          <button onClick={onClose} className="rounded-md p-1 text-muted-foreground hover:bg-muted">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {err && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{err}</div>
+          )}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Nombre *</Label>
+              <Input value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={isSaving} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Apellido *</Label>
+              <Input value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={isSaving} />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Email <span className="text-xs text-muted-foreground">(para facturas y portal)</span></Label>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="juan@correo.com" disabled={isSaving} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Teléfono</Label>
+              <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0414-1234567" disabled={isSaving} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>WhatsApp <span className="text-xs text-muted-foreground">internacional</span></Label>
+              <Input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="584141234567" disabled={isSaving} />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">Para cambiar la cédula o unidad asignada, usa el detalle de la unidad.</p>
+        </div>
+        <div className="flex justify-end gap-2 border-t px-5 py-4">
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>Cancelar</Button>
+          <Button onClick={handleSave} disabled={isSaving}>{isSaving ? "Guardando..." : "Guardar cambios"}</Button>
+        </div>
+      </div>
+    </div>
   );
 }

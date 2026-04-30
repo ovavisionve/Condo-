@@ -403,7 +403,8 @@ export const orgRouter = router({
             select: { id: true },
           });
           const unitIds = units.map((u) => u.id);
-          const [ownerships, tenancies] = await Promise.all([
+
+          const [ownerships, tenancies, pendingInvoices, lastPayments] = await Promise.all([
             ctx.db.ownership.findMany({
               where: { unitId: { in: unitIds }, endDate: null },
               include: {
@@ -418,8 +419,68 @@ export const orgRouter = router({
                 unit: { select: { id: true, code: true, floor: true, tower: true } },
               },
             }),
+            // Facturas pendientes agrupadas por unidad (ISSUED, PARTIAL, OVERDUE)
+            ctx.db.invoice.findMany({
+              where: {
+                unitId: { in: unitIds },
+                status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+              },
+              select: {
+                unitId: true,
+                totalUsd: true,
+                paidUsd: true,
+                status: true,
+                dueDate: true,
+              },
+            }),
+            // Último pago por unidad
+            ctx.db.payment.findMany({
+              where: {
+                unitId: { in: unitIds },
+                voidedAt: null,
+              },
+              select: { unitId: true, paidAt: true },
+              orderBy: { paidAt: "desc" },
+              distinct: ["unitId"],
+            }),
           ]);
-          return { ownerships, tenancies };
+
+          // Construir mapa de deuda por unidad
+          const debtByUnit = new Map<string, {
+            pendingUsd: number;
+            overdueCount: number;
+            pendingCount: number;
+            lastPaymentAt: Date | null;
+          }>();
+          for (const inv of pendingInvoices) {
+            const uid = inv.unitId;
+            const existing = debtByUnit.get(uid) ?? { pendingUsd: 0, overdueCount: 0, pendingCount: 0, lastPaymentAt: null };
+            existing.pendingUsd += Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+            existing.pendingCount += 1;
+            if (inv.status === "OVERDUE") existing.overdueCount += 1;
+            debtByUnit.set(uid, existing);
+          }
+          for (const pay of lastPayments) {
+            const uid = pay.unitId;
+            const existing = debtByUnit.get(uid) ?? { pendingUsd: 0, overdueCount: 0, pendingCount: 0, lastPaymentAt: null };
+            existing.lastPaymentAt = pay.paidAt;
+            debtByUnit.set(uid, existing);
+          }
+
+          const toDebtInfo = (unitId: string) => {
+            const d = debtByUnit.get(unitId);
+            return {
+              pendingUsd: d?.pendingUsd?.toString() ?? "0",
+              overdueCount: d?.overdueCount ?? 0,
+              pendingCount: d?.pendingCount ?? 0,
+              lastPaymentAt: d?.lastPaymentAt ?? null,
+            };
+          };
+
+          return {
+            ownerships: ownerships.map((o) => ({ ...o, debt: toDebtInfo(o.unitId) })),
+            tenancies:  tenancies.map((t)  => ({ ...t, debt: toDebtInfo(t.unitId) })),
+          };
         }
         return ctx.db.person.findMany({
           where: { organizationId: input.organizationId, deletedAt: null },
@@ -734,6 +795,41 @@ export const orgRouter = router({
         });
 
         return { ok: true, email: person.email };
+      }),
+
+    /**
+     * Envía un recordatorio de pago a un residente específico (WhatsApp + Email).
+     * Incluye link al portal con su deuda actual.
+     */
+    sendReminder: orgProcedure
+      .input(orgIdInput.extend({
+        personId: z.string(),
+        unitId: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const person = await ctx.db.person.findFirstOrThrow({
+          where: { id: input.personId, organizationId: input.organizationId, deletedAt: null },
+        });
+        if (!person.email && !person.whatsapp) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "El residente no tiene email ni WhatsApp registrado." });
+        }
+        // Calcular deuda total
+        const pendingInvoices = await ctx.db.invoice.findMany({
+          where: { unitId: input.unitId, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+          select: { totalUsd: true, paidUsd: true },
+        });
+        const pendingUsd = pendingInvoices.reduce(
+          (s, inv) => s + Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString()), 0
+        );
+        const { notifyPerson } = await import("@/server/services/notifications");
+        await notifyPerson({
+          organizationId: input.organizationId,
+          personId: input.personId,
+          unitId: input.unitId,
+          event: "PAYMENT_REMINDER",
+          vars: { monto_usd: pendingUsd.toFixed(2) },
+        });
+        return { ok: true };
       }),
   }),
 
