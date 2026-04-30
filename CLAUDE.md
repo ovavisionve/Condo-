@@ -327,6 +327,15 @@ pnpm prisma migrate reset
   - Router `governance.*`: board CRUD, assemblies CRUD + votación + cierre + PDF, nonDebtCert, documents CRUD
   - UI: `/governance` con 4 tabs — Junta Directiva / Asambleas / Documentos / Certificados
   - PDF acta se descarga en base64 desde el cliente; certificado de solvencia con estado de deuda real
+- [x] **Sesión prod (Sonnet):** seeding Los Arrayanes + fix auth + admin panel + cuota bug
+  - Seed: 188 unidades (2 torres, 23 pisos × 4 aptos + 2 PH), 10 propietarios de prueba, cuota $20
+  - Auth fix: hash bcrypt actualizado en Supabase SQL Editor (era argon2id del seed original)
+  - Org isolation: PLATFORM_OWNER ve todas las orgs; ORG_ADMIN solo ve sus memberships (ya funcionaba)
+  - `platform.organizations.listAdmins / createAdmin / removeAdmin`: panel para asignar admins por org
+  - UI en `/platform/organizations/[id]`: card "Administradores" con form inline + revocación
+  - OrgContext fix: `useEffect` → `useLayoutEffect` (evita race condition del selectedOrgId inicial)
+  - org.ts fix: `byId`, `update`, `setMonthlyFee` omiten filtro `organizationId` para PLATFORM_OWNER
+  - finance page: optimistic update de cuota con `utils.org.communities.byId.setData` + `new Decimal(val)`
 
 ---
 
@@ -442,3 +451,6 @@ c065b2d Translate all English enum labels to Spanish throughout the UI
 4. **Seed de password siempre con bcrypt** (rounds=12). Nunca dejar argon2 en seed que vaya a producción.
 5. **Antes de aplicar SQL grande en Supabase, agregar DROP CASCADE al inicio** para idempotencia (evita error 42710 "type already exists").
 6. **El root page redirige a `/portal` si no hay memberships** — si "todos los links van al portal" es porque el usuario no tiene sesión válida (login falla por hash incorrecto).
+7. **OrgContext race condition (CRÍTICO):** `useState(orgs[0]!.id)` + `useEffect` para localStorage corre DESPUÉS del primer render. Los queries tRPC se lanzan con `organizationId` incorrecto → `findFirstOrThrow` tira → `community.data = undefined` → cuota muestra "Sin cuota configurada" aunque esté guardada. **Fix:** cambiar `useEffect` → `useLayoutEffect` (corre sincrónicamente antes del primer paint).
+8. **orgProcedure + PLATFORM_OWNER + multi-org:** Cuando el admin de la plataforma navega a un community de una org que NO es `orgs[0]`, el `byId` de community falla con not-found porque el filtro `{ organizationId: orgs[0].id }` no coincide. **Fix:** en `byId`, `update` y `setMonthlyFee` de `org.ts`, detectar `isPlatform(role)` y omitir el filtro `organizationId` para PLATFORM_OWNER.
+9. **Test de escritura DB en producción:** El endpoint `/api/debug` con write-test (`WRITE TEST: wrote 77.77, read back: 77.77 → ✅ OK`) confirma que Supabase/pgBouncer sí guarda correctamente. Si un valor "no persiste" tras recarga, buscar el bug en el cliente (race condition de estado) antes de sospechar de la BD.

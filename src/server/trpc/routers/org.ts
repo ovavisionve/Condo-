@@ -40,12 +40,14 @@ export const orgRouter = router({
     ),
     byId: orgProcedure
       .input(orgIdInput.extend({ id: z.string() }))
-      .query(({ ctx, input }) =>
-        ctx.db.community.findFirstOrThrow({
-          where: { id: input.id, organizationId: input.organizationId, deletedAt: null },
+      .query(({ ctx, input }) => {
+        const memberships = (ctx.user.memberships ?? []) as SessionMembership[];
+        const isPlat = memberships.some((m: SessionMembership) => isPlatform(m.role));
+        return ctx.db.community.findFirstOrThrow({
+          where: { id: input.id, ...(isPlat ? {} : { organizationId: input.organizationId }), deletedAt: null },
           include: { _count: { select: { units: true } } },
-        }),
-      ),
+        });
+      }),
     create: orgProcedure
       .input(
         orgIdInput.extend({
@@ -78,8 +80,10 @@ export const orgRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { id, organizationId, ...data } = input;
+        const memberships = (ctx.user.memberships ?? []) as SessionMembership[];
+        const isPlat = memberships.some((m: SessionMembership) => isPlatform(m.role));
         const community = await ctx.db.community.findFirstOrThrow({
-          where: { id, organizationId, deletedAt: null },
+          where: { id, ...(isPlat ? {} : { organizationId }), deletedAt: null },
         });
         return ctx.db.community.update({ where: { id: community.id }, data });
       }),
@@ -92,8 +96,10 @@ export const orgRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { organizationId, communityId, monthlyFeeUsd } = input;
+        const memberships = (ctx.user.memberships ?? []) as SessionMembership[];
+        const isPlat = memberships.some((m: SessionMembership) => isPlatform(m.role));
         await ctx.db.community.findFirstOrThrow({
-          where: { id: communityId, organizationId, deletedAt: null },
+          where: { id: communityId, ...(isPlat ? {} : { organizationId }), deletedAt: null },
         });
         const updated = await ctx.db.community.update({
           where: { id: communityId },

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 
 type OrgSummary = { id: string; name: string; slug: string };
 
@@ -17,8 +17,10 @@ const STORAGE_KEY = "condominios.selectedOrgId";
 export function OrgContextProvider({ orgs, children }: { orgs: OrgSummary[]; children: ReactNode }) {
   const [selectedOrgId, setSelectedOrgIdState] = useState<string>(orgs[0]!.id);
 
-  useEffect(() => {
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
+  // useLayoutEffect corre sincrónicamente antes del primer paint del browser,
+  // así los queries de tRPC nunca arrancan con el organizationId incorrecto.
+  useLayoutEffect(() => {
+    const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && orgs.some((o) => o.id === stored)) {
       setSelectedOrgIdState(stored);
     }
