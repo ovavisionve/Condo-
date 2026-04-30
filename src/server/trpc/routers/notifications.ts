@@ -268,6 +268,42 @@ export const notificationsRouter = router({
    * Envía un email personalizado (o basado en plantilla) a una lista de
    * personas de la comunidad. Registra cada envío en Notification para auditoría.
    */
+  /**
+   * Lista las notificaciones de pago enviadas por residentes desde el portal.
+   * Filtra por body que comience con "PAGO_POR_VERIFICAR:" y parsea el JSON.
+   */
+  listPaymentReports: orgProcedure
+    .input(z.object({ organizationId: z.string(), communityId: z.string() }))
+    .query(async ({ input }) => {
+      const notifications = await db.notification.findMany({
+        where: {
+          organizationId: input.organizationId,
+          communityId: input.communityId,
+          body: { startsWith: "PAGO_POR_VERIFICAR:" },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select: { id: true, body: true, createdAt: true },
+      });
+
+      type PaymentReportPayload = {
+        unitId: string; unitCode: string; communityId: string; communityName: string;
+        personId: string; personName: string; banco: string; referencia: string;
+        monto: number; moneda: string; fechaPago: string; notas: string | null;
+        estado: string; createdAt: string;
+      };
+
+      return notifications.map((n) => {
+        try {
+          const raw = n.body.replace(/^PAGO_POR_VERIFICAR:/, "");
+          const data = JSON.parse(raw) as PaymentReportPayload;
+          return { id: n.id, ...data, notifiedAt: n.createdAt };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+    }),
+
   sendDirectEmail: orgProcedure
     .input(
       z.object({

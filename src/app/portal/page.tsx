@@ -546,7 +546,39 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
 }
 
 // ─── PAGOS TAB ────────────────────────────────────────────────────────────────
-function PagosTab({ unit }: { unit: UnitData }) {
+function DownloadBaucheButton({ paymentId, token }: { paymentId: string; token?: string }) {
+  const dl = trpc.portal.downloadPaymentVoucher.useMutation();
+  const [state, setState] = useState<"idle"|"loading"|"ok"|"err">("idle");
+
+  const handleDownload = async () => {
+    setState("loading");
+    try {
+      const res = await dl.mutateAsync({ paymentId, token });
+      const link = document.createElement("a");
+      link.href = `data:${res.mimeType};base64,${res.base64}`;
+      link.download = res.fileName;
+      link.click();
+      setState("ok");
+      setTimeout(() => setState("idle"), 2500);
+    } catch {
+      setState("err");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={state === "loading"}
+      className="rounded border px-2 py-0.5 text-xs text-[#1e7a5f] border-[#1e7a5f] hover:bg-[#e8f5f0] transition-colors disabled:opacity-50"
+      title="Descargar comprobante de pago"
+    >
+      {state === "loading" ? "⏳" : state === "ok" ? "✅" : state === "err" ? "❌" : "⬇️ Bauche"}
+    </button>
+  );
+}
+
+function PagosTab({ unit, token }: { unit: UnitData; token?: string }) {
   return (
     <div className="space-y-6">
       <div>
@@ -592,6 +624,7 @@ function PagosTab({ unit }: { unit: UnitData }) {
                 <th className="px-4 py-2 font-semibold text-right">Saldo anterior</th>
                 <th className="px-4 py-2 font-semibold text-right">Pagado</th>
                 <th className="px-4 py-2 font-semibold text-right">Queda pendiente</th>
+                <th className="px-4 py-2 font-semibold text-center">Comprobante</th>
               </tr>
             </thead>
             <tbody>
@@ -603,10 +636,13 @@ function PagosTab({ unit }: { unit: UnitData }) {
                   <td className="px-4 py-2 text-right">{Number(p.saldoAnteriorUsd).toFixed(2)}</td>
                   <td className="px-4 py-2 text-right text-[#1e7a5f] font-semibold">{Number(p.amountUsd).toFixed(2)}</td>
                   <td className="px-4 py-2 text-right font-medium">{Number(p.quedaPendienteUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-center">
+                    <DownloadBaucheButton paymentId={p.id} token={token} />
+                  </td>
                 </tr>
               ))}
               {unit.payments.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
+                <tr><td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
               )}
             </tbody>
           </table>
@@ -617,6 +653,38 @@ function PagosTab({ unit }: { unit: UnitData }) {
 }
 
 // ─── AVISO TAB ────────────────────────────────────────────────────────────────
+function DownloadAvisoButton({ invoiceId, token, invoiceNumber }: { invoiceId: string; token?: string; invoiceNumber: string }) {
+  const dl = trpc.portal.downloadInvoicePdf.useMutation();
+  const [state, setState] = useState<"idle"|"loading"|"ok"|"err">("idle");
+
+  const handleDownload = async () => {
+    setState("loading");
+    try {
+      const res = await dl.mutateAsync({ invoiceId, token });
+      const link = document.createElement("a");
+      link.href = `data:${res.mimeType};base64,${res.base64}`;
+      link.download = res.fileName;
+      link.click();
+      setState("ok");
+      setTimeout(() => setState("idle"), 2500);
+    } catch {
+      setState("err");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={state === "loading"}
+      className="rounded border px-3 py-1 text-sm text-[#1e3a5f] border-[#1e3a5f] hover:bg-slate-100 transition-colors disabled:opacity-50"
+      title={`Descargar PDF — ${invoiceNumber}`}
+    >
+      {state === "loading" ? "⏳ Descargando..." : state === "ok" ? "✅ Listo" : state === "err" ? "❌ Error" : "⬇️ Descargar PDF"}
+    </button>
+  );
+}
+
 function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
   const invoiceOptions = unit.invoices.filter(inv => inv.status !== "VOIDED");
   const [selectedId, setSelectedId] = useState(invoiceOptions[0]?.id ?? "");
@@ -653,7 +721,12 @@ function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
       {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando aviso de cobro…</div>}
       {data && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-          <div className="flex justify-end p-3 border-b">
+          <div className="flex justify-end gap-2 p-3 border-b">
+            <DownloadAvisoButton
+              invoiceId={selectedId}
+              token={token}
+              invoiceNumber={(data as InvoiceDetailData).invoiceNumber}
+            />
             <button onClick={() => window.print()} className="rounded border px-3 py-1 text-sm hover:bg-muted">🖨️ Imprimir</button>
           </div>
           <div className="p-4">
@@ -893,7 +966,7 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
       <div className="mx-auto max-w-5xl px-4 py-6">
         {tab === "principal"  && <PrincipalTab  unit={unit} todayRate={data.todayRate} onTab={setTab} />}
         {tab === "pendientes" && <PendientesTab unit={unit} todayRate={data.todayRate} />}
-        {tab === "pagos"      && <PagosTab      unit={unit} />}
+        {tab === "pagos"      && <PagosTab      unit={unit} token={token} />}
         {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
         {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} />}
         {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} />}

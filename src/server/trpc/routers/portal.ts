@@ -845,8 +845,105 @@ export const portalRouter = router({
     }),
 
   /**
+   * Descarga bauche (comprobante de pago) en PDF.
+   */
+  downloadPaymentVoucher: publicProcedure
+    .input(z.object({ paymentId: z.string(), token: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const personId = await resolvePersonId(ctx.db, input.token, ctx.session?.user?.id);
+      if (!personId) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+        ctx.db.tenancy.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+      ]);
+      const unitIds = new Set([
+        ...ownerships.map((o) => o.unitId),
+        ...tenancies.map((t) => t.unitId),
+      ]);
+
+      const payment = await ctx.db.payment.findFirstOrThrow({
+        where: { id: input.paymentId },
+        include: {
+          unit: {
+            include: {
+              community: {
+                select: { name: true, address: true, rif: true, phone: true },
+              },
+              ownerships: {
+                where: { endDate: null },
+                take: 1,
+                include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+              },
+            },
+          },
+          allocations: {
+            include: {
+              invoice: {
+                select: {
+                  invoiceNumber: true, periodYear: true, periodMonth: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!unitIds.has(payment.unitId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a este bauche" });
+      }
+
+      const owner = payment.unit.ownerships[0];
+      const personName = owner
+        ? `${owner.person.firstName} ${owner.person.lastName}`
+        : "Residente";
+      const personDocId = owner
+        ? `${owner.person.idType} ${owner.person.idNumber}`
+        : undefined;
+
+      const invoicesData = payment.allocations.map((alloc) => {
+        const inv = alloc.invoice;
+        const period =
+          inv.periodMonth && inv.periodYear
+            ? `${String(inv.periodMonth).padStart(2, "0")}/${inv.periodYear}`
+            : "";
+        return {
+          number: inv.invoiceNumber,
+          period,
+          amountUsd: alloc.amountUsd.toString(),
+        };
+      });
+
+      const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
+      const buffer = await generatePaymentVoucherPdf({
+        communityName: payment.unit.community.name,
+        communityAddress: payment.unit.community.address ?? undefined,
+        communityRif: payment.unit.community.rif ?? undefined,
+        communityPhone: payment.unit.community.phone ?? undefined,
+        paymentId: payment.id,
+        unitCode: payment.unit.code,
+        personName,
+        personId: personDocId,
+        amountUsd: payment.amountUsd.toString(),
+        amountBss: payment.amountBss.toString(),
+        exchangeRate: payment.exchangeRate.toString(),
+        method: payment.method,
+        reference: payment.reference ?? undefined,
+        paidAt: payment.paidAt,
+        invoices: invoicesData,
+      });
+
+      return {
+        base64: buffer.toString("base64"),
+        fileName: `Bauche-${payment.id.slice(-8).toUpperCase()}.pdf`,
+        mimeType: "application/pdf",
+      };
+    }),
+
+  /**
    * Notifica al administrador de la comunidad sobre un pago realizado.
-   * Crea un registro de Notification y envía email al admin.
+   * Crea un registro de Notification (con prefijo PAGO_POR_VERIFICAR:) visible en el panel admin
+   * y envía email al admin.
    */
   notificarPago: publicProcedure
     .input(
@@ -951,7 +1048,23 @@ export const portalRouter = router({
         });
       }
 
-      // Create Notification record
+      // Create Notification record with structured JSON prefix for admin panel
+      const paymentReportPayload = JSON.stringify({
+        unitId: unit.id,
+        unitCode: unit.code,
+        communityId: community.id,
+        communityName: community.name,
+        personId,
+        personName: `${person.firstName} ${person.lastName}`,
+        banco: input.banco,
+        referencia: input.referencia,
+        monto: input.monto,
+        moneda: input.moneda,
+        fechaPago: input.fechaPago.toISOString(),
+        notas: input.notas ?? null,
+        estado: "PENDIENTE",
+        createdAt: new Date().toISOString(),
+      });
       await ctx.db.notification.create({
         data: {
           channel: "IN_APP",
@@ -959,7 +1072,8 @@ export const portalRouter = router({
           status: "SENT",
           organizationId: organization.id,
           communityId: community.id,
-          body: `Pago notificado por ${person.firstName} ${person.lastName} — Unidad ${unit.code}: ${montoStr}, banco ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.${input.notas ? ` Notas: ${input.notas}` : ""}`,
+          personId,
+          body: `PAGO_POR_VERIFICAR:${paymentReportPayload}`,
         },
       });
 

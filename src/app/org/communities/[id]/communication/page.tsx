@@ -33,20 +33,21 @@ const EVENT_HINTS: Record<string, string> = {
 export default function CommunicationPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
-  const [tab, setTab] = useState<"messages" | "announcements" | "reminders" | "templates" | "history">("messages");
+  const [tab, setTab] = useState<"messages" | "pagosreportados" | "announcements" | "reminders" | "templates" | "history">("messages");
 
   const TAB_LABELS = {
-    messages:      "✉️ Mensajes",
-    announcements: "Anuncios",
-    reminders:     "Recordatorios",
-    templates:     "Plantillas",
-    history:       "Historial",
+    messages:        "✉️ Mensajes",
+    pagosreportados: "💳 Pagos Reportados",
+    announcements:   "Anuncios",
+    reminders:       "Recordatorios",
+    templates:       "Plantillas",
+    history:         "Historial",
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-1 border-b pb-2 flex-wrap">
-        {(["messages", "announcements", "reminders", "templates", "history"] as const).map((t) => (
+        {(["messages", "pagosreportados", "announcements", "reminders", "templates", "history"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -57,11 +58,12 @@ export default function CommunicationPage() {
         ))}
       </div>
 
-      {tab === "messages"      && <DirectMessagesTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "announcements" && <AnnouncementsTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "reminders"     && <RemindersTab organizationId={organizationId} communityId={communityId} />}
-      {tab === "templates"     && <TemplatesSection organizationId={organizationId} />}
-      {tab === "history"       && <HistoryTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "messages"        && <DirectMessagesTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "pagosreportados" && <PagosReportadosTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "announcements"   && <AnnouncementsTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "reminders"       && <RemindersTab organizationId={organizationId} communityId={communityId} />}
+      {tab === "templates"       && <TemplatesSection organizationId={organizationId} />}
+      {tab === "history"         && <HistoryTab organizationId={organizationId} communityId={communityId} />}
     </div>
   );
 }
@@ -718,6 +720,91 @@ function HistoryTab({ organizationId, communityId }: { organizationId: string; c
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ─── Pagos Reportados por Residentes ──────────────────────────────────────────
+
+function PagosReportadosTab({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const reportsQ = trpc.notifications.listPaymentReports.useQuery({ organizationId, communityId });
+
+  type Report = {
+    id: string; unitCode: string; personName: string; banco: string;
+    referencia: string; monto: number; moneda: string; fechaPago: string;
+    notas: string | null; estado: string; notifiedAt: Date;
+    unitId: string; communityId: string; personId: string; communityName: string; createdAt: string;
+  };
+
+  const reports = (reportsQ.data ?? []).filter((r): r is Report => r !== null);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-semibold">Pagos Reportados por Residentes</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Notificaciones de pago enviadas desde el portal por los residentes. Una vez verificado, regístralo en
+          {" "}<strong>Finanzas → Pagos</strong>.
+        </p>
+      </div>
+
+      {reportsQ.isLoading && <p className="py-8 text-center text-muted-foreground">Cargando…</p>}
+      {!reportsQ.isLoading && reports.length === 0 && (
+        <div className="rounded-lg border border-dashed px-6 py-12 text-center">
+          <p className="text-4xl mb-3">📭</p>
+          <p className="text-muted-foreground">Ningún residente ha reportado pagos aún.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Cuando un residente haga clic en "Notificar pago" desde su portal, aparecerá aquí.
+          </p>
+        </div>
+      )}
+
+      {reports.length > 0 && (
+        <div className="overflow-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 text-left">
+                <th className="px-3 py-2 font-semibold">Fecha notificado</th>
+                <th className="px-3 py-2 font-semibold">Unidad</th>
+                <th className="px-3 py-2 font-semibold">Residente</th>
+                <th className="px-3 py-2 font-semibold">Banco / Método</th>
+                <th className="px-3 py-2 font-semibold">Referencia</th>
+                <th className="px-3 py-2 font-semibold text-right">Monto</th>
+                <th className="px-3 py-2 font-semibold">Fecha pago</th>
+                <th className="px-3 py-2 font-semibold">Notas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.map((r, i) => (
+                <tr key={r.id} className={`border-t hover:bg-muted/20 ${i % 2 === 0 ? "" : "bg-slate-50/50"}`}>
+                  <td className="px-3 py-2 text-muted-foreground text-xs">
+                    {new Date(r.notifiedAt).toLocaleString("es-VE", { dateStyle: "short", timeStyle: "short" })}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className="font-semibold">{r.unitCode}</span>
+                  </td>
+                  <td className="px-3 py-2">{r.personName}</td>
+                  <td className="px-3 py-2">{r.banco}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{r.referencia}</td>
+                  <td className="px-3 py-2 text-right font-semibold">
+                    {r.moneda === "USD" ? "$" : "Bs. "}{r.monto.toFixed(2)}&nbsp;{r.moneda}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                    {new Date(r.fechaPago).toLocaleDateString("es-VE")}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground max-w-[180px] truncate" title={r.notas ?? ""}>
+                    {r.notas ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="px-4 py-2 text-xs text-muted-foreground border-t bg-muted/20">
+            Total: {reports.length} pago{reports.length !== 1 ? "s" : ""} reportado{reports.length !== 1 ? "s" : ""}.
+            Para registrar un pago, ve a <strong>Finanzas → Pagos → Registrar pago</strong> con los datos de la tabla.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
