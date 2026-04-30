@@ -247,19 +247,19 @@ export const portalRouter = router({
 
   /**
    * Igual que getByToken pero usa la sesión de NextAuth.
-   * Para residentes con credenciales permanentes (email + contraseña).
+   * Es publicProcedure para no requerir SessionProvider en el cliente.
+   * Devuelve null si no hay sesión o si el usuario no es un residente.
    */
-  getBySession: protectedProcedure.query(async ({ ctx }) => {
+  getBySession: publicProcedure.query(async ({ ctx }) => {
+    // Sin sesión → null (el portal mostrará el form de acceso)
+    if (!ctx.session?.user?.id) return null;
+
     // Buscar Person vinculada a este usuario
     const person = await ctx.db.person.findFirst({
-      where: { userId: ctx.user.id, deletedAt: null },
+      where: { userId: ctx.session.user.id, deletedAt: null },
     });
-    if (!person) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: "Tu cuenta no está vinculada a un residente registrado. Contacta a la administración.",
-      });
-    }
+    // Usuario sin Person vinculada (ej: admin) → null, no error
+    if (!person) return null;
 
     const [ownerships, tenancies] = await Promise.all([
       ctx.db.ownership.findMany({

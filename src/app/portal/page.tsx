@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useSession, signIn, signOut } from "next-auth/react";
+import { signIn } from "next-auth/react";
 import { trpc } from "@/lib/trpc/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -248,8 +248,11 @@ function ResidentDashboardByToken({ token }: { token: string }) {
 }
 
 function ResidentDashboardBySession() {
-  const { data, isLoading, error } = trpc.portal.getBySession.useQuery();
-  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} error={error?.message} />;
+  // getBySession es publicProcedure: devuelve null si no hay sesión o el user no es residente
+  const { data, isLoading } = trpc.portal.getBySession.useQuery();
+  // null = sin sesión activa de residente → no renderizar (el padre ya maneja esto)
+  if (!isLoading && !data) return null;
+  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} />;
 }
 
 function ResidentDashboardView({
@@ -310,12 +313,12 @@ function ResidentDashboardView({
             </div>
             {/* Botón cerrar sesión (solo si acceso por sesión, no por token) */}
             {!token && (
-              <button
-                onClick={() => signOut({ callbackUrl: "/portal" })}
+              <a
+                href="/api/auth/signout"
                 className="text-xs text-blue-300 hover:text-white border border-blue-400 hover:border-white px-3 py-1.5 rounded transition-colors"
               >
                 Cerrar sesión
-              </button>
+              </a>
             )}
           </div>
         </div>
@@ -538,14 +541,19 @@ function ResidentDashboardView({
 function PortalContent() {
   const params = useSearchParams();
   const token = params.get("t");
-  const { data: session, status } = useSession();
   const [showLogin, setShowLogin] = useState(false);
 
-  // 1. Token mágico en URL → modo legacy
+  // getBySession: null = sin sesión/no residente, data = residente autenticado
+  const { data: sessionData, isLoading: sessionLoading } = trpc.portal.getBySession.useQuery(
+    undefined,
+    { retry: false }, // no reintentar si falla
+  );
+
+  // 1. Token mágico en URL → modo legacy (sin verificar sesión)
   if (token) return <ResidentDashboardByToken token={token} />;
 
-  // 2. Sesión activa → modo sesión permanente
-  if (status === "loading") {
+  // 2. Cargando sesión
+  if (sessionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <p className="text-muted-foreground">Cargando...</p>
@@ -553,11 +561,12 @@ function PortalContent() {
     );
   }
 
-  if (status === "authenticated" && session) {
-    return <ResidentDashboardBySession />;
+  // 3. Hay sesión de residente activa → mostrar dashboard
+  if (sessionData) {
+    return <ResidentDashboardView data={sessionData as PortalData} isLoading={false} />;
   }
 
-  // 3. Sin sesión → formulario de acceso
+  // 4. Sin sesión → formulario de acceso
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-sm space-y-4">
