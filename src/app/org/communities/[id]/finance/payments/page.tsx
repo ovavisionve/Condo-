@@ -1,23 +1,21 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+const MONTHS = [
+  "Ene","Feb","Mar","Abr","May","Jun",
+  "Jul","Ago","Sep","Oct","Nov","Dic",
+];
+
 const METHODS = [
-  "CASH_BSS",
-  "CASH_USD",
-  "TRANSFER_BSS",
-  "TRANSFER_USD",
-  "ZELLE",
-  "PAGO_MOVIL",
-  "CRYPTO",
-  "CHECK",
-  "OTHER",
+  "CASH_BSS","CASH_USD","TRANSFER_BSS","TRANSFER_USD",
+  "ZELLE","PAGO_MOVIL","CRYPTO","CHECK","OTHER",
 ] as const;
 
 const METHOD_LABEL: Record<string, string> = {
@@ -26,6 +24,10 @@ const METHOD_LABEL: Record<string, string> = {
   ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil",
   CRYPTO: "Cripto", CHECK: "Cheque", OTHER: "Otro",
 };
+
+function periodLabel(year: number, month: number) {
+  return `${MONTHS[month - 1] ?? "?"} ${year}`;
+}
 
 function downloadBase64Pdf(base64: string, filename: string) {
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -73,14 +75,14 @@ export default function PaymentsPage() {
           </thead>
           <tbody>
             {list.data?.map((p) => (
-              <PaymentRow
-                key={p.id}
-                payment={p}
-                organizationId={organizationId}
-              />
+              <PaymentRow key={p.id} payment={p} organizationId={organizationId} />
             ))}
             {list.data?.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
+              <tr>
+                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
+                  Sin pagos registrados
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
@@ -103,7 +105,10 @@ export default function PaymentsPage() {
   );
 }
 
-function PaymentRow({ payment, organizationId }: {
+function PaymentRow({
+  payment,
+  organizationId,
+}: {
   payment: {
     id: string;
     paidAt: Date | string;
@@ -137,7 +142,9 @@ function PaymentRow({ payment, organizationId }: {
       <td className="px-3 py-2 text-xs">{METHOD_LABEL[payment.method] ?? payment.method}</td>
       <td className="px-3 py-2 text-muted-foreground">{payment.reference ?? "—"}</td>
       <td className="px-3 py-2 text-right">${Number(payment.amountUsd.toString()).toFixed(2)}</td>
-      <td className="px-3 py-2 text-right">{Number(payment.amountBss.toString()).toFixed(2)}</td>
+      <td className="px-3 py-2 text-right">
+        {Number(payment.amountBss.toString()).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </td>
       <td className="px-3 py-2 text-xs">
         {payment.allocations.length > 0
           ? payment.allocations.map((a) => a.invoice.invoiceNumber).join(", ")
@@ -158,13 +165,20 @@ function PaymentRow({ payment, organizationId }: {
   );
 }
 
-function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
+function NewPaymentDialog({
+  organizationId,
+  communityId,
+  onClose,
+  onCreated,
+}: {
   organizationId: string;
   communityId: string;
   onClose: () => void;
   onCreated: () => void;
 }) {
   const units = trpc.org.units.list.useQuery({ organizationId, communityId });
+  const exchangeRate = trpc.finance.exchange.current.useQuery({ organizationId });
+
   const [unitId, setUnitId] = useState<string>("");
   const invoices = trpc.finance.invoices.list.useQuery(
     { organizationId, communityId, unitId, status: undefined },
@@ -180,14 +194,65 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
     paidAt: new Date().toISOString().slice(0, 10),
     notes: "",
   });
-  const [allocs, setAllocs] = useState<Record<string, string>>({}); // invoiceId -> amount
+  const [allocs, setAllocs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
-  const pendingInvoices = invoices.data?.filter(
-    (i) => i.status !== "PAID" && i.status !== "VOIDED",
-  ) ?? [];
+  // Facturas pendientes ordenadas de más antigua a más reciente
+  const pendingInvoices = useMemo(() => {
+    return (
+      invoices.data
+        ?.filter((i) => i.status !== "PAID" && i.status !== "VOIDED")
+        .sort((a, b) =>
+          a.periodYear !== b.periodYear
+            ? a.periodYear - b.periodYear
+            : a.periodMonth - b.periodMonth,
+        ) ?? []
+    );
+  }, [invoices.data]);
+
+  // Deuda total de la unidad seleccionada
+  const totalDebt = useMemo(
+    () =>
+      pendingInvoices.reduce(
+        (s, inv) => s + (Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString())),
+        0,
+      ),
+    [pendingInvoices],
+  );
 
   const sumAllocs = Object.values(allocs).reduce((s, v) => s + (Number(v) || 0), 0);
+
+  // Equivalente en Bs del monto ingresado
+  const rate = exchangeRate.data ? Number(exchangeRate.data.vesPerUsd) : null;
+  const amountNum = Number(form.amount) || 0;
+  const bsEquiv = useMemo(() => {
+    if (!rate || !amountNum) return null;
+    if (form.currencyPrimary === "USD") return amountNum * rate;
+    return amountNum; // ya es Bs
+  }, [rate, amountNum, form.currencyPrimary]);
+  const usdEquiv = useMemo(() => {
+    if (!rate || !amountNum) return null;
+    if (form.currencyPrimary === "VES") return amountNum / rate;
+    return amountNum;
+  }, [rate, amountNum, form.currencyPrimary]);
+
+  // Auto-distribuir: aplica el monto a las facturas pendientes de más antigua a más nueva
+  const handleAutoDistribute = () => {
+    const total = Number(form.amount) || 0;
+    if (total <= 0 || pendingInvoices.length === 0) return;
+    let remaining = total;
+    const newAllocs: Record<string, string> = {};
+    for (const inv of pendingInvoices) {
+      if (remaining <= 0) break;
+      const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+      const apply = Math.min(remaining, pending);
+      if (apply > 0) {
+        newAllocs[inv.id] = apply.toFixed(2);
+        remaining -= apply;
+      }
+    }
+    setAllocs(newAllocs);
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -214,11 +279,34 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
     }
   };
 
+  // Propietario de la unidad seleccionada
+  const selectedUnit = units.data?.find((u) => u.id === unitId);
+  const ownerName = selectedUnit?.ownerships?.[0]?.person
+    ? `${selectedUnit.ownerships[0].person.firstName} ${selectedUnit.ownerships[0].person.lastName}`
+    : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
         <h3 className="mb-4 text-lg font-semibold">Registrar pago</h3>
-        <form onSubmit={onSubmit} className="space-y-3">
+        <form onSubmit={onSubmit} className="space-y-4">
+
+          {/* ── Tasa de cambio vigente ── */}
+          {rate && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              💱 Tasa BCV:{" "}
+              <span className="font-semibold">
+                Bs {rate.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / USD
+              </span>
+              {exchangeRate.data?.date && (
+                <span className="ml-2 text-blue-600 text-xs">
+                  ({new Date(exchangeRate.data.date).toLocaleDateString("es-VE")})
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* ── Unidad ── */}
           <div>
             <Label>Unidad</Label>
             <select
@@ -228,23 +316,65 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
               required
             >
               <option value="">Selecciona una unidad...</option>
-              {units.data?.map((u) => (
-                <option key={u.id} value={u.id}>{u.code}</option>
-              ))}
+              {units.data?.map((u) => {
+                const owner = u.ownerships?.[0]?.person;
+                const label = owner
+                  ? `${u.code}  —  ${owner.firstName} ${owner.lastName}`
+                  : u.code;
+                return <option key={u.id} value={u.id}>{label}</option>;
+              })}
             </select>
+            {ownerName && (
+              <p className="mt-1 text-xs text-muted-foreground">👤 Propietario: {ownerName}</p>
+            )}
           </div>
 
+          {/* ── Deuda total ── */}
+          {unitId && !invoices.isLoading && (
+            <div className={`rounded-md border px-3 py-2 text-sm font-medium ${
+              totalDebt > 0
+                ? "border-orange-200 bg-orange-50 text-orange-800"
+                : "border-green-200 bg-green-50 text-green-800"
+            }`}>
+              {totalDebt > 0 ? (
+                <>
+                  ⚠️ Deuda total: <span className="font-bold">${totalDebt.toFixed(2)}</span>
+                  {rate && (
+                    <span className="ml-1 text-orange-600 font-normal">
+                      (≈ Bs {(totalDebt * rate).toLocaleString("es-VE", { maximumFractionDigits: 0 })})
+                    </span>
+                  )}
+                  <span className="ml-2 font-normal text-orange-600">
+                    · {pendingInvoices.length} {pendingInvoices.length === 1 ? "factura" : "facturas"} pendiente{pendingInvoices.length !== 1 ? "s" : ""}
+                  </span>
+                </>
+              ) : (
+                <>✅ Sin deuda pendiente</>
+              )}
+            </div>
+          )}
+
+          {/* ── Monto + Moneda ── */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Monto</Label>
+              <Label>Monto recibido</Label>
               <Input
                 type="number"
                 step="0.01"
                 min="0.01"
                 value={form.amount}
                 onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                placeholder="0.00"
                 required
               />
+              {/* Equivalencia en la otra moneda */}
+              {form.amount && rate && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {form.currencyPrimary === "USD"
+                    ? `≈ Bs ${(amountNum * rate).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : `≈ $${(amountNum / rate).toFixed(2)}`}
+                </p>
+              )}
             </div>
             <div>
               <Label>Moneda</Label>
@@ -259,6 +389,7 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
             </div>
           </div>
 
+          {/* ── Método + Referencia ── */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Método de pago</Label>
@@ -280,6 +411,7 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
             </div>
           </div>
 
+          {/* ── Fecha ── */}
           <div>
             <Label>Fecha del pago</Label>
             <Input
@@ -290,36 +422,126 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
             />
           </div>
 
+          {/* ── Aplicar a facturas ── */}
           {pendingInvoices.length > 0 && (
             <div>
-              <Label>Aplicar a facturas pendientes</Label>
-              <div className="mt-2 space-y-2 rounded-md border p-3">
-                {pendingInvoices.map((inv) => (
-                  <div key={inv.id} className="flex items-center gap-3">
-                    <div className="flex-1 text-sm">
-                      <span className="font-mono text-xs">{inv.invoiceNumber}</span>
-                      <span className="ml-2 text-muted-foreground">
-                        Pendiente: ${(Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString())).toFixed(2)}
+              <div className="mb-2 flex items-center justify-between">
+                <Label>Aplicar a facturas pendientes</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAutoDistribute}
+                  disabled={!form.amount || Number(form.amount) <= 0}
+                  title="Distribuye el monto desde la factura más antigua"
+                >
+                  ⚡ Auto-distribuir (más antigua primero)
+                </Button>
+              </div>
+              <div className="rounded-md border">
+                {/* Cabecera */}
+                <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 border-b bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                  <span>Período</span>
+                  <span className="text-right w-24">Pendiente</span>
+                  <span className="text-right w-20">Equivalente Bs</span>
+                  <span className="text-right w-24">Aplicar</span>
+                </div>
+                <div className="divide-y">
+                  {pendingInvoices.map((inv) => {
+                    const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    const applied = Number(allocs[inv.id] ?? 0) || 0;
+                    const remaining = pending - applied;
+                    return (
+                      <div key={inv.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 px-3 py-2">
+                        <div>
+                          <span className="font-medium text-sm">
+                            {periodLabel(inv.periodYear, inv.periodMonth)}
+                          </span>
+                          <span className="ml-2 font-mono text-xs text-muted-foreground">
+                            {inv.invoiceNumber}
+                          </span>
+                          {remaining > 0.005 && applied > 0 && (
+                            <span className="ml-1 text-xs text-amber-600">
+                              (queda ${remaining.toFixed(2)})
+                            </span>
+                          )}
+                          {remaining <= 0.005 && applied > 0 && (
+                            <span className="ml-1 text-xs text-green-600">✓ cubierta</span>
+                          )}
+                        </div>
+                        <span className="w-24 text-right text-sm font-medium text-orange-700">
+                          ${pending.toFixed(2)}
+                        </span>
+                        <span className="w-20 text-right text-xs text-muted-foreground">
+                          {rate
+                            ? `Bs ${(pending * rate).toLocaleString("es-VE", { maximumFractionDigits: 0 })}`
+                            : "—"}
+                        </span>
+                        <div className="flex w-24 items-center gap-1">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max={pending}
+                            className="h-8 w-16 text-right text-xs px-2"
+                            placeholder="0.00"
+                            value={allocs[inv.id] ?? ""}
+                            onChange={(e) => setAllocs({ ...allocs, [inv.id]: e.target.value })}
+                          />
+                          <button
+                            type="button"
+                            className="text-[10px] text-blue-600 hover:underline whitespace-nowrap"
+                            onClick={() => setAllocs({ ...allocs, [inv.id]: pending.toFixed(2) })}
+                            title="Aplicar monto completo"
+                          >
+                            Todo
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Resumen de asignación */}
+                <div className="border-t bg-muted/30 px-3 py-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      Suma asignada:{" "}
+                      <span className={`font-medium ${
+                        sumAllocs > amountNum + 0.005
+                          ? "text-destructive"
+                          : sumAllocs > 0
+                          ? "text-green-700"
+                          : "text-muted-foreground"
+                      }`}>
+                        {form.currencyPrimary === "USD" ? "$" : "Bs "}{sumAllocs.toFixed(2)}
                       </span>
-                    </div>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      className="w-28"
-                      placeholder="0.00"
-                      value={allocs[inv.id] ?? ""}
-                      onChange={(e) => setAllocs({ ...allocs, [inv.id]: e.target.value })}
-                    />
+                    </span>
+                    <span className="text-muted-foreground">
+                      Monto total:{" "}
+                      <span className="font-medium">
+                        {form.currencyPrimary === "USD" ? "$" : "Bs "}{form.amount || "0.00"}
+                      </span>
+                      {usdEquiv !== null && form.currencyPrimary === "VES" && (
+                        <span className="text-muted-foreground"> (≈ ${usdEquiv.toFixed(2)})</span>
+                      )}
+                    </span>
                   </div>
-                ))}
-                <p className="text-xs text-muted-foreground">
-                  Suma asignada: {sumAllocs.toFixed(2)} {form.currencyPrimary} · Monto: {form.amount || "0"} {form.currencyPrimary}
-                </p>
+                  {sumAllocs > amountNum + 0.005 && (
+                    <p className="mt-1 text-xs text-destructive">
+                      ⚠️ La suma asignada supera el monto ingresado.
+                    </p>
+                  )}
+                  {amountNum > 0 && sumAllocs < amountNum - 0.005 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      ℹ️ ${(amountNum - sumAllocs).toFixed(2)} sin asignar se registrarán como anticipo.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           )}
 
+          {/* ── Notas ── */}
           <div>
             <Label>Notas (opcional)</Label>
             <Input
