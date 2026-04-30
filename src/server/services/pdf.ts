@@ -335,6 +335,7 @@ export type InvoicePdfData = {
     accountHolder: string;
     accountType: string;
     currency: string;
+    notes?: string | null;
   }[];
 };
 
@@ -484,7 +485,12 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
         data.bankAccounts && data.bankAccounts.length > 0
           ? data.bankAccounts.map((acc, i) =>
               React.createElement(Text, { key: i, style: inv.payInfoText },
-                `${acc.bankName} · ${acc.accountType} · ${acc.currency}: ${acc.accountNumber} — A nombre de: ${acc.accountHolder}`)
+                [
+                  `${acc.bankName} · ${acc.accountType}`,
+                  acc.accountNumber !== "-" ? `${acc.currency}: ${acc.accountNumber}` : null,
+                  `A nombre de: ${acc.accountHolder}`,
+                  acc.notes ? acc.notes : null,
+                ].filter(Boolean).join("  ·  "))
             )
           : React.createElement(Text, { style: inv.payInfoText },
               "Contacta a la administración para obtener los datos bancarios."),

@@ -89,6 +89,67 @@ export const financeRouter = router({
       }),
   }),
 
+  // ─── Canales de pago / Cuentas bancarias ──────────────────────
+  bankAccounts: router({
+    list: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(({ ctx, input }) =>
+        ctx.db.bankAccount.findMany({
+          where: { organizationId: input.organizationId, communityId: input.communityId },
+          orderBy: { createdAt: "asc" },
+        }),
+      ),
+
+    create: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId:   z.string(),
+          bankName:      z.string().min(2),
+          accountType:   z.string().min(2),   // CORRIENTE | AHORRO | PAGO_MOVIL | ZELLE | USD | OTRO
+          accountNumber: z.string().min(1),
+          accountHolder: z.string().min(2),
+          currency:      z.enum(["VES", "USD"]),
+          notes:         z.string().optional(), // teléfono PM, email Zelle, RIF, etc.
+        }),
+      )
+      .mutation(({ ctx, input }) =>
+        ctx.db.bankAccount.create({
+          data: {
+            organizationId: input.organizationId,
+            communityId:    input.communityId,
+            bankName:       input.bankName,
+            accountType:    input.accountType,
+            accountNumber:  input.accountNumber,
+            accountHolder:  input.accountHolder,
+            currency:       input.currency as import("@prisma/client").Currency,
+            notes:          input.notes ?? null,
+            active:         true,
+          },
+        }),
+      ),
+
+    update: orgProcedure
+      .input(
+        orgIdInput.extend({
+          id:            z.string(),
+          bankName:      z.string().min(2).optional(),
+          accountType:   z.string().min(2).optional(),
+          accountNumber: z.string().min(1).optional(),
+          accountHolder: z.string().min(2).optional(),
+          currency:      z.enum(["VES", "USD"]).optional(),
+          notes:         z.string().optional(),
+          active:        z.boolean().optional(),
+        }),
+      )
+      .mutation(({ ctx, input }) => {
+        const { id, organizationId, ...data } = input;
+        return ctx.db.bankAccount.update({
+          where: { id },
+          data: { ...data, currency: data.currency as import("@prisma/client").Currency | undefined },
+        });
+      }),
+  }),
+
   // ─── Gastos ────────────────────────────────────────────────────
   expenses: router({
     list: orgProcedure
@@ -229,7 +290,7 @@ export const financeRouter = router({
           }),
           ctx.db.bankAccount.findMany({
             where: { communityId: inv.communityId, active: true },
-            select: { bankName: true, accountNumber: true, accountHolder: true, accountType: true, currency: true },
+            select: { bankName: true, accountNumber: true, accountHolder: true, accountType: true, currency: true, notes: true },
           }),
         ]);
 
@@ -278,6 +339,7 @@ export const financeRouter = router({
             accountHolder: b.accountHolder,
             accountType: b.accountType,
             currency: b.currency,
+            notes: b.notes,
           })),
         };
 

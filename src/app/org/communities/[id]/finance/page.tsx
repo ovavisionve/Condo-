@@ -221,6 +221,9 @@ export default function FinanceDashboard() {
         </Card>
       </div>
 
+      {/* ── Canales de pago ──────────────────────────────────────── */}
+      <PaymentChannelsCard organizationId={organizationId} communityId={communityId} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Cartera por antigüedad</CardTitle>
@@ -266,6 +269,189 @@ export default function FinanceDashboard() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ─── Tipos de canales ──────────────────────────────────────────────────────────
+const CHANNEL_TYPES = [
+  { value: "CORRIENTE",  label: "Cuenta Corriente (Bs)",  currency: "VES", needsAccount: true  },
+  { value: "AHORRO",     label: "Cuenta de Ahorro (Bs)",  currency: "VES", needsAccount: true  },
+  { value: "USD",        label: "Cuenta en Divisas (USD)", currency: "USD", needsAccount: true  },
+  { value: "PAGO_MOVIL", label: "Pago Móvil",              currency: "VES", needsAccount: false },
+  { value: "ZELLE",      label: "Zelle",                   currency: "USD", needsAccount: false },
+  { value: "OTRO",       label: "Otro",                    currency: "USD", needsAccount: true  },
+] as const;
+
+function PaymentChannelsCard({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const list    = trpc.finance.bankAccounts.list.useQuery({ organizationId, communityId });
+  const create  = trpc.finance.bankAccounts.create.useMutation();
+  const update  = trpc.finance.bankAccounts.update.useMutation();
+  const utils   = trpc.useUtils();
+
+  const [showForm, setShowForm] = useState(false);
+  const [chanType, setChanType] = useState("CORRIENTE");
+  const [form, setForm] = useState({ bankName: "", accountNumber: "", accountHolder: "", notes: "" });
+  const [err, setErr] = useState<string | null>(null);
+
+  const meta = CHANNEL_TYPES.find((c) => c.value === chanType) ?? CHANNEL_TYPES[0]!;
+
+  const placeholders: Record<string, { account: string; notes: string; bank: string }> = {
+    CORRIENTE:  { bank: "Banesco, BDV, Mercantil...", account: "01340000001234567890", notes: "RIF o CI del titular (opcional)" },
+    AHORRO:     { bank: "Banesco, BDV, Mercantil...", account: "01340000001234567890", notes: "RIF o CI del titular (opcional)" },
+    USD:        { bank: "Bancamiga, Banesco USD...",  account: "Número de cuenta",      notes: "RIF o información adicional" },
+    PAGO_MOVIL: { bank: "Banesco, BDV, Bicentenario...", account: "0412-1234567",       notes: "CI del titular (ej: V-12345678)" },
+    ZELLE:      { bank: "Zelle",                     account: "correo@email.com",        notes: "Nombre completo del titular" },
+    OTRO:       { bank: "Nombre del canal",           account: "Datos de contacto/cuenta", notes: "Instrucciones adicionales" },
+  };
+  const ph = placeholders[chanType] ?? placeholders.OTRO!;
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await create.mutateAsync({
+        organizationId,
+        communityId,
+        bankName:      form.bankName,
+        accountType:   chanType,
+        accountNumber: form.accountNumber,
+        accountHolder: form.accountHolder,
+        currency:      meta.currency as "VES" | "USD",
+        notes:         form.notes || undefined,
+      });
+      setForm({ bankName: "", accountNumber: "", accountHolder: "", notes: "" });
+      setShowForm(false);
+      void list.refetch();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error al guardar");
+    }
+  };
+
+  const toggleActive = async (id: string, active: boolean) => {
+    await update.mutateAsync({ organizationId, id, active: !active });
+    void list.refetch();
+  };
+
+  const typeLabel = (t: string) => CHANNEL_TYPES.find((c) => c.value === t)?.label ?? t;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">💳 Canales de pago</CardTitle>
+            <CardDescription>
+              Aparecen en todas las facturas PDF bajo "Instrucciones de pago". Agrega todos los métodos que aceptas.
+            </CardDescription>
+          </div>
+          <Button size="sm" onClick={() => setShowForm((v) => !v)}>
+            {showForm ? "Cancelar" : "+ Agregar canal"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+
+        {/* Lista de canales */}
+        {list.data && list.data.length > 0 ? (
+          <div className="divide-y rounded-lg border">
+            {list.data.map((acc) => (
+              <div key={acc.id} className={`flex items-center justify-between px-4 py-3 ${!acc.active ? "opacity-50" : ""}`}>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{typeLabel(acc.accountType)}</span>
+                    <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{acc.currency}</span>
+                    {!acc.active && <span className="text-xs text-muted-foreground">(inactivo)</span>}
+                  </div>
+                  <p className="text-sm">{acc.bankName} — {acc.accountHolder}</p>
+                  <p className="text-xs text-muted-foreground">{acc.accountNumber}{acc.notes ? ` · ${acc.notes}` : ""}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void toggleActive(acc.id, acc.active)}
+                  title={acc.active ? "Desactivar (no aparece en facturas)" : "Activar"}
+                >
+                  {acc.active ? "🟢" : "⚪"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground text-center py-4 rounded-lg border border-dashed">
+            Sin canales configurados. Las facturas mostrarán "Contacta a la administración".
+          </p>
+        )}
+
+        {/* Formulario nuevo canal */}
+        {showForm && (
+          <form onSubmit={onSubmit} className="rounded-lg border bg-muted/30 p-4 space-y-3">
+            <p className="text-sm font-medium">Nuevo canal de pago</p>
+
+            <div>
+              <Label>Tipo de canal</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm mt-1"
+                value={chanType}
+                onChange={(e) => setChanType(e.target.value)}
+              >
+                {CHANNEL_TYPES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>{chanType === "ZELLE" ? "Alias Zelle" : chanType === "PAGO_MOVIL" ? "Banco" : "Banco / Entidad"}</Label>
+                <Input
+                  placeholder={ph.bank}
+                  value={form.bankName}
+                  onChange={(e) => setForm((f) => ({ ...f, bankName: e.target.value }))}
+                  required
+                />
+              </div>
+              <div>
+                <Label>{chanType === "PAGO_MOVIL" ? "Teléfono" : chanType === "ZELLE" ? "Email o teléfono" : "Número de cuenta"}</Label>
+                <Input
+                  placeholder={ph.account}
+                  value={form.accountNumber}
+                  onChange={(e) => setForm((f) => ({ ...f, accountNumber: e.target.value }))}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Titular de la cuenta</Label>
+                <Input
+                  placeholder="Nombre del propietario de la cuenta"
+                  value={form.accountHolder}
+                  onChange={(e) => setForm((f) => ({ ...f, accountHolder: e.target.value }))}
+                  required
+                />
+              </div>
+              <div>
+                <Label>{chanType === "PAGO_MOVIL" ? "CI del titular" : chanType === "ZELLE" ? "Nombre completo" : "RIF / CI (opcional)"}</Label>
+                <Input
+                  placeholder={ph.notes}
+                  value={form.notes}
+                  onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            {err && <p className="text-sm text-destructive">{err}</p>}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>Cancelar</Button>
+              <Button type="submit" size="sm" disabled={create.isPending}>
+                {create.isPending ? "Guardando..." : "Guardar canal"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
