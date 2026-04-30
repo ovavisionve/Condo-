@@ -86,43 +86,114 @@ export async function setManualRate(
 }
 
 /**
- * Fetch BCV oficial — intenta dos fuentes en orden:
- *   1. ve.dolarapi.com  (API pública, funciona desde servidores externos)
- *   2. Scraping directo de www.bcv.org.ve (funciona en local, puede bloquearse en prod)
+ * Fetch BCV oficial — intenta cuatro fuentes en orden:
+ *   1. pydolarve.org        (API internacional, confiable desde Vercel/US)
+ *   2. ve.dolarapi.com      (API venezolana, a veces bloqueada desde US)
+ *   3. exchangerate.host    (API general con VES)
+ *   4. Scraping directo BCV (funciona en redes venezolanas)
  */
 async function fetchBcvRate(): Promise<Decimal | null> {
-  // Fuente 1: ve.dolarapi.com — API pública venezolana que publica la tasa BCV oficial
-  const fromApi = await fetchFromDolarApi();
-  if (fromApi) return fromApi;
-
-  // Fuente 2: scraping directo del BCV (funciona en redes venezolanas / local)
-  const fromScrape = await fetchBcvScrape();
-  return fromScrape;
+  const sources = [
+    fetchFromPydolarve,
+    fetchFromDolarApi,
+    fetchFromExchangeRateHost,
+    fetchBcvScrape,
+  ];
+  for (const fn of sources) {
+    const result = await fn();
+    if (result) return result;
+  }
+  return null;
 }
 
-/** Intenta obtener la tasa desde ve.dolarapi.com */
-async function fetchFromDolarApi(): Promise<Decimal | null> {
+/** pydolarve.org — funciona bien desde servidores internacionales */
+async function fetchFromPydolarve(): Promise<Decimal | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const timeout = setTimeout(() => controller.abort(), 8_000);
     try {
-      const res = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", {
+      const res = await fetch("https://pydolarve.org/api/v1/dollar?monitor=bcv", {
         signal: controller.signal,
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", "User-Agent": "Condominios/1.0" },
         cache: "no-store",
       });
       if (!res.ok) return null;
-      // Respuesta: { fuente, nombre, promedio, promedioCompra, promedioVenta, fechaActualizacion }
-      const data = (await res.json()) as { promedio?: number; promedioVenta?: number };
-      const value = data.promedio ?? data.promedioVenta;
+      const data = (await res.json()) as { price?: number; monitors?: { bcv?: { price?: number } } };
+      const value = data.price ?? data.monitors?.bcv?.price;
       if (!value || !isFinite(value) || value < 1) return null;
-      console.info("[exchange] Tasa BCV obtenida de dolarapi.com:", value);
+      console.info("[exchange] Tasa BCV de pydolarve.org:", value);
       return new Decimal(value);
     } finally {
       clearTimeout(timeout);
     }
   } catch (err) {
-    console.warn("[exchange] dolarapi.com falló:", err instanceof Error ? err.message : err);
+    console.warn("[exchange] pydolarve.org falló:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** ve.dolarapi.com — API venezolana pública */
+async function fetchFromDolarApi(): Promise<Decimal | null> {
+  const endpoints = [
+    "https://ve.dolarapi.com/v1/dolares/oficial",
+    "https://ve.dolarapi.com/v1/dolares",
+  ];
+  for (const url of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8_000);
+      try {
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!res.ok) continue;
+        const raw = await res.json();
+        // Puede ser objeto único o array de tasas
+        const item = Array.isArray(raw)
+          ? (raw as { nombre?: string; promedio?: number; promedioVenta?: number }[]).find(
+              (d) => d.nombre?.toLowerCase().includes("oficial") || d.nombre?.toLowerCase().includes("bcv"),
+            ) ?? raw[0]
+          : (raw as { promedio?: number; promedioVenta?: number });
+        const value = (item as { promedio?: number; promedioVenta?: number })?.promedio
+          ?? (item as { promedio?: number; promedioVenta?: number })?.promedioVenta;
+        if (!value || !isFinite(value) || value < 1) continue;
+        console.info("[exchange] Tasa BCV de dolarapi.com:", value);
+        return new Decimal(value);
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      console.warn("[exchange] dolarapi.com falló:", err instanceof Error ? err.message : err);
+    }
+  }
+  return null;
+}
+
+/** exchangerate.host — API general con cobertura de VES */
+async function fetchFromExchangeRateHost(): Promise<Decimal | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const res = await fetch("https://open.er-api.com/v6/latest/USD", {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { rates?: Record<string, number>; result?: string };
+      if (data.result !== "success") return null;
+      const value = data.rates?.VES;
+      if (!value || !isFinite(value) || value < 1) return null;
+      console.info("[exchange] Tasa VES/USD de open.er-api.com:", value);
+      return new Decimal(value);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    console.warn("[exchange] open.er-api.com falló:", err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -166,25 +237,34 @@ async function fetchBcvScrape(): Promise<Decimal | null> {
 
 /** Expuesta para testing — recibe HTML crudo y retorna número o null. */
 export function parseBcvHtml(html: string): number | null {
-  // Paso 1: aislar bloque div#dolar
+  // Patrón 1: bloque div#dolar exacto
   const blockMatch = html.match(/id=["']dolar["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/);
   const block = blockMatch
     ? blockMatch[0]
     : (() => {
         const idx = html.indexOf('id="dolar"');
-        return idx >= 0 ? html.slice(idx, idx + 600) : null;
+        return idx >= 0 ? html.slice(idx, idx + 800) : null;
       })();
 
-  if (!block) return null;
+  if (block) {
+    const match = block.match(/(\d{2,6}[,.](\d{2,10}))/);
+    if (match) {
+      const value = parseFloat((match[1] ?? "").replace(",", "."));
+      if (isFinite(value) && value >= 1 && value <= 100_000) return value;
+    }
+  }
 
-  // Paso 2: extraer número con coma o punto decimal
-  const match = block.match(/(\d{2,6}[,.](\d{2,10}))/);
-  if (!match) return null;
+  // Patrón 2: buscar strong con número grande en contexto "dolar"/"USD" (HTML puede cambiar)
+  const allNums = [...html.matchAll(/<strong[^>]*>(\d{2,6}[,.](\d{5,10}))<\/strong>/g)];
+  for (const m of allNums) {
+    const value = parseFloat((m[1] ?? "").replace(",", "."));
+    if (!isFinite(value) || value < 1 || value > 100_000) continue;
+    const idx = html.indexOf(m[0]);
+    const ctx = html.slice(Math.max(0, idx - 600), idx + 100).toLowerCase();
+    if (ctx.includes("dolar") || ctx.includes("usd") || ctx.includes("divisa")) return value;
+  }
 
-  const normalized = (match[1] ?? "").replace(",", ".");
-  const value = parseFloat(normalized);
-  if (!isFinite(value) || value < 1 || value > 100_000) return null;
-  return value;
+  return null;
 }
 
 /**
