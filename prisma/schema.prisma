@@ -56,6 +56,14 @@ model Organization {
   updatedAt   DateTime @updatedAt
   deletedAt   DateTime?
 
+  // Configuración de email propio de la organización
+  smtpHost    String?  // ej: smtp.gmail.com
+  smtpPort    Int?     // ej: 587
+  smtpUser    String?  // ej: miorg@gmail.com
+  smtpPass    String?  // App Password (cifrado en la app)
+  smtpFrom    String?  // ej: "Los Arrayanes <miorg@gmail.com>"
+  smtpSecure  Boolean  @default(false)
+
   subscription        Subscription?
   communities         Community[]
   memberships         Membership[]

@@ -1,24 +1,40 @@
 /**
  * Servicio de email via SMTP (nodemailer).
- * Configurar en .env: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+ * Soporta SMTP global (env vars) y SMTP por organización (campos en BD).
  * Si no hay credenciales → dry-run (solo logs).
  */
 
 import nodemailer from "nodemailer";
 
-function createTransport() {
+export interface OrgSmtp {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  from: string;
+  secure?: boolean;
+}
+
+function createTransportFromConfig(cfg: { host: string; port: number; user: string; pass: string; secure: boolean }) {
+  return nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+  });
+}
+
+function globalSmtp(): { host: string; port: number; user: string; pass: string; secure: boolean; from: string } | null {
   const host = process.env.SMTP_HOST;
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-
   if (!host || !user || !pass) return null;
-
-  return nodemailer.createTransport({
-    host,
+  return {
+    host, user, pass,
     port: Number(process.env.SMTP_PORT ?? 587),
     secure: process.env.SMTP_SECURE === "true",
-    auth: { user, pass },
-  });
+    from: process.env.SMTP_FROM ?? "noreply@condominios.app",
+  };
 }
 
 export interface SendEmailParams {
@@ -26,15 +42,35 @@ export interface SendEmailParams {
   subject: string;
   html: string;
   text?: string;
+  /** SMTP de la organización (tiene prioridad sobre el global) */
+  orgSmtp?: OrgSmtp | null;
 }
 
 export async function sendEmail(params: SendEmailParams): Promise<{ success: boolean; error?: string }> {
-  const from = process.env.SMTP_FROM ?? "noreply@condominios.app";
-  const transport = createTransport();
+  // Prioridad: SMTP de la org → SMTP global → dry-run
+  const org = params.orgSmtp;
 
-  if (!transport) {
-    console.log(`[email:dry-run] → ${params.to} | ${params.subject}`);
-    return { success: true };
+  let from: string;
+  let transport: ReturnType<typeof nodemailer.createTransport> | null = null;
+
+  if (org?.host && org.user && org.pass) {
+    from = org.from || org.user;
+    transport = createTransportFromConfig({
+      host: org.host,
+      port: org.port ?? 587,
+      user: org.user,
+      pass: org.pass,
+      secure: org.secure ?? false,
+    });
+  } else {
+    const global = globalSmtp();
+    if (global) {
+      from = global.from;
+      transport = createTransportFromConfig(global);
+    } else {
+      console.log(`[email:dry-run] → ${params.to} | ${params.subject}`);
+      return { success: true };
+    }
   }
 
   try {

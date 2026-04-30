@@ -88,6 +88,85 @@ export const orgRouter = router({
         });
         return ctx.db.community.update({ where: { id: community.id }, data });
       }),
+    /** Guarda/actualiza la config SMTP de la organización. Verifica antes de guardar. */
+    setSmtp: orgProcedure
+      .input(
+        orgIdInput.extend({
+          smtpHost: z.string().min(3),
+          smtpPort: z.coerce.number().int().min(1).max(65535).default(587),
+          smtpUser: z.string().email(),
+          smtpPass: z.string().optional(), // vacío = mantener la contraseña actual
+          smtpFrom: z.string().optional(),
+          smtpSecure: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, smtpHost, smtpPort, smtpUser, smtpFrom, smtpSecure } = input;
+        const memberships = (ctx.user.memberships ?? []) as SessionMembership[];
+        const isPlat = memberships.some((m: SessionMembership) => isPlatform(m.role));
+        const isOrgAdmin = memberships.some(
+          (m: SessionMembership) => m.organizationId === organizationId && m.role === "ORG_ADMIN",
+        );
+        if (!isPlat && !isOrgAdmin) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Solo un ORG_ADMIN puede configurar el email" });
+        }
+
+        // Si no se envía nueva contraseña, usar la existente en BD
+        let smtpPass = input.smtpPass?.trim() ?? "";
+        if (!smtpPass) {
+          const existing = await ctx.db.organization.findUnique({
+            where: { id: organizationId },
+            select: { smtpPass: true },
+          });
+          smtpPass = existing?.smtpPass ?? "";
+        }
+        if (!smtpPass) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Ingresa la App Password para guardar la configuración." });
+        }
+
+        const fromValue = smtpFrom?.trim() || smtpUser;
+
+        // Verificar SMTP enviando un email de prueba
+        const { sendEmail } = await import("@/server/services/email");
+        const testResult = await sendEmail({
+          to: smtpUser,
+          subject: "✓ Test de configuración SMTP — Condominios",
+          html: `<div style="font-family:sans-serif;max-width:480px"><h2 style="color:#1e3a5f">Configuración correcta</h2><p>El servidor de correo de tu organización está funcionando correctamente. Ya puedes enviar notificaciones a los residentes.</p></div>`,
+          text: "Tu configuración de email está funcionando.",
+          orgSmtp: { host: smtpHost, port: smtpPort, user: smtpUser, pass: smtpPass, from: fromValue, secure: smtpSecure },
+        });
+        if (!testResult.success) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `No se pudo conectar: ${testResult.error ?? "error SMTP"}`,
+          });
+        }
+
+        return ctx.db.organization.update({
+          where: { id: organizationId },
+          data: { smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom: fromValue, smtpSecure },
+        });
+      }),
+
+    /** Config SMTP de la org (sin exponer la contraseña). */
+    getSmtp: orgProcedure
+      .input(orgIdInput)
+      .query(async ({ ctx, input }) => {
+        const org = await ctx.db.organization.findFirstOrThrow({
+          where: { id: input.organizationId },
+          select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpFrom: true, smtpSecure: true, smtpPass: true },
+        });
+        return {
+          smtpHost: org.smtpHost,
+          smtpPort: org.smtpPort,
+          smtpUser: org.smtpUser,
+          smtpFrom: org.smtpFrom,
+          smtpSecure: org.smtpSecure,
+          configured: !!(org.smtpHost && org.smtpUser && org.smtpPass),
+          hasPass: !!org.smtpPass,
+        };
+      }),
+
     setMonthlyFee: orgProcedure
       .input(
         orgIdInput.extend({
@@ -592,6 +671,15 @@ export const orgRouter = router({
         const portalUrl = `${process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app"}/portal`;
         const { sendEmail } = await import("@/server/services/email");
 
+        // Usar SMTP de la organización si está configurado
+        const org = await ctx.db.organization.findUnique({
+          where: { id: input.organizationId },
+          select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true, smtpFrom: true, smtpSecure: true },
+        });
+        const orgSmtp = org?.smtpHost && org.smtpUser && org.smtpPass
+          ? { host: org.smtpHost, port: org.smtpPort ?? 587, user: org.smtpUser, pass: org.smtpPass, from: org.smtpFrom ?? org.smtpUser, secure: org.smtpSecure }
+          : null;
+
         const emailResult = await sendEmail({
           to: person.email,
           subject: "Tu acceso al Portal del Residente",
@@ -620,6 +708,7 @@ export const orgRouter = router({
             </div>
           `,
           text: `Hola ${person.firstName}, tu acceso al portal: ${portalUrl} — Usuario: ${person.email} — Contraseña: ${rawPassword}`,
+          orgSmtp,
         });
 
         if (!emailResult.success) {
