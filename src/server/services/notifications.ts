@@ -7,6 +7,7 @@
 
 import { db } from "@/server/db/client";
 import { sendWhatsAppMessage, renderTemplate } from "@/server/services/whatsapp";
+import { sendEmail } from "@/server/services/email";
 import type { NotificationEvent } from "@prisma/client";
 
 interface NotifyParams {
@@ -26,12 +27,17 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
   });
   if (!person) return;
 
-  const template = await db.whatsAppTemplate.findUnique({
-    where: { organizationId_event: { organizationId: params.organizationId, event: params.event } },
-  });
+  const [waTemplate, emailTemplate] = await Promise.all([
+    db.whatsAppTemplate.findUnique({
+      where: { organizationId_event: { organizationId: params.organizationId, event: params.event } },
+    }),
+    db.emailTemplate.findUnique({
+      where: { organizationId_event: { organizationId: params.organizationId, event: params.event } },
+    }),
+  ]);
 
   const vars = { nombre: `${person.firstName} ${person.lastName}`, ...params.vars };
-  const body = template ? renderTemplate(template.body, vars) : buildDefaultBody(params.event, vars);
+  const body = waTemplate ? renderTemplate(waTemplate.body, vars) : buildDefaultBody(params.event, vars);
 
   // WhatsApp
   if (person.whatsapp) {
@@ -49,6 +55,47 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
         recipientPhone: clean,
         body,
         externalId: result.externalId,
+        errorMessage: result.error,
+        sentAt: result.success ? new Date() : undefined,
+      },
+    });
+  }
+
+  // Email
+  if (person.email) {
+    const emailSubject = emailTemplate
+      ? renderTemplate(emailTemplate.subject, vars)
+      : buildDefaultEmailSubject(params.event, vars);
+    const emailBody = emailTemplate
+      ? renderTemplate(emailTemplate.body, vars)
+      : buildDefaultBody(params.event, vars);
+
+    const result = await sendEmail({
+      to: person.email,
+      subject: emailSubject,
+      html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#374151;max-width:600px;margin:0 auto;padding:24px;">
+        <div style="background:#1e293b;padding:20px 24px;border-radius:8px 8px 0 0;">
+          <p style="margin:0;color:#fff;font-size:18px;font-weight:700;">Residencias Hugo Chávez Frías</p>
+        </div>
+        <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
+          ${emailBody.replace(/\n/g, "<br>")}
+        </div>
+        <p style="margin-top:16px;color:#9ca3af;font-size:11px;text-align:center;">Correo automático — No responder</p>
+      </div>`,
+      text: emailBody,
+    });
+
+    await db.notification.create({
+      data: {
+        organizationId: params.organizationId,
+        communityId: params.communityId,
+        unitId: params.unitId,
+        personId: params.personId,
+        channel: "EMAIL",
+        event: params.event,
+        status: result.success ? "SENT" : "FAILED",
+        recipientEmail: person.email,
+        body: emailBody,
         errorMessage: result.error,
         sentAt: result.success ? new Date() : undefined,
       },
@@ -99,6 +146,20 @@ export async function notifyCommunity(params: {
     count++;
   }
   return count;
+}
+
+function buildDefaultEmailSubject(event: NotificationEvent, vars: Record<string, string>): string {
+  switch (event) {
+    case "INVOICE_ISSUED":     return `Recibo de condominio - ${vars.periodo ?? ""} - ${vars.factura ?? ""}`;
+    case "PAYMENT_RECEIVED":   return `Confirmación de pago recibido`;
+    case "PAYMENT_REMINDER":   return `Recordatorio de pago pendiente`;
+    case "OVERDUE_ALERT":      return `Aviso de mora - Residencias Hugo Chávez Frías`;
+    case "MAINTENANCE_ASSIGNED": return `Orden de mantenimiento asignada: ${vars.titulo ?? ""}`;
+    case "MAINTENANCE_DONE":   return `Orden de mantenimiento completada: ${vars.titulo ?? ""}`;
+    case "ANNOUNCEMENT":       return `Aviso: ${vars.titulo ?? ""}`;
+    case "ASSEMBLY_INVITE":    return `Convocatoria a asamblea - ${vars.fecha ?? ""}`;
+    default:                   return `Notificación - Residencias Hugo Chávez Frías`;
+  }
 }
 
 function buildDefaultBody(event: NotificationEvent, vars: Record<string, string>): string {
