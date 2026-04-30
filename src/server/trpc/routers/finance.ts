@@ -5,6 +5,7 @@ import {
   getCurrentRate,
   setManualRate,
   listRecentRates,
+  refreshBcvRate,
 } from "@/server/services/exchange";
 import {
   registerExpense,
@@ -78,6 +79,12 @@ export const financeRouter = router({
       )
       .mutation(async ({ input }) => {
         const r = await setManualRate(input.vesPerUsd, new Date(), input.notes);
+        return { date: r.date, source: r.source, vesPerUsd: r.vesPerUsd.toString() };
+      }),
+    refreshBcv: orgProcedure
+      .input(orgIdInput)
+      .mutation(async () => {
+        const r = await refreshBcvRate();
         return { date: r.date, source: r.source, vesPerUsd: r.vesPerUsd.toString() };
       }),
   }),

@@ -17,10 +17,13 @@ export default function FinanceDashboard() {
   const recent = trpc.finance.exchange.recent.useQuery({ organizationId, limit: 10 });
   const community = trpc.org.communities.byId.useQuery({ organizationId, id: communityId });
   const setManual = trpc.finance.exchange.setManual.useMutation();
+  const refreshBcv = trpc.finance.exchange.refreshBcv.useMutation();
   const setFee = trpc.org.communities.setMonthlyFee.useMutation();
   const utils = trpc.useUtils();
   const [manualVal, setManualVal] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [bcvErr, setBcvErr] = useState<string | null>(null);
+  const [bcvOk, setBcvOk] = useState<string | null>(null);
   const [feeVal, setFeeVal] = useState("");
   const [feeErr, setFeeErr] = useState<string | null>(null);
   const [feeOk, setFeeOk] = useState(false);
@@ -36,6 +39,19 @@ export default function FinanceDashboard() {
       void utils.org.communities.byId.invalidate();
     } catch (e: unknown) {
       setFeeErr(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const onRefreshBcv = async () => {
+    setBcvErr(null);
+    setBcvOk(null);
+    try {
+      const r = await refreshBcv.mutateAsync({ organizationId });
+      setBcvOk(`✓ Tasa actualizada: ${Number(r.vesPerUsd).toFixed(4)} VES/USD`);
+      void utils.finance.exchange.current.invalidate();
+      void utils.finance.exchange.recent.invalidate();
+    } catch (e: unknown) {
+      setBcvErr(e instanceof Error ? e.message : "Error al conectar con el BCV");
     }
   };
 
@@ -97,10 +113,22 @@ export default function FinanceDashboard() {
               {rate.data ? `${Number(rate.data.vesPerUsd).toFixed(4)} VES/USD` : "..."}
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-xs text-muted-foreground">
-            {rate.data && (
-              <>{rate.data.source} · {new Date(rate.data.date).toLocaleDateString("es-VE")}</>
-            )}
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {rate.data && (
+                <>{rate.data.source} · {new Date(rate.data.date).toLocaleDateString("es-VE")}</>
+              )}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRefreshBcv}
+              disabled={refreshBcv.isPending}
+            >
+              {refreshBcv.isPending ? "Consultando BCV..." : "🔄 Actualizar desde BCV"}
+            </Button>
+            {bcvOk && <p className="text-xs text-green-600 font-medium">{bcvOk}</p>}
+            {bcvErr && <p className="text-xs text-destructive">{bcvErr}</p>}
           </CardContent>
         </Card>
 

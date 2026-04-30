@@ -50,9 +50,11 @@ export async function getCurrentRate(
     }
   }
 
-  // Fallback: la tasa más reciente disponible para esa fuente
+  // Fallback: la tasa más reciente disponible.
+  // Para BCV, también aceptamos MANUAL como respaldo (el admin pudo haberla ingresado).
+  const sourceFallback = source === "BCV" ? { in: ["BCV", "MANUAL"] as ExchangeSource[] } : source;
   const latest = await db.exchangeRate.findFirst({
-    where: { source },
+    where: { source: sourceFallback },
     orderBy: { date: "desc" },
   });
   if (latest) {
@@ -60,7 +62,7 @@ export async function getCurrentRate(
   }
 
   throw new Error(
-    `No hay tasa de cambio disponible para ${source}. Registre una tasa manual primero.`,
+    `No hay tasa de cambio disponible. Registra una tasa manualmente en Finanzas → Configuración o presiona "Actualizar desde BCV".`,
   );
 }
 
@@ -148,6 +150,26 @@ export function parseBcvHtml(html: string): number | null {
   const value = parseFloat(normalized);
   if (!isFinite(value) || value < 1 || value > 100_000) return null;
   return value;
+}
+
+/**
+ * Fuerza un fetch fresco del BCV ignorando la caché del día.
+ * Útil para el botón "Actualizar ahora" en la UI.
+ */
+export async function refreshBcvRate(): Promise<RateInfo> {
+  const fetched = await fetchBcvRate();
+  if (!fetched) {
+    throw new Error(
+      "No se pudo obtener la tasa del BCV. El sitio puede estar caído o bloqueado. Intenta de nuevo en unos minutos.",
+    );
+  }
+  const date = dateOnly(new Date());
+  const saved = await db.exchangeRate.upsert({
+    where: { date_source: { date, source: "BCV" } },
+    update: { vesPerUsd: fetched.toString() },
+    create: { date, source: "BCV", vesPerUsd: fetched.toString() },
+  });
+  return { date: saved.date, source: saved.source, vesPerUsd: new Decimal(saved.vesPerUsd) };
 }
 
 /**
