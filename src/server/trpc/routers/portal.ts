@@ -5,19 +5,19 @@
  * 2. Credenciales permanentes — email + contraseña, login vía /login
  */
 import { z } from "zod";
-import { router, publicProcedure, protectedProcedure } from "@/server/trpc/init";
+import { router, publicProcedure } from "@/server/trpc/init";
 import { TRPCError } from "@trpc/server";
 import { sendEmail } from "@/server/services/email";
 import { getCurrentRate } from "@/server/services/exchange";
 import { Decimal } from "decimal.js";
-import bcrypt from "bcryptjs";
+import { db } from "@/server/db/client";
 
 const INVOICE_TYPE_LABELS: Record<string, string> = {
-  ALIQUOT:    "Cuota mensual",
-  SPECIAL_FEE:"Cuota especial",
-  FINE:       "Multa",
-  EXTRA_FEE:  "Cuota extra",
-  OTHER:      "Otro",
+  ALIQUOT:     "Cuota mensual",
+  SPECIAL_FEE: "Cuota especial",
+  FINE:        "Multa",
+  EXTRA_FEE:   "Cuota extra",
+  OTHER:       "Otro",
 };
 
 const METHOD_LABELS: Record<string, string> = {
@@ -41,6 +41,314 @@ const STATUS_LABELS: Record<string, string> = {
   VOIDED:  "Anulada",
 };
 
+const MONTHS_ES = [
+  "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
+];
+
+/** Short month abbreviations for chart labels */
+const MONTHS_SHORT = [
+  "Ene.","Feb.","Mar.","Abr.","May.","Jun.",
+  "Jul.","Ago.","Sep.","Oct.","Nov.","Dic.",
+];
+
+const AGING_BUCKETS = [
+  { label: "0 - 30 días",   min: 0,   max: 30  },
+  { label: "31 - 60 días",  min: 31,  max: 60  },
+  { label: "61 - 90 días",  min: 61,  max: 90  },
+  { label: "91 - 120 días", min: 91,  max: 120 },
+  { label: "+120 días",     min: 121, max: Infinity },
+];
+
+function daysOverdue(dueDate: Date | null, today: Date): number {
+  if (!dueDate) return 0;
+  const diff = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.max(0, diff);
+}
+
+function agingBucketIndex(days: number): number {
+  for (let i = 0; i < AGING_BUCKETS.length; i++) {
+    const b = AGING_BUCKETS[i]!;
+    if (days >= b.min && days <= b.max) return i;
+  }
+  return AGING_BUCKETS.length - 1;
+}
+
+// ─── Shared helper ────────────────────────────────────────────────────────────
+
+type UnitEntry = {
+  unitId: string;
+  unitCode: string;
+  communityId: string;
+  communityName: string;
+  communityAddress: string | null;
+  role: "Propietario" | "Inquilino";
+};
+
+async function buildUnitsForPerson(
+  dbClient: typeof db,
+  personId: string,
+  todayRate: Decimal,
+): Promise<Awaited<ReturnType<typeof buildUnitPayload>>[]> {
+  const today = new Date();
+
+  const [ownerships, tenancies] = await Promise.all([
+    dbClient.ownership.findMany({
+      where: { personId, endDate: null },
+      include: {
+        unit: {
+          include: {
+            community: { select: { id: true, name: true, address: true } },
+          },
+        },
+      },
+    }),
+    dbClient.tenancy.findMany({
+      where: { personId, endDate: null },
+      include: {
+        unit: {
+          include: {
+            community: { select: { id: true, name: true, address: true } },
+          },
+        },
+      },
+    }),
+  ]);
+
+  const unitEntries: UnitEntry[] = [
+    ...ownerships.map((o) => ({
+      unitId: o.unit.id,
+      unitCode: o.unit.code,
+      communityId: o.unit.community.id,
+      communityName: o.unit.community.name,
+      communityAddress: o.unit.community.address,
+      role: "Propietario" as const,
+    })),
+    ...tenancies.map((t) => ({
+      unitId: t.unit.id,
+      unitCode: t.unit.code,
+      communityId: t.unit.community.id,
+      communityName: t.unit.community.name,
+      communityAddress: t.unit.community.address,
+      role: "Inquilino" as const,
+    })),
+  ];
+
+  return Promise.all(
+    unitEntries.map((entry) => buildUnitPayload(dbClient, entry, todayRate, today)),
+  );
+}
+
+async function buildUnitPayload(
+  dbClient: typeof db,
+  entry: UnitEntry,
+  todayRate: Decimal,
+  today: Date,
+) {
+  const [invoices, payments] = await Promise.all([
+    dbClient.invoice.findMany({
+      where: { unitId: entry.unitId, status: { not: "VOIDED" } },
+      orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { issuedAt: "desc" }],
+      select: {
+        id: true,
+        invoiceNumber: true,
+        type: true,
+        periodYear: true,
+        periodMonth: true,
+        issuedAt: true,
+        dueDate: true,
+        totalUsd: true,
+        totalBss: true,
+        paidUsd: true,
+        paidBss: true,
+        status: true,
+        communityId: true,
+        unitId: true,
+        exchangeRate: true,
+        exchangeSource: true,
+      },
+    }),
+    dbClient.payment.findMany({
+      where: { unitId: entry.unitId, voidedAt: null },
+      include: {
+        allocations: {
+          include: { invoice: { select: { invoiceNumber: true } } },
+        },
+      },
+      orderBy: { paidAt: "desc" },
+    }),
+  ]);
+
+  // Pending invoices (ISSUED / PARTIAL / OVERDUE)
+  const pendingStatuses = new Set(["ISSUED", "PARTIAL", "OVERDUE"]);
+  const pendingInvoicesRaw = invoices.filter((inv) => pendingStatuses.has(inv.status));
+
+  const pendingInvoices = pendingInvoicesRaw.map((inv) => {
+    const pending = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+    const days = daysOverdue(inv.dueDate, today);
+    return {
+      id: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      type: inv.type,
+      typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
+      periodYear: inv.periodYear,
+      periodMonth: inv.periodMonth,
+      issuedAt: inv.issuedAt,
+      dueDate: inv.dueDate,
+      totalUsd: inv.totalUsd.toString(),
+      totalBss: inv.totalBss.toString(),
+      paidUsd: inv.paidUsd.toString(),
+      pendingUsd: pending.toFixed(2),
+      status: inv.status,
+      statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
+      daysOverdue: days,
+      monthsOverdue: Math.ceil(days / 30),
+    };
+  });
+
+  // Total pending USD across all invoices (not just pending-status)
+  const totalPendingUsd = invoices.reduce(
+    (acc, inv) => acc.plus(inv.totalUsd.toString()).minus(inv.paidUsd.toString()),
+    new Decimal(0),
+  );
+  const pendingBsHoy = totalPendingUsd.mul(todayRate);
+
+  // Aging buckets (based on pendingInvoices)
+  const agingBuckets = AGING_BUCKETS.map((b) => {
+    const usd = pendingInvoices
+      .filter((inv) => inv.daysOverdue >= b.min && inv.daysOverdue <= b.max)
+      .reduce((acc, inv) => acc.plus(inv.pendingUsd), new Decimal(0));
+    return { label: b.label, usd: usd.toNumber() };
+  });
+
+  // Last invoice (most recent by periodYear+periodMonth desc — already sorted)
+  const lastInvoice = invoices[0]
+    ? {
+        id: invoices[0].id,
+        totalUsd: invoices[0].totalUsd.toString(),
+        totalBss: invoices[0].totalBss.toString(),
+        periodYear: invoices[0].periodYear,
+        periodMonth: invoices[0].periodMonth,
+      }
+    : null;
+
+  // Last payment (already sorted desc by paidAt)
+  const lastPayment = payments[0]
+    ? {
+        amountUsd: payments[0].amountUsd.toString(),
+        amountBss: payments[0].amountBss.toString(),
+        paidAt: payments[0].paidAt,
+      }
+    : null;
+
+  // Payments with running balance calculation (desc order)
+  let runningBalance = totalPendingUsd;
+  const paymentsWithBalance = payments.map((p) => {
+    const amtUsd = new Decimal(p.amountUsd.toString());
+    const quedaPendienteUsd = runningBalance;
+    const saldoAnteriorUsd = runningBalance.plus(amtUsd);
+    runningBalance = saldoAnteriorUsd;
+    return {
+      id: p.id,
+      paidAt: p.paidAt,
+      method: p.method,
+      methodLabel: METHOD_LABELS[p.method] ?? p.method,
+      amountUsd: p.amountUsd.toString(),
+      amountBss: p.amountBss.toString(),
+      reference: p.reference,
+      notes: p.notes ?? null,
+      invoices: p.allocations.map((a) => a.invoice.invoiceNumber),
+      saldoAnteriorUsd: saldoAnteriorUsd.toFixed(2),
+      quedaPendienteUsd: quedaPendienteUsd.toFixed(2),
+    };
+  });
+
+  // Monthly payment totals — last 6 months
+  const monthlyPaymentTotals = buildMonthlyPaymentTotals(payments, today);
+
+  return {
+    ...entry,
+    invoices: invoices.map((inv) => ({
+      id: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      type: inv.type,
+      typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
+      periodYear: inv.periodYear,
+      periodMonth: inv.periodMonth,
+      issuedAt: inv.issuedAt,
+      dueDate: inv.dueDate,
+      totalUsd: inv.totalUsd.toString(),
+      totalBss: inv.totalBss.toString(),
+      paidUsd: inv.paidUsd.toString(),
+      pendingUsd: new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString()).toFixed(2),
+      status: inv.status,
+      statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
+    })),
+    payments: paymentsWithBalance,
+    pendingInvoices,
+    agingBuckets,
+    lastInvoice,
+    lastPayment,
+    monthlyPaymentTotals,
+    pendingUsd: totalPendingUsd.toFixed(2),
+    pendingBsHoy: pendingBsHoy.toFixed(2),
+  };
+}
+
+function buildMonthlyPaymentTotals(
+  payments: Array<{ paidAt: Date; amountUsd: { toString(): string } }>,
+  today: Date,
+): Array<{ yearMonth: string; label: string; totalUsd: number }> {
+  // Build last 6 months (including current month)
+  const months: Array<{ yearMonth: string; label: string; totalUsd: number }> = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const y = d.getFullYear();
+    const m = d.getMonth(); // 0-indexed
+    const yearMonth = `${y}-${String(m + 1).padStart(2, "0")}`;
+    const shortName = MONTHS_SHORT[m] ?? String(m + 1);
+    months.push({ yearMonth, label: `${shortName} ${y}`, totalUsd: 0 });
+  }
+
+  for (const p of payments) {
+    const pd = new Date(p.paidAt);
+    const ym = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
+    const slot = months.find((mo) => mo.yearMonth === ym);
+    if (slot) {
+      slot.totalUsd += new Decimal(p.amountUsd.toString()).toNumber();
+    }
+  }
+
+  return months.sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+}
+
+// ─── Helper: resolve personId from token or session ──────────────────────────
+
+async function resolvePersonId(
+  dbClient: typeof db,
+  token: string | undefined,
+  sessionUserId: string | undefined,
+): Promise<string | null> {
+  if (token) {
+    const record = await dbClient.portalToken.findUnique({
+      where: { token },
+      select: { personId: true, expiresAt: true },
+    });
+    if (!record || record.expiresAt < new Date()) return null;
+    return record.personId;
+  }
+  if (sessionUserId) {
+    const person = await dbClient.person.findFirst({
+      where: { userId: sessionUserId, deletedAt: null },
+      select: { id: true },
+    });
+    return person?.id ?? null;
+  }
+  return null;
+}
+
+// ─── Router ──────────────────────────────────────────────────────────────────
+
 export const portalRouter = router({
   /**
    * El residente ingresa su email. Si existe un Person con ese email,
@@ -53,14 +361,12 @@ export const portalRouter = router({
       const person = await ctx.db.person.findFirst({
         where: { email: input.email.toLowerCase(), deletedAt: null },
       });
-      if (!person) return { sent: true }; // no revelar si existe
+      if (!person) return { sent: true };
 
-      // Eliminar tokens vencidos de esta persona
       await ctx.db.portalToken.deleteMany({
         where: { personId: person.id, expiresAt: { lt: new Date() } },
       });
 
-      // Crear nuevo token (7 días)
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const record = await ctx.db.portalToken.create({
         data: { personId: person.id, expiresAt },
@@ -93,7 +399,6 @@ export const portalRouter = router({
 
   /**
    * Devuelve los datos del residente a partir de un token válido.
-   * Incluye: datos personales, unidades, facturas, pagos, saldo en USD y Bs al cambio de hoy.
    */
   getByToken: publicProcedure
     .input(z.object({ token: z.string() }))
@@ -112,57 +417,6 @@ export const portalRouter = router({
 
       const person = record.person;
 
-      // Obtener unidades activas (propietario e inquilino)
-      const [ownerships, tenancies] = await Promise.all([
-        ctx.db.ownership.findMany({
-          where: { personId: person.id, endDate: null },
-          include: {
-            unit: {
-              include: {
-                community: { select: { id: true, name: true, address: true } },
-              },
-            },
-          },
-        }),
-        ctx.db.tenancy.findMany({
-          where: { personId: person.id, endDate: null },
-          include: {
-            unit: {
-              include: {
-                community: { select: { id: true, name: true, address: true } },
-              },
-            },
-          },
-        }),
-      ]);
-
-      // Unir unidades con rol
-      type UnitEntry = {
-        unitId: string;
-        unitCode: string;
-        communityName: string;
-        communityAddress: string | null;
-        role: "Propietario" | "Inquilino";
-      };
-
-      const unitEntries: UnitEntry[] = [
-        ...ownerships.map((o) => ({
-          unitId: o.unit.id,
-          unitCode: o.unit.code,
-          communityName: o.unit.community.name,
-          communityAddress: o.unit.community.address,
-          role: "Propietario" as const,
-        })),
-        ...tenancies.map((t) => ({
-          unitId: t.unit.id,
-          unitCode: t.unit.code,
-          communityName: t.unit.community.name,
-          communityAddress: t.unit.community.address,
-          role: "Inquilino" as const,
-        })),
-      ];
-
-      // Obtener tasa de hoy
       let todayRate = new Decimal(1);
       try {
         const rate = await getCurrentRate("BCV");
@@ -171,63 +425,7 @@ export const portalRouter = router({
         // Si no hay tasa, mostrar solo USD
       }
 
-      // Para cada unidad, obtener facturas y pagos
-      const units = await Promise.all(
-        unitEntries.map(async (entry) => {
-          const [invoices, payments] = await Promise.all([
-            ctx.db.invoice.findMany({
-              where: { unitId: entry.unitId, status: { not: "VOIDED" } },
-              orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { issuedAt: "desc" }],
-            }),
-            ctx.db.payment.findMany({
-              where: { unitId: entry.unitId, voidedAt: null },
-              include: {
-                allocations: {
-                  include: { invoice: { select: { invoiceNumber: true } } },
-                },
-              },
-              orderBy: { paidAt: "desc" },
-            }),
-          ]);
-
-          // Calcular saldo en USD (fijo) y Bs al cambio de hoy
-          const pendingUsd = invoices.reduce((acc, inv) => {
-            return acc.plus(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
-          }, new Decimal(0));
-          const pendingBsHoy = pendingUsd.mul(todayRate);
-
-          return {
-            ...entry,
-            invoices: invoices.map((inv) => ({
-              id: inv.id,
-              invoiceNumber: inv.invoiceNumber,
-              type: inv.type,
-              typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
-              periodYear: inv.periodYear,
-              periodMonth: inv.periodMonth,
-              issuedAt: inv.issuedAt,
-              dueDate: inv.dueDate,
-              totalUsd: inv.totalUsd.toString(),
-              paidUsd: inv.paidUsd.toString(),
-              pendingUsd: new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString()).toFixed(2),
-              status: inv.status,
-              statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
-            })),
-            payments: payments.map((p) => ({
-              id: p.id,
-              paidAt: p.paidAt,
-              method: p.method,
-              methodLabel: METHOD_LABELS[p.method] ?? p.method,
-              amountUsd: p.amountUsd.toString(),
-              amountBss: p.amountBss.toString(),
-              reference: p.reference,
-              invoices: p.allocations.map((a) => a.invoice.invoiceNumber),
-            })),
-            pendingUsd: pendingUsd.toFixed(2),
-            pendingBsHoy: pendingBsHoy.toFixed(2),
-          };
-        }),
-      );
+      const units = await buildUnitsForPerson(db, person.id, todayRate);
 
       return {
         person: {
@@ -247,115 +445,161 @@ export const portalRouter = router({
 
   /**
    * Igual que getByToken pero usa la sesión de NextAuth.
-   * Es publicProcedure para no requerir SessionProvider en el cliente.
    * Devuelve null si no hay sesión o si el usuario no es un residente.
    */
   getBySession: publicProcedure.query(async ({ ctx }) => {
-    // Sin sesión → null (el portal mostrará el form de acceso)
     if (!ctx.session?.user?.id) return null;
 
-    // Buscar Person vinculada a este usuario
     const person = await ctx.db.person.findFirst({
       where: { userId: ctx.session.user.id, deletedAt: null },
     });
-    // Usuario sin Person vinculada (ej: admin) → null, no error
     if (!person) return null;
 
-    const [ownerships, tenancies] = await Promise.all([
-      ctx.db.ownership.findMany({
-        where: { personId: person.id, endDate: null },
-        include: {
-          unit: { include: { community: { select: { id: true, name: true, address: true } } } },
-        },
-      }),
-      ctx.db.tenancy.findMany({
-        where: { personId: person.id, endDate: null },
-        include: {
-          unit: { include: { community: { select: { id: true, name: true, address: true } } } },
-        },
-      }),
-    ]);
-
-    type UnitEntry = {
-      unitId: string; unitCode: string; communityName: string;
-      communityAddress: string | null; role: "Propietario" | "Inquilino";
-    };
-
-    const unitEntries: UnitEntry[] = [
-      ...ownerships.map((o) => ({
-        unitId: o.unit.id, unitCode: o.unit.code,
-        communityName: o.unit.community.name, communityAddress: o.unit.community.address,
-        role: "Propietario" as const,
-      })),
-      ...tenancies.map((t) => ({
-        unitId: t.unit.id, unitCode: t.unit.code,
-        communityName: t.unit.community.name, communityAddress: t.unit.community.address,
-        role: "Inquilino" as const,
-      })),
-    ];
-
     let todayRate = new Decimal(1);
-    try { const rate = await getCurrentRate("BCV"); todayRate = rate.vesPerUsd; } catch { /* ignore */ }
+    try {
+      const rate = await getCurrentRate("BCV");
+      todayRate = rate.vesPerUsd;
+    } catch {
+      // ignore
+    }
 
-    const units = await Promise.all(
-      unitEntries.map(async (entry) => {
-        const [invoices, payments] = await Promise.all([
-          ctx.db.invoice.findMany({
-            where: { unitId: entry.unitId, status: { not: "VOIDED" } },
-            orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { issuedAt: "desc" }],
-          }),
-          ctx.db.payment.findMany({
-            where: { unitId: entry.unitId, voidedAt: null },
-            include: { allocations: { include: { invoice: { select: { invoiceNumber: true } } } } },
-            orderBy: { paidAt: "desc" },
-          }),
-        ]);
-        const pendingUsd = invoices.reduce((acc, inv) =>
-          acc.plus(inv.totalUsd.toString()).minus(inv.paidUsd.toString()), new Decimal(0));
-        const pendingBsHoy = pendingUsd.mul(todayRate);
-        return {
-          ...entry,
-          invoices: invoices.map((inv) => ({
-            id: inv.id, invoiceNumber: inv.invoiceNumber, type: inv.type,
-            typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
-            periodYear: inv.periodYear, periodMonth: inv.periodMonth,
-            issuedAt: inv.issuedAt, dueDate: inv.dueDate,
-            totalUsd: inv.totalUsd.toString(), paidUsd: inv.paidUsd.toString(),
-            pendingUsd: new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString()).toFixed(2),
-            status: inv.status, statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
-          })),
-          payments: payments.map((p) => ({
-            id: p.id, paidAt: p.paidAt, method: p.method,
-            methodLabel: METHOD_LABELS[p.method] ?? p.method,
-            amountUsd: p.amountUsd.toString(), amountBss: p.amountBss.toString(),
-            reference: p.reference,
-            invoices: p.allocations.map((a) => a.invoice.invoiceNumber),
-          })),
-          pendingUsd: pendingUsd.toFixed(2),
-          pendingBsHoy: pendingBsHoy.toFixed(2),
-        };
-      }),
-    );
+    const units = await buildUnitsForPerson(db, person.id, todayRate);
 
     return {
       person: {
-        firstName: person.firstName, lastName: person.lastName, email: person.email,
-        idType: person.idType, idNumber: person.idNumber, phone: person.phone, whatsapp: person.whatsapp,
+        firstName: person.firstName,
+        lastName: person.lastName,
+        email: person.email,
+        idType: person.idType,
+        idNumber: person.idNumber,
+        phone: person.phone,
+        whatsapp: person.whatsapp,
       },
       units,
       todayRate: todayRate.toFixed(4),
-      tokenExpiresAt: null, // Sin expiración (acceso permanente)
+      tokenExpiresAt: null,
     };
   }),
 
   /**
-   * Descarga el PDF de un recibo. Valida que el invoice pertenezca al residente.
+   * Detalle completo de un aviso de cobro: ítems, deuda anterior, totales.
    * Acepta token (magic link) o usa la sesión activa.
+   */
+  getInvoiceDetail: publicProcedure
+    .input(z.object({ invoiceId: z.string(), token: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      let personId: string | null = null;
+      if (input.token) {
+        const record = await ctx.db.portalToken.findUnique({
+          where: { token: input.token },
+          select: { personId: true, expiresAt: true },
+        });
+        if (!record || record.expiresAt < new Date()) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Token inválido o expirado" });
+        }
+        personId = record.personId;
+      } else if (ctx.session?.user?.id) {
+        const person = await ctx.db.person.findFirst({
+          where: { userId: ctx.session.user.id, deletedAt: null },
+          select: { id: true },
+        });
+        personId = person?.id ?? null;
+      }
+      if (!personId) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+        ctx.db.tenancy.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+      ]);
+      const unitIds = new Set([...ownerships.map((o) => o.unitId), ...tenancies.map((t) => t.unitId)]);
+
+      const inv = await ctx.db.invoice.findFirstOrThrow({
+        where: { id: input.invoiceId },
+        include: {
+          unit: { select: { code: true, floor: true, tower: true, aliquot: true } },
+          items: { orderBy: { description: "asc" } },
+        },
+      });
+
+      if (!unitIds.has(inv.unitId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a este recibo" });
+      }
+
+      const [community, ownership, prevDebtAgg] = await Promise.all([
+        ctx.db.community.findFirstOrThrow({
+          where: { id: inv.communityId },
+          select: { name: true, address: true, rif: true, phone: true, email: true },
+        }),
+        ctx.db.ownership.findFirst({
+          where: { unitId: inv.unitId, endDate: null },
+          include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+        }),
+        ctx.db.invoice.aggregate({
+          where: {
+            unitId: inv.unitId,
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+            id: { not: inv.id },
+          },
+          _sum: { totalUsd: true, paidUsd: true },
+        }),
+      ]);
+
+      const prevDebtUsd = Math.max(
+        0,
+        Number(prevDebtAgg._sum.totalUsd ?? 0) - Number(prevDebtAgg._sum.paidUsd ?? 0),
+      );
+      const thisPendingUsd = Math.max(
+        0,
+        Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString()),
+      );
+
+      return {
+        communityName:    community.name,
+        communityAddress: community.address,
+        communityRif:     community.rif,
+        communityPhone:   community.phone,
+        communityEmail:   community.email,
+        invoiceNumber:    inv.invoiceNumber,
+        periodYear:       inv.periodYear,
+        periodMonth:      inv.periodMonth,
+        issuedAt:         inv.issuedAt,
+        dueDate:          inv.dueDate,
+        status:           inv.status,
+        unitCode:         inv.unit.code,
+        unitFloor:        inv.unit.floor,
+        unitTower:        inv.unit.tower,
+        aliquot:          inv.unit.aliquot.toString(),
+        ownerName: ownership?.person
+          ? `${ownership.person.firstName} ${ownership.person.lastName}`
+          : null,
+        ownerIdNumber: ownership?.person?.idNumber ?? null,
+        exchangeRate:   inv.exchangeRate.toString(),
+        exchangeSource: inv.exchangeSource,
+        items: inv.items.map((it) => ({
+          description: it.description,
+          aliquot:     it.aliquot?.toString() ?? null,
+          amountUsd:   it.amountUsd.toString(),
+          amountBss:   it.amountBss.toString(),
+        })),
+        totalUsd:       inv.totalUsd.toString(),
+        totalBss:       inv.totalBss.toString(),
+        paidUsd:        inv.paidUsd.toString(),
+        paidBss:        inv.paidBss.toString(),
+        prevDebtUsd:    prevDebtUsd.toFixed(2),
+        thisPendingUsd: thisPendingUsd.toFixed(2),
+        totalToPayUsd:  (thisPendingUsd + prevDebtUsd).toFixed(2),
+        totalToPayBss:  (
+          (thisPendingUsd + prevDebtUsd) * Number(inv.exchangeRate.toString())
+        ).toFixed(2),
+      };
+    }),
+
+  /**
+   * Descarga el PDF de un recibo. Valida que el invoice pertenezca al residente.
    */
   downloadInvoicePdf: publicProcedure
     .input(z.object({ invoiceId: z.string(), token: z.string().optional() }))
     .mutation(async ({ ctx, input }) => {
-      // Resolver personId según token o sesión
       let personId: string | null = null;
 
       if (input.token) {
@@ -377,7 +621,6 @@ export const portalRouter = router({
 
       if (!personId) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
 
-      // Verificar que la factura pertenece a una unidad del residente
       const [ownerships, tenancies] = await Promise.all([
         ctx.db.ownership.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
         ctx.db.tenancy.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
@@ -389,7 +632,13 @@ export const portalRouter = router({
         include: {
           unit: true,
           items: { orderBy: { description: "asc" } },
-          payments: { include: { payment: { select: { paidAt: true, method: true, amountUsd: true, amountBss: true, reference: true } } } },
+          payments: {
+            include: {
+              payment: {
+                select: { paidAt: true, method: true, amountUsd: true, amountBss: true, reference: true },
+              },
+            },
+          },
         },
       });
 
@@ -408,7 +657,10 @@ export const portalRouter = router({
         }),
         ctx.db.bankAccount.findMany({
           where: { communityId: inv.communityId, active: true },
-          select: { bankName: true, accountNumber: true, accountHolder: true, accountType: true, currency: true },
+          select: {
+            bankName: true, accountNumber: true, accountHolder: true,
+            accountType: true, currency: true,
+          },
         }),
       ]);
 
@@ -461,5 +713,256 @@ export const portalRouter = router({
         fileName: `Recibo-${inv.invoiceNumber}.pdf`,
         mimeType: "application/pdf",
       };
+    }),
+
+  /**
+   * Deuda general de la comunidad. Requiere token o sesión válida del residente.
+   * Devuelve aging de cartera a nivel comunidad + detalle por unidad.
+   */
+  getDeudaGeneral: publicProcedure
+    .input(z.object({ communityId: z.string(), token: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      // Validate identity
+      const personId = await resolvePersonId(
+        ctx.db,
+        input.token,
+        ctx.session?.user?.id,
+      );
+      if (!personId) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+      }
+
+      // Confirm resident belongs to this community
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({
+          where: { personId, endDate: null },
+          include: { unit: { select: { communityId: true } } },
+        }),
+        ctx.db.tenancy.findMany({
+          where: { personId, endDate: null },
+          include: { unit: { select: { communityId: true } } },
+        }),
+      ]);
+      const communityIds = new Set([
+        ...ownerships.map((o) => o.unit.communityId),
+        ...tenancies.map((t) => t.unit.communityId),
+      ]);
+      if (!communityIds.has(input.communityId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a esta comunidad" });
+      }
+
+      const today = new Date();
+
+      // Query all pending invoices for this community
+      const pendingInvoices = await ctx.db.invoice.findMany({
+        where: {
+          communityId: input.communityId,
+          status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+        },
+        select: {
+          id: true,
+          unitId: true,
+          dueDate: true,
+          totalUsd: true,
+          paidUsd: true,
+          unit: {
+            select: {
+              code: true,
+              ownerships: {
+                where: { endDate: null },
+                take: 1,
+                include: { person: { select: { firstName: true, lastName: true } } },
+              },
+            },
+          },
+        },
+      });
+
+      // Group by unit
+      type UnitDebtEntry = {
+        unitCode: string;
+        ownerName: string | null;
+        pendingUsd: Decimal;
+        maxDaysOverdue: number;
+      };
+      const unitMap = new Map<string, UnitDebtEntry>();
+
+      // Aging accumulators
+      const agingUsd = AGING_BUCKETS.map(() => new Decimal(0));
+      const agingUnitSets = AGING_BUCKETS.map(() => new Set<string>());
+      let totalPending = new Decimal(0);
+
+      for (const inv of pendingInvoices) {
+        const pending = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+        if (pending.lte(0)) continue;
+
+        totalPending = totalPending.plus(pending);
+
+        const days = daysOverdue(inv.dueDate, today);
+        const bucketIdx = agingBucketIndex(days);
+        agingUsd[bucketIdx] = agingUsd[bucketIdx]!.plus(pending);
+        agingUnitSets[bucketIdx]!.add(inv.unitId);
+
+        // Unit accumulation
+        const existing = unitMap.get(inv.unitId);
+        const ownerPerson = inv.unit.ownerships[0]?.person ?? null;
+        const ownerName = ownerPerson
+          ? `${ownerPerson.firstName} ${ownerPerson.lastName}`
+          : null;
+        if (existing) {
+          existing.pendingUsd = existing.pendingUsd.plus(pending);
+          existing.maxDaysOverdue = Math.max(existing.maxDaysOverdue, days);
+        } else {
+          unitMap.set(inv.unitId, {
+            unitCode: inv.unit.code,
+            ownerName,
+            pendingUsd: pending,
+            maxDaysOverdue: days,
+          });
+        }
+      }
+
+      const agingBuckets = AGING_BUCKETS.map((b, i) => ({
+        label: b.label,
+        usd: agingUsd[i]!.toNumber(),
+        count: agingUnitSets[i]!.size,
+      }));
+
+      const unidades = Array.from(unitMap.values())
+        .map((u) => ({
+          unitCode: u.unitCode,
+          ownerName: u.ownerName,
+          pendingUsd: u.pendingUsd.toFixed(2),
+          overdueMonths: Math.ceil(u.maxDaysOverdue / 30),
+        }))
+        .sort((a, b) => Number(b.pendingUsd) - Number(a.pendingUsd));
+
+      return {
+        totalPendingUsd: totalPending.toFixed(2),
+        agingBuckets,
+        unidades,
+      };
+    }),
+
+  /**
+   * Notifica al administrador de la comunidad sobre un pago realizado.
+   * Crea un registro de Notification y envía email al admin.
+   */
+  notificarPago: publicProcedure
+    .input(
+      z.object({
+        token: z.string().optional(),
+        unitId: z.string(),
+        banco: z.string().min(1),
+        referencia: z.string().min(1),
+        monto: z.coerce.number().positive(),
+        moneda: z.enum(["USD", "VES"]).default("USD"),
+        fechaPago: z.coerce.date(),
+        notas: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Validate identity
+      const personId = await resolvePersonId(
+        ctx.db,
+        input.token,
+        ctx.session?.user?.id,
+      );
+      if (!personId) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+      }
+
+      // Verify unit belongs to person
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({
+          where: { personId, endDate: null },
+          select: { unitId: true },
+        }),
+        ctx.db.tenancy.findMany({
+          where: { personId, endDate: null },
+          select: { unitId: true },
+        }),
+      ]);
+      const unitIds = new Set([
+        ...ownerships.map((o) => o.unitId),
+        ...tenancies.map((t) => t.unitId),
+      ]);
+      if (!unitIds.has(input.unitId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a esta unidad" });
+      }
+
+      // Load unit + community + organization
+      const unit = await ctx.db.unit.findFirstOrThrow({
+        where: { id: input.unitId },
+        include: {
+          community: {
+            include: {
+              organization: {
+                include: {
+                  memberships: {
+                    where: { role: "ORG_ADMIN" },
+                    include: { user: { select: { email: true, name: true } } },
+                    take: 1,
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const community = unit.community;
+      const organization = community.organization;
+      const adminUser = organization.memberships[0]?.user ?? null;
+
+      // Load person info
+      const person = await ctx.db.person.findFirstOrThrow({
+        where: { id: personId },
+        select: { firstName: true, lastName: true, email: true, phone: true },
+      });
+
+      const fechaStr = input.fechaPago.toLocaleDateString("es-VE", {
+        day: "2-digit", month: "long", year: "numeric",
+      });
+      const montoStr = `${input.moneda === "USD" ? "$" : "Bs."}${input.monto.toFixed(2)}`;
+
+      // Send email to admin
+      if (adminUser?.email) {
+        await sendEmail({
+          to: adminUser.email,
+          subject: `Notificación de pago — ${community.name} · Unidad ${unit.code}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:540px;margin:auto">
+              <h2 style="color:#1e3a5f">Notificación de pago recibido</h2>
+              <p>El residente <strong>${person.firstName} ${person.lastName}</strong> ha reportado un pago:</p>
+              <table style="border-collapse:collapse;width:100%">
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Comunidad</td><td style="padding:6px 12px">${community.name}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Unidad</td><td style="padding:6px 12px">${unit.code}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Banco / Método</td><td style="padding:6px 12px">${input.banco}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Referencia</td><td style="padding:6px 12px">${input.referencia}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Monto</td><td style="padding:6px 12px">${montoStr}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Fecha de pago</td><td style="padding:6px 12px">${fechaStr}</td></tr>
+                ${input.notas ? `<tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Notas</td><td style="padding:6px 12px">${input.notas}</td></tr>` : ""}
+              </table>
+              <p style="color:#888;font-size:12px;margin-top:24px">Este correo fue generado automáticamente desde el portal de residentes.</p>
+            </div>
+          `,
+          text: `Pago reportado por ${person.firstName} ${person.lastName}: ${montoStr} via ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.`,
+        });
+      }
+
+      // Create Notification record
+      await ctx.db.notification.create({
+        data: {
+          channel: "IN_APP",
+          event: "ANNOUNCEMENT",
+          status: "SENT",
+          organizationId: organization.id,
+          communityId: community.id,
+          body: `Pago notificado por ${person.firstName} ${person.lastName} — Unidad ${unit.code}: ${montoStr}, banco ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.${input.notas ? ` Notas: ${input.notas}` : ""}`,
+        },
+      });
+
+      return { ok: true };
     }),
 });

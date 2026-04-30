@@ -8,6 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  AreaChart, Area, PieChart, Pie, Cell, Legend,
+} from "recharts";
 
 const MONTHS_ES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
@@ -23,9 +27,54 @@ const STATUS_COLORS: Record<string, string> = {
   VOIDED:  "bg-zinc-200 text-zinc-600 line-through",
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Formulario de login para residentes
-// ──────────────────────────────────────────────────────────────────────────────
+const STATUS_LABELS: Record<string, string> = {
+  DRAFT: "Borrador", ISSUED: "Emitida", PARTIAL: "Pago parcial",
+  PAID: "Pagada", OVERDUE: "Vencida", VOIDED: "Anulada",
+};
+
+const PIE_COLORS = ["#a8d5c2", "#1e7a5f", "#f59e0b", "#f97316", "#6b7280", "#dc2626"];
+
+// ─── TIPOS ────────────────────────────────────────────────────────────────────
+type InvoiceItem = {
+  id: string; invoiceNumber: string; type: string; typeLabel: string;
+  periodYear: number | null; periodMonth: number | null;
+  issuedAt: Date; dueDate: Date;
+  totalUsd: string; totalBss: string; paidUsd: string;
+  pendingUsd: string; status: string; statusLabel: string;
+};
+type PendingInvoiceItem = {
+  id: string; invoiceNumber: string;
+  periodYear: number | null; periodMonth: number | null;
+  issuedAt: Date; dueDate: Date; typeLabel: string;
+  pendingAmountUsd: string; daysOverdue: number; monthsOverdue: number; status: string;
+};
+type PaymentItem = {
+  id: string; paidAt: Date; method: string; methodLabel: string;
+  amountUsd: string; amountBss: string; reference: string | null; notes: string | null;
+  invoices: string[];
+  saldoAnteriorUsd: string; quedaPendienteUsd: string;
+};
+type UnitData = {
+  unitId: string; unitCode: string; communityId: string;
+  communityName: string; communityAddress: string | null;
+  role: "Propietario" | "Inquilino";
+  invoices: InvoiceItem[];
+  pendingInvoices: PendingInvoiceItem[];
+  payments: PaymentItem[];
+  pendingUsd: string; pendingBsHoy: string;
+  lastInvoice: { id: string; totalUsd: string; totalBss: string; periodYear: number | null; periodMonth: number | null } | null;
+  lastPayment: { amountUsd: string; amountBss: string; paidAt: Date } | null;
+  agingBuckets: { label: string; usd: number }[];
+  monthlyPaymentTotals: { yearMonth: string; label: string; totalUsd: number }[];
+};
+type PortalData = {
+  person: { firstName: string; lastName: string; email: string | null; idType: string; idNumber: string; phone: string | null; whatsapp: string | null };
+  units: UnitData[];
+  todayRate: string;
+  tokenExpiresAt: Date | null;
+};
+
+// ─── AUTH FORMS ───────────────────────────────────────────────────────────────
 function ResidentLoginForm({ onBack }: { onBack: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,11 +87,7 @@ function ResidentLoginForm({ onBack }: { onBack: () => void }) {
     setLoading(true);
     const res = await signIn("credentials", { email, password, redirect: false });
     setLoading(false);
-    if (res?.error) {
-      setError("Email o contraseña incorrectos. Si olvidaste tu contraseña, contacta a la administración.");
-      return;
-    }
-    // Recargar la página para que getBySession lea la nueva sesión del cookie
+    if (res?.error) { setError("Email o contraseña incorrectos."); return; }
     window.location.href = "/portal";
   };
 
@@ -50,51 +95,23 @@ function ResidentLoginForm({ onBack }: { onBack: () => void }) {
     <Card className="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Iniciar sesión</CardTitle>
-        <CardDescription>
-          Ingresa el email y contraseña que te envió la administración.
-        </CardDescription>
+        <CardDescription>Ingresa el email y contraseña que te envió la administración.</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
-          <div>
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              placeholder="tu@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div>
-            <Label htmlFor="password">Contraseña</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
+          <div><Label htmlFor="email">Email</Label>
+            <Input id="email" type="email" autoComplete="email" required placeholder="tu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+          <div><Label htmlFor="password">Contraseña</Label>
+            <Input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Verificando..." : "Entrar al portal"}
-          </Button>
-          <Button variant="ghost" type="button" className="w-full text-xs" onClick={onBack}>
-            ← Volver / solicitar enlace de acceso
-          </Button>
+          <Button type="submit" className="w-full" disabled={loading}>{loading ? "Verificando..." : "Entrar al portal"}</Button>
+          <Button variant="ghost" type="button" className="w-full text-xs" onClick={onBack}>← Volver</Button>
         </form>
       </CardContent>
     </Card>
   );
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Formulario para solicitar acceso por magic link
-// ──────────────────────────────────────────────────────────────────────────────
 function RequestAccessForm({ onShowLogin }: { onShowLogin: () => void }) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
@@ -104,78 +121,40 @@ function RequestAccessForm({ onShowLogin }: { onShowLogin: () => void }) {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
-    try {
-      await request.mutateAsync({ email });
-      setSent(true);
-    } catch {
-      setErr("Error al procesar la solicitud. Intenta de nuevo.");
-    }
+    try { await request.mutateAsync({ email }); setSent(true); }
+    catch { setErr("Error al procesar la solicitud."); }
   };
 
-  if (sent) {
-    return (
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-green-700">✉️ Revisa tu correo</CardTitle>
-          <CardDescription>
-            Si tu email está registrado, recibirás un enlace de acceso en los próximos minutos.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            El enlace es válido por 7 días. Revisa también tu carpeta de spam.
-          </p>
-          <Button variant="outline" className="mt-4 w-full" onClick={() => setSent(false)}>
-            Usar otro email
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
+  if (sent) return (
+    <Card className="w-full max-w-sm">
+      <CardHeader><CardTitle className="text-green-700">✉️ Revisa tu correo</CardTitle>
+        <CardDescription>Si tu email está registrado, recibirás un enlace de acceso en los próximos minutos.</CardDescription></CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">El enlace es válido por 7 días. Revisa también tu carpeta de spam.</p>
+        <Button variant="outline" className="mt-4 w-full" onClick={() => setSent(false)}>Usar otro email</Button>
+      </CardContent>
+    </Card>
+  );
 
   return (
     <Card className="w-full max-w-sm">
-      <CardHeader>
-        <CardTitle>Portal del residente</CardTitle>
-        <CardDescription>
-          Si la administración te asignó una contraseña, usa el botón de abajo. Si no, ingresa tu email y te enviaremos un enlace.
-        </CardDescription>
-      </CardHeader>
+      <CardHeader><CardTitle>Portal del residente</CardTitle>
+        <CardDescription>Si la administración te asignó contraseña úsala abajo. Si no, envíate un enlace de acceso.</CardDescription></CardHeader>
       <CardContent className="space-y-3">
-        <Button className="w-full" onClick={onShowLogin}>
-          🔑 Tengo usuario y contraseña
-        </Button>
-        <div className="relative flex items-center gap-2">
-          <div className="flex-1 border-t" />
-          <span className="text-xs text-muted-foreground">o</span>
-          <div className="flex-1 border-t" />
-        </div>
+        <Button className="w-full" onClick={onShowLogin}>🔑 Tengo usuario y contraseña</Button>
+        <div className="relative flex items-center gap-2"><div className="flex-1 border-t" /><span className="text-xs text-muted-foreground">o</span><div className="flex-1 border-t" /></div>
         <form onSubmit={onSubmit} className="space-y-3">
-          <div>
-            <Label htmlFor="email">Enviarme un enlace de acceso</Label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              placeholder="tu@email.com"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
+          <div><Label htmlFor="email">Enviarme un enlace de acceso</Label>
+            <Input id="email" type="email" autoComplete="email" placeholder="tu@email.com" required value={email} onChange={(e) => setEmail(e.target.value)} /></div>
           {err && <p className="text-sm text-destructive">{err}</p>}
-          <Button type="submit" variant="outline" className="w-full" disabled={request.isPending}>
-            {request.isPending ? "Enviando..." : "Enviar enlace de acceso"}
-          </Button>
+          <Button type="submit" variant="outline" className="w-full" disabled={request.isPending}>{request.isPending ? "Enviando..." : "Enviar enlace de acceso"}</Button>
         </form>
       </CardContent>
     </Card>
   );
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Botón de descarga de PDF
-// ──────────────────────────────────────────────────────────────────────────────
+// ─── PDF DOWNLOAD ─────────────────────────────────────────────────────────────
 function PdfDownloadButton({ invoiceId, token }: { invoiceId: string; token?: string }) {
   const download = trpc.portal.downloadInvoicePdf.useMutation();
   const [busy, setBusy] = useState(false);
@@ -186,389 +165,791 @@ function PdfDownloadButton({ invoiceId, token }: { invoiceId: string; token?: st
       const result = await download.mutateAsync({ invoiceId, token });
       const byteCharacters = atob(result.base64);
       const byteArray = new Uint8Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteArray[i] = byteCharacters.charCodeAt(i);
-      }
+      for (let i = 0; i < byteCharacters.length; i++) byteArray[i] = byteCharacters.charCodeAt(i);
       const blob = new Blob([byteArray], { type: result.mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = result.fileName;
-      a.click();
+      a.href = url; a.download = result.fileName; a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      alert("Error al generar el PDF. Intenta de nuevo.");
-    } finally {
-      setBusy(false);
-    }
+    } catch { alert("Error al generar el PDF."); }
+    finally { setBusy(false); }
   };
 
   return (
-    <button
-      onClick={handleDownload}
-      disabled={busy}
-      title="Descargar recibo PDF"
-      className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
-    >
+    <button onClick={handleDownload} disabled={busy} title="Descargar recibo PDF"
+      className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap">
       {busy ? "..." : "⬇ PDF"}
     </button>
   );
 }
 
-// Tipo compartido del dashboard (getByToken y getBySession devuelven la misma forma)
-type PortalData = {
-  person: {
-    firstName: string; lastName: string; email: string | null;
-    idType: string; idNumber: string; phone: string | null; whatsapp: string | null;
-  };
-  units: Array<{
-    unitId: string; unitCode: string; communityName: string;
-    communityAddress: string | null; role: "Propietario" | "Inquilino";
-    invoices: Array<{
-      id: string; invoiceNumber: string; type: string; typeLabel: string;
-      periodYear: number | null; periodMonth: number | null;
-      issuedAt: Date; dueDate: Date;
-      totalUsd: string; paidUsd: string; pendingUsd: string;
-      status: string; statusLabel: string;
-    }>;
-    payments: Array<{
-      id: string; paidAt: Date; method: string; methodLabel: string;
-      amountUsd: string; amountBss: string; reference: string | null; invoices: string[];
-    }>;
-    pendingUsd: string; pendingBsHoy: string;
-  }>;
-  todayRate: string;
-  tokenExpiresAt: Date | null;
-};
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Dashboard del residente (token O sesión)
-// ──────────────────────────────────────────────────────────────────────────────
-function ResidentDashboardByToken({ token }: { token: string }) {
-  const { data, isLoading, error } = trpc.portal.getByToken.useQuery({ token });
-  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} error={error?.message} token={token} />;
-}
-
-function ResidentDashboardBySession() {
-  // getBySession es publicProcedure: devuelve null si no hay sesión o el user no es residente
-  const { data, isLoading } = trpc.portal.getBySession.useQuery();
-  // null = sin sesión activa de residente → no renderizar (el padre ya maneja esto)
-  if (!isLoading && !data) return null;
-  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} />;
-}
-
-function ResidentDashboardView({
-  data,
-  isLoading,
-  error,
-  token,
-}: {
-  data: PortalData | undefined;
-  isLoading: boolean;
-  error?: string;
-  token?: string;
-}) {
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-muted-foreground">Cargando tu información...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <Card className="w-full max-w-sm">
-          <CardHeader>
-            <CardTitle className="text-destructive">Sin acceso</CardTitle>
-            <CardDescription>{error}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <a href="/portal">
-              <Button className="w-full">Volver al portal</Button>
-            </a>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (!data) return null;
-
-  const totalPendingUsd = data.units.reduce((acc, u) => acc + Number(u.pendingUsd), 0);
-  const totalPendingBs  = data.units.reduce((acc, u) => acc + Number(u.pendingBsHoy), 0);
+// ─── AVISO DE COBRO MODAL ─────────────────────────────────────────────────────
+function AvisoCobro({ invoiceId, token, onClose }: { invoiceId: string; token?: string; onClose: () => void }) {
+  const { data, isLoading } = trpc.portal.getInvoiceDetail.useQuery({ invoiceId, token });
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      {/* Header */}
-      <div className="bg-[#1e3a5f] text-white px-6 py-4">
-        <div className="mx-auto max-w-4xl flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">Portal del Residente</h1>
-            <p className="text-sm text-blue-200">{data.person.firstName} {data.person.lastName}</p>
-          </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <p className="text-xs text-blue-300">Tasa BCV hoy</p>
-              <p className="text-lg font-semibold">{Number(data.todayRate).toFixed(2)} Bs/$</p>
-            </div>
-            {/* Botón cerrar sesión (solo si acceso por sesión, no por token) */}
-            {!token && (
-              <a
-                href="/api/auth/signout"
-                className="text-xs text-blue-300 hover:text-white border border-blue-400 hover:border-white px-3 py-1.5 rounded transition-colors"
-              >
-                Cerrar sesión
-              </a>
-            )}
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-2 py-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-3xl rounded-xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <span className="font-semibold text-[#1e3a5f]">Aviso de cobro</span>
+          <div className="flex gap-2">
+            <button onClick={() => window.print()} className="rounded border px-3 py-1 text-sm hover:bg-muted">🖨️ Imprimir</button>
+            <button onClick={onClose} className="rounded border px-3 py-1 text-sm hover:bg-muted">✕ Cerrar</button>
           </div>
         </div>
-      </div>
-
-      <div className="mx-auto max-w-4xl px-4 py-6 space-y-6">
-        {/* Resumen general */}
-        <div className="grid grid-cols-2 gap-4">
-          <Card className={totalPendingUsd > 0.005 ? "border-destructive/40 bg-destructive/5" : "border-green-200 bg-green-50"}>
-            <CardHeader className="pb-2">
-              <CardDescription>Saldo pendiente (USD)</CardDescription>
-              <CardTitle className={`text-2xl ${totalPendingUsd > 0.005 ? "text-destructive" : "text-green-700"}`}>
-                ${totalPendingUsd.toFixed(2)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">Monto fijo en dólares</p>
-            </CardContent>
-          </Card>
-          <Card className={totalPendingUsd > 0.005 ? "border-amber-200 bg-amber-50" : "border-green-200 bg-green-50"}>
-            <CardHeader className="pb-2">
-              <CardDescription>Equivalente en Bolívares hoy</CardDescription>
-              <CardTitle className={`text-2xl ${totalPendingUsd > 0.005 ? "text-amber-700" : "text-green-700"}`}>
-                Bs {totalPendingBs.toLocaleString("es-VE", { maximumFractionDigits: 2 })}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Al cambio de hoy: {Number(data.todayRate).toFixed(2)} Bs por $. Cambia diariamente.
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Por cada unidad */}
-        {data.units.map((unit) => (
-          <div key={unit.unitId} className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-border" />
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                {unit.communityName} · Unidad {unit.unitCode} · {unit.role}
-              </h2>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-
-            {Number(unit.pendingUsd) > 0.005 ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-destructive">Saldo pendiente</p>
-                  <p className="text-xs text-muted-foreground">
-                    Bs equivalente al cambio de hoy ({Number(data.todayRate).toFixed(2)} Bs/$)
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xl font-bold text-destructive">${Number(unit.pendingUsd).toFixed(2)}</p>
-                  <p className="text-sm text-muted-foreground">
-                    Bs {Number(unit.pendingBsHoy).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3">
-                <p className="text-sm font-medium text-green-700">✓ Solvente — sin deuda pendiente</p>
-              </div>
-            )}
-
-            {/* Facturas */}
-            <div>
-              <h3 className="mb-2 text-sm font-semibold">Facturas</h3>
-              <div className="overflow-auto rounded-lg border bg-card">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-left">
-                    <tr>
-                      <th className="px-3 py-2"># Factura</th>
-                      <th className="px-3 py-2">Período</th>
-                      <th className="px-3 py-2">Tipo</th>
-                      <th className="px-3 py-2 text-right">Total $</th>
-                      <th className="px-3 py-2 text-right">Pagado $</th>
-                      <th className="px-3 py-2 text-right">Pendiente $</th>
-                      <th className="px-3 py-2 text-right">Bs hoy</th>
-                      <th className="px-3 py-2">Estado</th>
-                      <th className="px-3 py-2">Vence</th>
-                      <th className="px-3 py-2">Recibo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {unit.invoices.map((inv) => {
-                      const pendingBsHoy = Number(inv.pendingUsd) * Number(data.todayRate);
-                      return (
-                        <tr key={inv.id} className="border-t">
-                          <td className="px-3 py-2 font-medium text-xs">{inv.invoiceNumber}</td>
-                          <td className="px-3 py-2 text-xs text-muted-foreground">
-                            {MONTHS_ES[(inv.periodMonth ?? 1) - 1]} {inv.periodYear}
-                          </td>
-                          <td className="px-3 py-2 text-xs">{inv.typeLabel}</td>
-                          <td className="px-3 py-2 text-right">${Number(inv.totalUsd).toFixed(2)}</td>
-                          <td className="px-3 py-2 text-right text-green-700">${Number(inv.paidUsd).toFixed(2)}</td>
-                          <td className={`px-3 py-2 text-right font-medium ${Number(inv.pendingUsd) > 0.005 ? "text-destructive" : "text-green-600"}`}>
-                            ${Number(inv.pendingUsd).toFixed(2)}
-                          </td>
-                          <td className="px-3 py-2 text-right text-xs text-muted-foreground">
-                            {Number(inv.pendingUsd) > 0.005
-                              ? `Bs ${pendingBsHoy.toLocaleString("es-VE", { maximumFractionDigits: 2 })}`
-                              : "—"}
-                          </td>
-                          <td className="px-3 py-2">
-                            <span className={`rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[inv.status] ?? "bg-gray-100"}`}>
-                              {inv.statusLabel}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-xs text-muted-foreground">
-                            {new Date(inv.dueDate).toLocaleDateString("es-VE")}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            <PdfDownloadButton invoiceId={inv.id} token={token} />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {unit.invoices.length === 0 && (
-                      <tr>
-                        <td colSpan={10} className="px-3 py-6 text-center text-muted-foreground">Sin facturas</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Pagos */}
-            <div>
-              <h3 className="mb-2 text-sm font-semibold">Historial de pagos</h3>
-              <div className="overflow-auto rounded-lg border bg-card">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-left">
-                    <tr>
-                      <th className="px-3 py-2">Fecha</th>
-                      <th className="px-3 py-2">Método</th>
-                      <th className="px-3 py-2">Referencia</th>
-                      <th className="px-3 py-2 text-right">USD</th>
-                      <th className="px-3 py-2 text-right">Bs pagados</th>
-                      <th className="px-3 py-2">Aplicado a</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {unit.payments.map((p) => (
-                      <tr key={p.id} className="border-t">
-                        <td className="px-3 py-2">{new Date(p.paidAt).toLocaleDateString("es-VE")}</td>
-                        <td className="px-3 py-2 text-xs">{p.methodLabel}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">{p.reference ?? "—"}</td>
-                        <td className="px-3 py-2 text-right">${Number(p.amountUsd).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right text-muted-foreground">
-                          Bs {Number(p.amountBss).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="px-3 py-2 text-xs">
-                          {p.invoices.length > 0
-                            ? p.invoices.join(", ")
-                            : <span className="text-amber-700">anticipo</span>}
-                        </td>
-                      </tr>
-                    ))}
-                    {unit.payments.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">Sin pagos registrados</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* Nota sobre el tipo de cambio */}
-        <div className="rounded-lg border bg-blue-50 border-blue-200 px-4 py-3">
-          <p className="text-xs text-blue-700">
-            ℹ️ <strong>Sobre el tipo de cambio:</strong> El saldo en USD es fijo. El equivalente en Bolívares
-            se actualiza diariamente con la tasa oficial del BCV ({Number(data.todayRate).toFixed(2)} Bs/$
-            al {new Date().toLocaleDateString("es-VE")}). El monto en Bs que ves hoy puede ser diferente mañana.
-          </p>
-        </div>
-
-        {/* Datos personales */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Mis datos registrados</CardTitle>
-            <CardDescription>Si hay algún error, comunícate con la administración.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground">Nombre</p>
-              <p>{data.person.firstName} {data.person.lastName}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Identificación</p>
-              <p>{data.person.idType}: {data.person.idNumber}</p>
-            </div>
-            {data.person.email && (
-              <div>
-                <p className="text-xs text-muted-foreground">Email</p>
-                <p>{data.person.email}</p>
-              </div>
-            )}
-            {data.person.phone && (
-              <div>
-                <p className="text-xs text-muted-foreground">Teléfono</p>
-                <p>{data.person.phone}</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {isLoading && <div className="py-12 text-center text-muted-foreground">Cargando aviso de cobro…</div>}
+        {data && <AvisoCobroContent data={data} />}
       </div>
     </div>
   );
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Componente raíz
-// ──────────────────────────────────────────────────────────────────────────────
+type InvoiceDetailData = {
+  communityName: string; communityAddress: string | null;
+  communityRif: string | null; communityPhone: string | null; communityEmail: string | null;
+  invoiceNumber: string; periodYear: number | null; periodMonth: number | null;
+  issuedAt: Date; dueDate: Date; status: string;
+  unitCode: string; unitFloor: number | null; unitTower: string | null; aliquot: string;
+  ownerName: string | null; ownerIdNumber: string | null;
+  exchangeRate: string; exchangeSource: string;
+  items: { description: string; aliquot: string | null; amountUsd: string; amountBss: string }[];
+  totalUsd: string; totalBss: string; paidUsd: string; paidBss: string;
+  prevDebtUsd: string; thisPendingUsd: string; totalToPayUsd: string; totalToPayBss: string;
+};
+
+function AvisoCobroContent({ data }: { data: InvoiceDetailData }) {
+  return (
+    <div className="p-5 space-y-4 text-sm print:p-2">
+      <div className="text-center">
+        <p className="font-bold text-base uppercase tracking-wide text-[#1e3a5f]">JUNTA DE CONDOMINIO {data.communityName.toUpperCase()}</p>
+        {data.communityRif && <p className="text-xs text-muted-foreground">R.I.F.: {data.communityRif}</p>}
+        {data.communityAddress && <p className="text-xs text-muted-foreground">{data.communityAddress}</p>}
+      </div>
+      <div className="text-center text-base font-bold text-[#1e3a5f]">Aviso de Cobro Nro. {data.invoiceNumber}</div>
+
+      <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
+        {/* Izquierda: ítems */}
+        <div>
+          <div className="grid grid-cols-2 mb-2 gap-2">
+            <div className="rounded border">
+              <div className="bg-[#1e3a5f] px-3 py-1 text-center text-xs font-semibold text-white uppercase">Condominio</div>
+              <div className="px-3 py-2 text-center font-medium">{data.communityName}</div>
+            </div>
+            <div className="rounded border">
+              <div className="bg-[#1e3a5f] px-3 py-1 text-center text-xs font-semibold text-white uppercase">Unidad</div>
+              <div className="px-3 py-2 text-center font-medium text-xs">
+                {data.ownerName ? `${data.ownerName} | ` : ""}{data.unitCode}
+                {data.unitTower && ` · Torre ${data.unitTower}`}
+                {data.unitFloor != null && ` · Piso ${data.unitFloor}`}
+              </div>
+            </div>
+          </div>
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white">
+                <th className="px-3 py-1.5 text-left font-semibold">GASTOS COMUNES</th>
+                <th className="px-3 py-1.5 text-right font-semibold">BS.</th>
+                <th className="px-3 py-1.5 text-right font-semibold">CUOTA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((item, i) => (
+                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                  <td className="px-3 py-1 border-b border-slate-100">{item.description}</td>
+                  <td className="px-3 py-1 border-b border-slate-100 text-right">
+                    {Number(item.amountBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-1 border-b border-slate-100 text-right text-muted-foreground">
+                    {item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+              {data.items.length === 0 && (
+                <tr><td colSpan={3} className="px-3 py-3 text-center text-muted-foreground italic">Sin ítems registrados</td></tr>
+              )}
+            </tbody>
+            <tfoot>
+              <tr className="bg-[#1e3a5f]/10 font-semibold">
+                <td className="px-3 py-1.5">TOTAL</td>
+                <td className="px-3 py-1.5 text-right">
+                  {Number(data.totalBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
+                <td className="px-3 py-1.5 text-right text-muted-foreground">
+                  {data.aliquot ? `${Number(data.aliquot).toFixed(4)}%` : ""}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {/* Derecha: resumen */}
+        <div className="w-full lg:w-72 space-y-3 shrink-0">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white">
+                <th className="px-2 py-1 font-semibold">MES</th>
+                <th className="px-2 py-1 font-semibold">FECHA</th>
+                <th className="px-2 py-1 font-semibold">PERÍODO</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="text-center">
+                <td className="border px-2 py-1">{data.periodMonth && data.periodYear ? `${String(data.periodMonth).padStart(2,"0")}/${data.periodYear}` : "—"}</td>
+                <td className="border px-2 py-1">{new Date(data.issuedAt).toLocaleDateString("es-VE")}</td>
+                <td className="border px-2 py-1 text-xs">{data.periodMonth && data.periodYear ? `${MONTHS_ES[data.periodMonth - 1]} ${data.periodYear}` : "—"}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="rounded border overflow-hidden">
+            <div className="bg-[#1e3a5f] px-3 py-1 text-center text-xs font-semibold text-white uppercase">Total del mes</div>
+            <div className="grid grid-cols-2 divide-x text-center">
+              <div className="px-3 py-2">
+                <p className="text-xs text-muted-foreground">US$</p>
+                <p className="font-bold text-[#1e3a5f]">{Number(data.totalUsd).toFixed(2)}</p>
+              </div>
+              <div className="px-3 py-2">
+                <p className="text-xs text-muted-foreground">BS.</p>
+                <p className="font-bold">{Number(data.totalBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded border overflow-hidden">
+            <div className="bg-slate-100 px-3 py-1 text-center text-xs font-semibold uppercase text-slate-600">Tasa de cambio ({data.exchangeSource})</div>
+            <div className="px-3 py-2 text-center">
+              <p className="font-bold text-[#1e3a5f]">BS. {Number(data.exchangeRate).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-xs text-muted-foreground">por 1 USD</p>
+            </div>
+          </div>
+
+          <div className="rounded border overflow-hidden">
+            <div className="bg-[#1e3a5f] px-3 py-1 text-center text-xs font-semibold text-white uppercase">Total a pagar</div>
+            <table className="w-full text-xs">
+              <tbody>
+                <tr className="border-b">
+                  <td className="px-3 py-1 text-muted-foreground">Total del mes</td>
+                  <td className="px-3 py-1 text-right font-medium">${Number(data.totalUsd).toFixed(2)}</td>
+                  <td className="px-3 py-1 text-right text-muted-foreground">{Number(data.totalBss).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</td>
+                </tr>
+                {Number(data.paidUsd) > 0 && (
+                  <tr className="border-b">
+                    <td className="px-3 py-1 text-green-700">Pagado</td>
+                    <td className="px-3 py-1 text-right font-medium text-green-700">−${Number(data.paidUsd).toFixed(2)}</td>
+                    <td className="px-3 py-1 text-right text-green-700">{Number(data.paidBss).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</td>
+                  </tr>
+                )}
+                {Number(data.prevDebtUsd) > 0 && (
+                  <tr className="border-b">
+                    <td className="px-3 py-1 text-amber-700">Pendiente anterior</td>
+                    <td className="px-3 py-1 text-right font-medium text-amber-700">+${Number(data.prevDebtUsd).toFixed(2)}</td>
+                    <td className="px-3 py-1 text-right text-amber-700">—</td>
+                  </tr>
+                )}
+                <tr className="bg-[#1e3a5f]/10 font-bold">
+                  <td className="px-3 py-2">TOTAL</td>
+                  <td className="px-3 py-2 text-right text-[#1e3a5f]">${Number(data.totalToPayUsd).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right text-[#1e3a5f]">{Number(data.totalToPayBss).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rounded border px-3 py-2 text-center text-xs">
+            <span className="text-muted-foreground">Estado: </span>
+            <span className={`font-semibold ${data.status === "PAID" ? "text-green-700" : data.status === "OVERDUE" ? "text-red-600" : data.status === "PARTIAL" ? "text-amber-700" : "text-blue-700"}`}>
+              {STATUS_LABELS[data.status] ?? data.status}
+            </span>
+            <span className="ml-3 text-muted-foreground">Vence: </span>
+            <span className="font-medium">{new Date(data.dueDate).toLocaleDateString("es-VE")}</span>
+          </div>
+        </div>
+      </div>
+
+      <p className="text-center text-xs text-muted-foreground pt-2 border-t">
+        {data.communityName}{data.communityPhone ? ` · Tel: ${data.communityPhone}` : ""}{data.communityEmail ? ` · ${data.communityEmail}` : ""}
+      </p>
+    </div>
+  );
+}
+
+// ─── TABS ─────────────────────────────────────────────────────────────────────
+const TABS = [
+  { key: "principal",  label: "Principal" },
+  { key: "pendientes", label: "Pendientes" },
+  { key: "pagos",      label: "Pagos" },
+  { key: "aviso",      label: "Aviso de cobro" },
+  { key: "notificar",  label: "Notificar pago" },
+  { key: "deuda",      label: "Deuda general" },
+] as const;
+type TabKey = typeof TABS[number]["key"];
+
+// ─── PRINCIPAL TAB ────────────────────────────────────────────────────────────
+function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: string; onTab: (t: TabKey) => void }) {
+  const pendingBs = Number(unit.pendingBsHoy);
+  const pendingUsd = Number(unit.pendingUsd);
+  const lastInv = unit.lastInvoice;
+  const lastPay = unit.lastPayment;
+
+  return (
+    <div className="space-y-6">
+      {/* Hero deuda */}
+      <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100 border px-8 py-10 text-center space-y-2">
+        <p className="text-lg font-medium text-slate-500">Deuda total</p>
+        <p className={`text-5xl font-bold tracking-tight ${pendingBs > 0 ? "text-slate-800" : "text-green-700"}`}>
+          {pendingBs > 0
+            ? `Bs. ${pendingBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : "Bs. 0,00"}
+        </p>
+        <div className="pt-2">
+          <Button
+            className="bg-[#1e7a5f] hover:bg-[#15604a] text-white px-8 py-2.5 rounded-full text-base font-semibold"
+            onClick={() => onTab("notificar")}
+          >
+            Notificar Pago
+          </Button>
+        </div>
+        <p className={`text-lg font-semibold ${pendingUsd > 0 ? "text-[#1e7a5f]" : "text-green-700"}`}>
+          Deuda Total en US$: {pendingUsd.toFixed(2)}
+        </p>
+        <p className="text-xs text-slate-500">
+          Calculado a la tasa BCV del día: {new Date().toLocaleDateString("es-VE")} / Bs. {Number(todayRate).toFixed(8)}
+        </p>
+      </div>
+
+      {/* Último mes + Último pago */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {lastInv && (
+          <div className="rounded-xl border bg-white px-6 py-5 text-center space-y-1 shadow-sm">
+            <p className="text-sm text-muted-foreground font-medium">Ultimo mes</p>
+            <p className="text-3xl font-bold text-slate-800">
+              Bs. {(Number(lastInv.totalBss) * Number(todayRate) / Number(todayRate)).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </p>
+            <p className="text-sm font-medium text-[#1e7a5f]">
+              US$ {Number(lastInv.totalUsd).toFixed(2)}
+            </p>
+            {lastInv.periodMonth && lastInv.periodYear && (
+              <p className="text-sm font-semibold text-[#1e7a5f]">
+                {MONTHS_ES[lastInv.periodMonth - 1]} / {lastInv.periodYear}
+              </p>
+            )}
+            <button
+              className="mt-2 text-xs border border-[#1e7a5f] text-[#1e7a5f] px-4 py-1.5 rounded hover:bg-[#1e7a5f] hover:text-white transition-colors"
+              onClick={() => onTab("aviso")}
+            >
+              Ver recibo
+            </button>
+          </div>
+        )}
+        {lastPay && (
+          <div className="rounded-xl border bg-white px-6 py-5 text-center space-y-1 shadow-sm">
+            <p className="text-sm text-muted-foreground font-medium">Ultimo pago</p>
+            <p className="text-3xl font-bold text-slate-800">
+              Bs. {Number(lastPay.amountBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </p>
+            <p className="text-sm font-medium text-[#1e7a5f]">US$ {Number(lastPay.amountUsd).toFixed(2)}</p>
+            <p className="text-sm font-semibold text-[#1e7a5f]">{new Date(lastPay.paidAt).toLocaleDateString("es-VE")}</p>
+            <button
+              className="mt-2 text-xs border border-[#1e7a5f] text-[#1e7a5f] px-4 py-1.5 rounded hover:bg-[#1e7a5f] hover:text-white transition-colors"
+              onClick={() => onTab("pagos")}
+            >
+              Ver pagos
+            </button>
+          </div>
+        )}
+        {!lastInv && !lastPay && (
+          <div className="col-span-2 rounded-xl border bg-white px-6 py-8 text-center text-muted-foreground">
+            Sin movimientos registrados aún.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── PENDIENTES TAB ───────────────────────────────────────────────────────────
+function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string }) {
+  const totalPendingUsd = Number(unit.pendingUsd);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">Pendientes</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-[#1e7a5f] mt-1">Agrupado por cantidad de días.</p>
+      </div>
+
+      {/* Aging bar chart */}
+      <div className="rounded-xl border bg-white p-4 shadow-sm">
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={unit.agingBuckets} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+            <Tooltip formatter={(v: unknown) => [`$${Number(v).toFixed(2)}`, "Pendiente"]} />
+            <Bar dataKey="usd" fill="#a8d5c2" radius={[4, 4, 0, 0]} name="Pendiente" />
+          </BarChart>
+        </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground mt-1">
+          <span className="font-semibold">Gráfico de análisis de vencimientos:</span> Se muestran los montos vencidos agrupados por la cantidad de días de vencimiento.
+        </p>
+      </div>
+
+      {/* Tabla cuotas pendientes */}
+      <div>
+        <h3 className="text-xl font-bold">Cuotas Pendientes</h3>
+        <p className="text-sm text-[#1e7a5f]">Expresado en US$</p>
+        <div className="text-right text-sm mb-2">
+          <span className="text-muted-foreground">Deuda total: </span>
+          <span className="font-semibold">US$ {totalPendingUsd.toFixed(2)}</span>
+        </div>
+        <div className="overflow-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white text-left">
+                <th className="px-4 py-2 font-semibold">Mes</th>
+                <th className="px-4 py-2 font-semibold">Descripción</th>
+                <th className="px-4 py-2 font-semibold text-right">Pendiente</th>
+                <th className="px-4 py-2 font-semibold text-right">Meses Vencida</th>
+                <th className="px-4 py-2 font-semibold text-right">Total Pendiente</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unit.pendingInvoices.map((inv, i) => (
+                <tr key={inv.id} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
+                  <td className="px-4 py-2 text-muted-foreground">
+                    {inv.periodMonth && inv.periodYear
+                      ? `${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear}`
+                      : new Date(inv.issuedAt).toLocaleDateString("es-VE")}
+                  </td>
+                  <td className="px-4 py-2">{inv.typeLabel}</td>
+                  <td className="px-4 py-2 text-right font-medium">{Number(inv.pendingAmountUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right">{inv.monthsOverdue}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{Number(inv.pendingAmountUsd).toFixed(2)}</td>
+                </tr>
+              ))}
+              {unit.pendingInvoices.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-6 text-center text-green-700 font-medium">✓ Sin cuotas pendientes</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Nota */}
+      <p className="text-xs text-muted-foreground border rounded px-3 py-2 bg-slate-50">
+        Los montos en bolívares se calculan al tipo de cambio BCV de hoy: {Number(todayRate).toFixed(2)} Bs/$
+      </p>
+    </div>
+  );
+}
+
+// ─── PAGOS TAB ────────────────────────────────────────────────────────────────
+function PagosTab({ unit }: { unit: UnitData }) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">Pagos de los Últimos 6 Meses</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-[#1e7a5f] mt-1">Agrupado por mes.</p>
+      </div>
+
+      {/* Area chart */}
+      <div className="rounded-xl border bg-white p-4 shadow-sm">
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={unit.monthlyPaymentTotals} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <defs>
+              <linearGradient id="colorPago" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#1e7a5f" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#1e7a5f" stopOpacity={0.05} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+            <Tooltip formatter={(v: unknown) => [`$${Number(v).toFixed(2)}`, "Pagado"]} />
+            <Area type="monotone" dataKey="totalUsd" stroke="#1e7a5f" strokeWidth={2}
+              fill="url(#colorPago)" name="Pagado" />
+          </AreaChart>
+        </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground mt-1">
+          <span className="font-semibold">Gráfico de pagos:</span> Muestra una relación de los pagos realizados en los últimos 6 meses.
+        </p>
+      </div>
+
+      {/* Tabla pagos */}
+      <div>
+        <h3 className="text-xl font-bold">Últimos Pagos Realizados</h3>
+        <p className="text-sm text-[#1e7a5f]">Expresado en US$</p>
+        <div className="mt-2 overflow-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white text-left">
+                <th className="px-4 py-2 font-semibold">Fecha</th>
+                <th className="px-4 py-2 font-semibold">Referencia</th>
+                <th className="px-4 py-2 font-semibold">Notas</th>
+                <th className="px-4 py-2 font-semibold text-right">Saldo anterior</th>
+                <th className="px-4 py-2 font-semibold text-right">Pagado</th>
+                <th className="px-4 py-2 font-semibold text-right">Queda pendiente</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unit.payments.map((p, i) => (
+                <tr key={p.id} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
+                  <td className="px-4 py-2">{new Date(p.paidAt).toLocaleDateString("es-VE")}</td>
+                  <td className="px-4 py-2 text-muted-foreground">{p.reference ?? "—"}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{p.notes ?? "—"}</td>
+                  <td className="px-4 py-2 text-right">{Number(p.saldoAnteriorUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right text-[#1e7a5f] font-semibold">{Number(p.amountUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-medium">{Number(p.quedaPendienteUsd).toFixed(2)}</td>
+                </tr>
+              ))}
+              {unit.payments.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── AVISO TAB ────────────────────────────────────────────────────────────────
+function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
+  const invoiceOptions = unit.invoices.filter(inv => inv.status !== "VOIDED");
+  const [selectedId, setSelectedId] = useState(invoiceOptions[0]?.id ?? "");
+  const { data, isLoading } = trpc.portal.getInvoiceDetail.useQuery(
+    { invoiceId: selectedId, token },
+    { enabled: !!selectedId },
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Avisos de cobro</h2>
+          <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        </div>
+        {invoiceOptions.length > 0 && (
+          <select
+            className="rounded-lg border px-3 py-2 text-sm bg-white font-medium"
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+          >
+            {invoiceOptions.map((inv) => (
+              <option key={inv.id} value={inv.id}>
+                {inv.periodMonth && inv.periodYear
+                  ? `Mes: ${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear}`
+                  : inv.invoiceNumber}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {!selectedId && <p className="py-8 text-center text-muted-foreground">Sin facturas disponibles.</p>}
+      {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando aviso de cobro…</div>}
+      {data && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="flex justify-end p-3 border-b">
+            <button onClick={() => window.print()} className="rounded border px-3 py-1 text-sm hover:bg-muted">🖨️ Imprimir</button>
+          </div>
+          <div className="p-4">
+            <AvisoCobroContent data={data as InvoiceDetailData} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── NOTIFICAR PAGO TAB ───────────────────────────────────────────────────────
+function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
+  const notify = trpc.portal.notificarPago.useMutation();
+  const [form, setForm] = useState({
+    banco: "", referencia: "", monto: "", moneda: "USD" as "USD" | "VES",
+    fechaPago: new Date().toISOString().split("T")[0]!, notas: "",
+  });
+  const [done, setDone] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await notify.mutateAsync({
+      token,
+      unitId: unit.unitId,
+      banco: form.banco,
+      referencia: form.referencia,
+      monto: parseFloat(form.monto),
+      moneda: form.moneda,
+      fechaPago: new Date(form.fechaPago + "T12:00:00"),
+      notas: form.notas || undefined,
+    });
+    setDone(true);
+  };
+
+  if (done) return (
+    <div className="rounded-xl border bg-green-50 border-green-200 px-6 py-10 text-center space-y-3">
+      <p className="text-4xl">✅</p>
+      <p className="text-xl font-semibold text-green-800">Pago notificado correctamente</p>
+      <p className="text-sm text-green-700">La administración recibió tu notificación y verificará tu pago a la brevedad posible.</p>
+      <button onClick={() => { setDone(false); setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, notas: "" }); }}
+        className="mt-4 text-sm underline text-green-800">Notificar otro pago</button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl font-bold">Notificar un pago realizado</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-muted-foreground mt-1">
+          Si ya realizaste un pago, notifícaselo a la administración con los datos de la transacción.
+        </p>
+      </div>
+
+      <div className="rounded-xl border bg-white shadow-sm p-6 max-w-lg">
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <Label>Banco emisor *</Label>
+            <Input placeholder="Ej: Banesco, Mercantil, Zelle..." required
+              value={form.banco} onChange={(e) => setForm(f => ({ ...f, banco: e.target.value }))} />
+          </div>
+          <div>
+            <Label>Número de referencia / comprobante *</Label>
+            <Input placeholder="Ej: 00123456789" required
+              value={form.referencia} onChange={(e) => setForm(f => ({ ...f, referencia: e.target.value }))} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Monto *</Label>
+              <Input type="number" step="0.01" min="0.01" placeholder="0.00" required
+                value={form.monto} onChange={(e) => setForm(f => ({ ...f, monto: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Moneda</Label>
+              <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={form.moneda} onChange={(e) => setForm(f => ({ ...f, moneda: e.target.value as "USD" | "VES" }))}>
+                <option value="USD">USD — Dólares</option>
+                <option value="VES">Bs — Bolívares</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <Label>Fecha del pago *</Label>
+            <Input type="date" required
+              value={form.fechaPago} onChange={(e) => setForm(f => ({ ...f, fechaPago: e.target.value }))} />
+          </div>
+          <div>
+            <Label>Observaciones (opcional)</Label>
+            <textarea className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" rows={3}
+              placeholder="Información adicional sobre el pago..."
+              value={form.notas} onChange={(e) => setForm(f => ({ ...f, notas: e.target.value }))} />
+          </div>
+
+          {notify.isError && (
+            <p className="text-sm text-destructive">Error al enviar la notificación. Por favor intenta de nuevo.</p>
+          )}
+
+          <Button type="submit" disabled={notify.isPending}
+            className="w-full bg-[#1e7a5f] hover:bg-[#15604a] text-white">
+            {notify.isPending ? "Enviando notificación..." : "Enviar notificación de pago"}
+          </Button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── DEUDA GENERAL TAB ────────────────────────────────────────────────────────
+function DeudaGeneralTab({ communityId, token }: { communityId: string; token?: string }) {
+  const { data, isLoading } = trpc.portal.getDeudaGeneral.useQuery({ communityId, token });
+
+  if (isLoading) return <div className="py-12 text-center text-muted-foreground">Cargando deuda general…</div>;
+  if (!data) return null;
+
+  const totalUsd = Number(data.totalPendingUsd);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">Deuda general US$ {totalUsd.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-[#1e7a5f] mt-1">Agrupado por meses.</p>
+      </div>
+
+      {/* Pie chart */}
+      <div className="rounded-xl border bg-white p-4 shadow-sm">
+        <ResponsiveContainer width="100%" height={300}>
+          <PieChart>
+            <Pie
+              data={data.agingBuckets}
+              dataKey="usd"
+              nameKey="label"
+              cx="50%"
+              cy="50%"
+              outerRadius={110}
+              label={({ name, value }: { name?: string; value?: number }) =>
+                (value ?? 0) > 0 ? `${name ?? ""} (${Number(value ?? 0).toFixed(2)})` : ""}
+              labelLine={false}
+            >
+              {data.agingBuckets.map((_: unknown, index: number) => (
+                <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip formatter={(v: unknown) => [`$${Number(v).toFixed(2)}`, ""]} />
+            <Legend
+              formatter={(value: string, entry: { payload?: { usd?: number } }) =>
+                `${value} (${Number(entry.payload?.usd ?? 0).toFixed(2)})`}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground mt-1">
+          <span className="font-semibold">Gráfico de deuda:</span> Muestra la deuda general agrupada por meses en porcentajes y montos.
+        </p>
+      </div>
+
+      {/* Tabla deuda por unidad */}
+      <div>
+        <h3 className="text-xl font-bold">Deuda General por Condominio</h3>
+        <p className="text-sm text-[#1e7a5f]">Expresado en US$</p>
+        <div className="mt-2 overflow-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white text-left">
+                <th className="px-4 py-2 font-semibold">Unidad</th>
+                <th className="px-4 py-2 font-semibold">Propietario</th>
+                <th className="px-4 py-2 font-semibold text-right">Deuda US$</th>
+                <th className="px-4 py-2 font-semibold text-right">Meses vencida</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.unidades.filter((u: { pendingUsd: string }) => Number(u.pendingUsd) > 0.005).map((u: { unitCode: string; ownerName: string | null; pendingUsd: string; overdueMonths: number }, i: number) => (
+                <tr key={u.unitCode} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
+                  <td className="px-4 py-2 font-medium">{u.unitCode}</td>
+                  <td className="px-4 py-2 text-muted-foreground">{u.ownerName ?? "—"}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{Number(u.pendingUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right">{u.overdueMonths}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DASHBOARD PRINCIPAL ──────────────────────────────────────────────────────
+function ResidentDashboard({ data, token }: { data: PortalData; token?: string }) {
+  const [tab, setTab] = useState<TabKey>("principal");
+  const unit = data.units[0];
+
+  if (!unit) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <p className="text-muted-foreground">No tienes unidades asignadas. Contacta a la administración.</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#f8f9fa]">
+      {/* Top bar */}
+      <div className="bg-[#1e3a5f] text-white">
+        <div className="mx-auto max-w-5xl px-4 py-2 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-blue-200 uppercase tracking-wider">{unit.communityName}</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-blue-200">{data.person.firstName} {data.person.lastName}</span>
+            <span className="font-bold">{unit.unitCode}</span>
+            {!token && (
+              <a href="/api/auth/signout" className="text-blue-300 hover:text-white transition-colors">Salir</a>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Tab navigation */}
+      <div className="bg-[#1e5c3f] shadow">
+        <div className="mx-auto max-w-5xl px-4 flex overflow-x-auto">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`whitespace-nowrap px-5 py-3 text-sm font-medium transition-colors border-b-2 ${
+                tab === t.key
+                  ? "border-white text-white bg-white/10"
+                  : "border-transparent text-green-200 hover:text-white hover:bg-white/5"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="mx-auto max-w-5xl px-4 py-6">
+        {tab === "principal"  && <PrincipalTab  unit={unit} todayRate={data.todayRate} onTab={setTab} />}
+        {tab === "pendientes" && <PendientesTab unit={unit} todayRate={data.todayRate} />}
+        {tab === "pagos"      && <PagosTab      unit={unit} />}
+        {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
+        {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} />}
+        {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} />}
+      </div>
+
+      {/* Footer */}
+      <div className="border-t bg-white py-4 text-center text-xs text-muted-foreground">
+        © {new Date().getFullYear()} · Sistema de Gestión de Condominios
+      </div>
+    </div>
+  );
+}
+
+// ─── WRAPPERS POR MODO DE ACCESO ──────────────────────────────────────────────
+function ResidentDashboardByToken({ token }: { token: string }) {
+  const { data, isLoading, error } = trpc.portal.getByToken.useQuery({ token });
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center"><p className="text-muted-foreground">Cargando tu información...</p></div>;
+  if (error) return (
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader><CardTitle className="text-destructive">Sin acceso</CardTitle><CardDescription>{error.message}</CardDescription></CardHeader>
+        <CardContent><a href="/portal"><Button className="w-full">Volver al portal</Button></a></CardContent>
+      </Card>
+    </div>
+  );
+  if (!data) return null;
+  return <ResidentDashboard data={data as unknown as PortalData} token={token} />;
+}
+
+function ResidentDashboardBySession() {
+  const { data, isLoading } = trpc.portal.getBySession.useQuery();
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center"><p className="text-muted-foreground">Cargando...</p></div>;
+  if (!data) return null;
+  return <ResidentDashboard data={data as unknown as PortalData} />;
+}
+
+// ─── PORTAL CONTENT (raíz) ────────────────────────────────────────────────────
 function PortalContent() {
   const params = useSearchParams();
   const token = params.get("t");
   const [showLogin, setShowLogin] = useState(false);
 
-  // getBySession: null = sin sesión/no residente, data = residente autenticado
   const { data: sessionData, isLoading: sessionLoading } = trpc.portal.getBySession.useQuery(
-    undefined,
-    { retry: false }, // no reintentar si falla
+    undefined, { retry: false },
   );
 
-  // 1. Token mágico en URL → modo legacy (sin verificar sesión)
   if (token) return <ResidentDashboardByToken token={token} />;
 
-  // 2. Cargando sesión
-  if (sessionLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-muted-foreground">Cargando...</p>
-      </div>
-    );
-  }
+  if (sessionLoading) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <p className="text-muted-foreground">Cargando...</p>
+    </div>
+  );
 
-  // 3. Hay sesión de residente activa → mostrar dashboard
-  if (sessionData) {
-    return <ResidentDashboardView data={sessionData as PortalData} isLoading={false} />;
-  }
+  if (sessionData) return <ResidentDashboard data={sessionData as unknown as PortalData} />;
 
-  // 4. Sin sesión → formulario de acceso
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-sm space-y-4">
@@ -587,11 +968,7 @@ function PortalContent() {
 
 export default function PortalPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-muted-foreground">Cargando...</p>
-      </div>
-    }>
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><p className="text-muted-foreground">Cargando...</p></div>}>
       <PortalContent />
     </Suspense>
   );
