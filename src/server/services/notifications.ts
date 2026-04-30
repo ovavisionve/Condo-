@@ -19,6 +19,30 @@ interface NotifyParams {
   vars: Record<string, string>; // variables para el template
 }
 
+/**
+ * Obtiene o crea un PortalToken válido para una persona (30 días).
+ * Se usa para incluir el link del portal en emails automáticos.
+ */
+async function getOrCreatePortalToken(personId: string): Promise<string | null> {
+  try {
+    // Buscar token válido existente
+    const existing = await db.portalToken.findFirst({
+      where: { personId, expiresAt: { gt: new Date() } },
+      orderBy: { expiresAt: "desc" },
+    });
+    if (existing) return existing.token;
+
+    // Crear uno nuevo (30 días)
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const created = await db.portalToken.create({
+      data: { personId, expiresAt },
+    });
+    return created.token;
+  } catch {
+    return null; // no bloquear el envío si falla
+  }
+}
+
 /** Envía una notificación a una persona según los templates configurados. */
 export async function notifyPerson(params: NotifyParams): Promise<void> {
   const [person, org] = await Promise.all([
@@ -63,6 +87,11 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
   const vars = { nombre: `${person.firstName} ${person.lastName}`, ...params.vars };
   const body = waTemplate ? renderTemplate(waTemplate.body, vars) : buildDefaultBody(params.event, vars);
 
+  // Portal token para incluir en el email
+  const baseUrl = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+  const portalToken = await getOrCreatePortalToken(params.personId);
+  const portalUrl = portalToken ? `${baseUrl}/portal?t=${portalToken}` : `${baseUrl}/portal`;
+
   // WhatsApp
   if (person.whatsapp) {
     const clean = person.whatsapp.replace(/\D/g, "");
@@ -94,6 +123,13 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
       ? renderTemplate(emailTemplate.body, vars)
       : buildDefaultBody(params.event, vars);
 
+    // Botón de portal según el tipo de evento
+    const portalButtonLabel =
+      params.event === "PAYMENT_RECEIVED"  ? "📄 Ver comprobante en el portal"
+      : params.event === "INVOICE_ISSUED"  ? "🧾 Ver factura en el portal"
+      : params.event === "PAYMENT_REMINDER" ? "💳 Pagar en el portal"
+      : "🏠 Ver en el portal";
+
     const result = await sendEmail({
       to: person.email,
       subject: emailSubject,
@@ -103,10 +139,17 @@ export async function notifyPerson(params: NotifyParams): Promise<void> {
         </div>
         <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
           ${emailBody.replace(/\n/g, "<br>")}
+          <div style="margin-top:24px;text-align:center;">
+            <a href="${portalUrl}"
+               style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
+              ${portalButtonLabel}
+            </a>
+            <p style="margin:8px 0 0;color:#9ca3af;font-size:11px;">Este enlace es personal — no lo comparta.</p>
+          </div>
         </div>
         <p style="margin-top:16px;color:#9ca3af;font-size:11px;text-align:center;">Correo automático — No responder</p>
       </div>`,
-      text: emailBody,
+      text: `${emailBody}\n\nVer en el portal: ${portalUrl}`,
       orgSmtp,
     });
 

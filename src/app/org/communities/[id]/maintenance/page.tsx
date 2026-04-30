@@ -8,6 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+const PAYMENT_METHODS: Record<string, string> = {
+  TRANSFER_USD: "Transf. USD", TRANSFER_BSS: "Transf. Bs",
+  CASH_USD: "Efectivo USD", CASH_BSS: "Efectivo Bs",
+  ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil",
+  CHECK: "Cheque", CRYPTO: "Cripto", OTHER: "Otro",
+};
+
 const WO_STATUSES = ["OPEN", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "CANCELLED"] as const;
 const WO_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
@@ -121,12 +128,18 @@ export default function MaintenancePage() {
               <th className="px-3 py-2">Prioridad</th>
               <th className="px-3 py-2">Estado</th>
               <th className="px-3 py-2">Contratista</th>
+              <th className="px-3 py-2">Pagos</th>
               <th className="px-3 py-2">Creado</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {list.data?.map((wo) => (
+            {list.data?.map((wo) => {
+              const totalPaid = wo.payments?.reduce(
+                (s, p) => s + Number(p.amountUsd.toString()), 0
+              ) ?? 0;
+              const agreed = wo.estimatedCostUsd ? Number(wo.estimatedCostUsd.toString()) : null;
+              return (
               <tr key={wo.id} className="border-t hover:bg-muted/30">
                 <td className="px-3 py-2 font-medium">{wo.title}</td>
                 <td className="px-3 py-2 text-muted-foreground">
@@ -152,6 +165,17 @@ export default function MaintenancePage() {
                   </span>
                 </td>
                 <td className="px-3 py-2 text-xs text-muted-foreground">{wo.contractor?.name ?? "—"}</td>
+                <td className="px-3 py-2 text-xs">
+                  {agreed != null ? (
+                    <span className={totalPaid >= agreed ? "text-green-700 font-medium" : "text-amber-700"}>
+                      ${totalPaid.toFixed(0)} / ${agreed.toFixed(0)}
+                    </span>
+                  ) : totalPaid > 0 ? (
+                    <span className="text-muted-foreground">${totalPaid.toFixed(0)} pagado</span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-xs text-muted-foreground">
                   {new Date(wo.createdAt).toLocaleDateString("es-VE")}
                 </td>
@@ -161,7 +185,8 @@ export default function MaintenancePage() {
                   </Button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {list.data?.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
@@ -330,25 +355,38 @@ function WorkOrderDetailDialog({
   const contractors = trpc.maintenance.contractors.list.useQuery({ organizationId });
   const update = trpc.maintenance.workOrders.update.useMutation();
   const addNote = trpc.maintenance.workOrders.addNote.useMutation();
+  const addPayment = trpc.maintenance.workOrders.addPayment.useMutation();
+  const deletePayment = trpc.maintenance.workOrders.deletePayment.useMutation();
   const utils = trpc.useUtils();
+
   const [note, setNote] = useState("");
   const [newStatus, setNewStatus] = useState<WOStatus | "">("");
   const [contractorId, setContractorId] = useState<string>("");
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [payForm, setPayForm] = useState({
+    amount: "", currencyPrimary: "USD" as "USD" | "VES",
+    method: "TRANSFER_USD", reference: "", description: "", paidAt: new Date().toISOString().slice(0, 10), notes: "",
+  });
+  const [payError, setPayError] = useState<string | null>(null);
 
   if (wo.isLoading) return null;
   const data = wo.data;
   if (!data) return null;
 
+  const totalPaid = (data.payments ?? []).reduce(
+    (s, p) => s + Number(p.amountUsd.toString()), 0
+  );
+  const agreed = data.estimatedCostUsd ? Number(data.estimatedCostUsd.toString()) : null;
+  const remaining = agreed != null ? Math.max(0, agreed - totalPaid) : null;
+
   const handleUpdate = async () => {
     await update.mutateAsync({
-      organizationId,
-      id: workOrderId,
+      organizationId, id: workOrderId,
       status: newStatus || undefined,
       contractorId: contractorId || undefined,
     });
     void utils.maintenance.workOrders.byId.invalidate();
-    setNewStatus("");
-    setContractorId("");
+    setNewStatus(""); setContractorId("");
   };
 
   const handleAddNote = async (e: React.FormEvent) => {
@@ -357,6 +395,37 @@ function WorkOrderDetailDialog({
     await addNote.mutateAsync({ organizationId, workOrderId, content: note });
     setNote("");
     void utils.maintenance.workOrders.byId.invalidate();
+  };
+
+  const handleAddPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPayError(null);
+    try {
+      await addPayment.mutateAsync({
+        organizationId,
+        workOrderId,
+        amount: Number(payForm.amount),
+        currencyPrimary: payForm.currencyPrimary,
+        method: payForm.method,
+        reference: payForm.reference || undefined,
+        description: payForm.description || undefined,
+        paidAt: new Date(payForm.paidAt),
+        notes: payForm.notes || undefined,
+      });
+      setShowPaymentForm(false);
+      setPayForm({ amount: "", currencyPrimary: "USD", method: "TRANSFER_USD", reference: "", description: "", paidAt: new Date().toISOString().slice(0, 10), notes: "" });
+      void utils.maintenance.workOrders.byId.invalidate();
+      void utils.maintenance.workOrders.list.invalidate();
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : "Error");
+    }
+  };
+
+  const handleDeletePayment = async (paymentId: string) => {
+    if (!confirm("¿Eliminar este pago?")) return;
+    await deletePayment.mutateAsync({ organizationId, paymentId });
+    void utils.maintenance.workOrders.byId.invalidate();
+    void utils.maintenance.workOrders.list.invalidate();
   };
 
   return (
@@ -380,14 +449,31 @@ function WorkOrderDetailDialog({
 
         <p className="mb-4 text-sm">{data.description}</p>
 
-        {data.estimatedCostUsd && (
-          <p className="mb-4 text-sm text-muted-foreground">
-            Costo estimado: ${Number(data.estimatedCostUsd.toString()).toFixed(2)}
-            {data.actualCostUsd && ` · Real: $${Number(data.actualCostUsd.toString()).toFixed(2)}`}
-          </p>
+        {/* ── Resumen de costos ── */}
+        {(agreed != null || totalPaid > 0) && (
+          <div className="mb-4 grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-3 text-center text-sm">
+            <div>
+              <p className="text-xs text-muted-foreground">Monto acordado</p>
+              <p className="font-semibold">{agreed != null ? `$${agreed.toFixed(2)}` : "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Total pagado</p>
+              <p className={`font-semibold ${totalPaid > 0 ? "text-green-700" : "text-muted-foreground"}`}>
+                ${totalPaid.toFixed(2)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Pendiente</p>
+              <p className={`font-semibold ${remaining && remaining > 0 ? "text-orange-600" : "text-green-700"}`}>
+                {remaining != null
+                  ? remaining > 0.005 ? `$${remaining.toFixed(2)}` : "✓ Saldado"
+                  : "—"}
+              </p>
+            </div>
+          </div>
         )}
 
-        {/* Actualizar estado / asignar contratista */}
+        {/* ── Actualizar estado / asignar contratista ── */}
         {data.status !== "COMPLETED" && data.status !== "CANCELLED" && (
           <div className="mb-4 flex gap-2 rounded border p-3">
             <select
@@ -416,7 +502,128 @@ function WorkOrderDetailDialog({
           </div>
         )}
 
-        {/* Actividad / notas */}
+        {/* ── Pagos al proveedor ── */}
+        <div className="mb-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-sm font-semibold">💰 Pagos al proveedor</h4>
+            <Button size="sm" variant="outline" onClick={() => setShowPaymentForm(!showPaymentForm)}>
+              {showPaymentForm ? "Cancelar" : "+ Registrar pago"}
+            </Button>
+          </div>
+
+          {showPaymentForm && (
+            <form onSubmit={handleAddPayment} className="mb-3 rounded-lg border bg-muted/20 p-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Monto</Label>
+                  <Input
+                    type="number" step="0.01" min="0.01"
+                    placeholder="0.00"
+                    value={payForm.amount}
+                    onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Moneda</Label>
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={payForm.currencyPrimary}
+                    onChange={(e) => setPayForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+                  >
+                    <option value="USD">USD</option>
+                    <option value="VES">VES (Bs)</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Método</Label>
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={payForm.method}
+                    onChange={(e) => setPayForm((f) => ({ ...f, method: e.target.value }))}
+                  >
+                    {Object.entries(PAYMENT_METHODS).map(([v, l]) => (
+                      <option key={v} value={v}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label className="text-xs">Referencia</Label>
+                  <Input
+                    placeholder="N° transferencia..."
+                    value={payForm.reference}
+                    onChange={(e) => setPayForm((f) => ({ ...f, reference: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Fecha</Label>
+                  <Input
+                    type="date"
+                    value={payForm.paidAt}
+                    onChange={(e) => setPayForm((f) => ({ ...f, paidAt: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Descripción (opcional)</Label>
+                  <Input
+                    placeholder="Cuota 1 de 3..."
+                    value={payForm.description}
+                    onChange={(e) => setPayForm((f) => ({ ...f, description: e.target.value }))}
+                  />
+                </div>
+              </div>
+              {payError && <p className="text-xs text-destructive">{payError}</p>}
+              <div className="flex justify-end gap-2">
+                <Button type="submit" size="sm" disabled={addPayment.isPending}>
+                  {addPayment.isPending ? "Guardando..." : "Registrar pago"}
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {/* Lista de pagos */}
+          {(data.payments ?? []).length > 0 ? (
+            <div className="rounded-md border divide-y">
+              {(data.payments ?? []).map((pay) => (
+                <div key={pay.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                  <div className="flex-1">
+                    <span className="font-medium">${Number(pay.amountUsd.toString()).toFixed(2)}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      Bs {Number(pay.amountBss.toString()).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
+                    </span>
+                    {pay.description && (
+                      <span className="ml-2 text-xs text-blue-700">— {pay.description}</span>
+                    )}
+                  </div>
+                  <div className="text-right text-xs text-muted-foreground">
+                    <p>{new Date(pay.paidAt).toLocaleDateString("es-VE")}</p>
+                    <p>{PAYMENT_METHODS[pay.method] ?? pay.method}{pay.reference ? ` · ${pay.reference}` : ""}</p>
+                  </div>
+                  <button
+                    onClick={() => handleDeletePayment(pay.id)}
+                    className="text-xs text-red-400 hover:text-red-600"
+                    title="Eliminar pago"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <div className="flex justify-between px-3 py-2 text-xs font-medium bg-muted/30">
+                <span>Total pagado</span>
+                <span className="text-green-700">${totalPaid.toFixed(2)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin pagos registrados</p>
+          )}
+        </div>
+
+        {/* ── Actividad / notas ── */}
         <h4 className="mb-2 text-sm font-semibold">Actividad</h4>
         <div className="mb-3 max-h-48 overflow-y-auto space-y-2">
           {data.activities.map((act) => (

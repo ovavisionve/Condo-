@@ -101,6 +101,8 @@ export interface InvoiceEmailData {
   status: string;
   adminEmail?: string;
   adminPhone?: string;
+  /** URL del portal del residente (con token mágico incluido) */
+  portalUrl?: string;
 }
 
 const MONTHS_ES = [
@@ -222,6 +224,18 @@ export function buildInvoiceEmail(data: InvoiceEmailData): { subject: string; ht
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:14px 18px;margin-bottom:24px;">
         <p style="margin:0;color:#1d4ed8;font-size:13px;font-weight:600;">¿Cómo pagar?</p>
         <p style="margin:6px 0 0;color:#1e40af;font-size:13px;">Contáctenos para coordinar su pago:${data.adminEmail ? ` <a href="mailto:${data.adminEmail}" style="color:#1d4ed8;">${data.adminEmail}</a>` : ""}${data.adminPhone ? ` · ${data.adminPhone}` : ""}</p>
+      </div>` : ""}
+
+      ${data.portalUrl ? `
+      <!-- Portal link -->
+      <div style="text-align:center;margin-bottom:8px;">
+        <a href="${data.portalUrl}"
+           style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
+          🏠 Ver recibo en el portal
+        </a>
+        <p style="margin:8px 0 0;color:#9ca3af;font-size:11px;">
+          Este enlace es personal — no lo comparta.
+        </p>
       </div>` : ""}
 
     </div>

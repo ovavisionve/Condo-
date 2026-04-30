@@ -830,10 +830,36 @@ model WorkOrder {
   updatedAt        DateTime          @updatedAt
 
   activities WorkOrderActivity[]
+  payments   WorkOrderPayment[]
 
   @@index([organizationId])
   @@index([communityId, status])
   @@index([unitId])
+}
+
+/// Pago realizado a un contratista/proveedor por una orden de trabajo.
+/// Permite llevar control de pagos parciales (cuotas).
+model WorkOrderPayment {
+  id             String    @id @default(cuid())
+  organizationId String
+  communityId    String
+  workOrderId    String
+  workOrder      WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  amountUsd      Decimal   @db.Decimal(18, 2)
+  amountBss      Decimal   @db.Decimal(18, 2)
+  exchangeRate   Decimal   @db.Decimal(18, 8)
+  exchangeSource String    @default("BCV")
+  currencyPrimary String   @default("USD")
+  method         String    @default("TRANSFER_USD")
+  reference      String?
+  description    String?
+  paidAt         DateTime  @default(now())
+  notes          String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+
+  @@index([workOrderId])
+  @@index([organizationId])
 }
 
 model WorkOrderActivity {

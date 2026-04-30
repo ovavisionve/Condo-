@@ -370,12 +370,26 @@ export const financeRouter = router({
         // Buscar propietario actual de la unidad
         const ownership = await ctx.db.ownership.findFirst({
           where: { unitId: inv.unitId, endDate: null },
-          include: { person: { select: { firstName: true, lastName: true, email: true } } },
+          include: { person: { select: { id: true, firstName: true, lastName: true, email: true } } },
         });
         const person = ownership?.person;
         if (!person?.email) {
           return { success: false, error: "El propietario no tiene email registrado" };
         }
+
+        // Generar / reusar portal token para incluir link directo en el email
+        const baseUrl = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+        let portalUrl: string | undefined;
+        try {
+          const existingToken = await ctx.db.portalToken.findFirst({
+            where: { personId: person.id, expiresAt: { gt: new Date() } },
+            orderBy: { expiresAt: "desc" },
+          });
+          const tokenRecord = existingToken ?? await ctx.db.portalToken.create({
+            data: { personId: person.id, expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+          });
+          portalUrl = `${baseUrl}/portal?t=${tokenRecord.token}`;
+        } catch { /* no bloquear */ }
 
         const emailData = buildInvoiceEmail({
           communityName: community.name,
@@ -398,6 +412,7 @@ export const financeRouter = router({
           exchangeRate: inv.exchangeRate.toString(),
           status: inv.status,
           adminEmail: process.env.SMTP_FROM,
+          portalUrl,
         });
 
         const result = await sendEmail({ to: person.email, ...emailData });

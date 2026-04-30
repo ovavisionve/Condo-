@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { router, orgProcedure } from "@/server/trpc/init";
 import { createWorkOrder, updateWorkOrder, addWorkOrderNote } from "@/server/services/maintenance";
+import { getCurrentRate } from "@/server/services/exchange";
+import { Decimal } from "decimal.js";
+import { buildBimonetary } from "@/server/services/invoicing";
 
 const orgIdInput = z.object({ organizationId: z.string() });
 
@@ -102,6 +105,7 @@ export const maintenanceRouter = router({
             unit: { select: { code: true, floor: true, tower: true } },
             contractor: { select: { name: true } },
             _count: { select: { activities: true } },
+            payments: { select: { amountUsd: true } },
           },
           orderBy: [{ priority: "desc" }, { createdAt: "desc" }],
         }),
@@ -115,6 +119,7 @@ export const maintenanceRouter = router({
             unit: { select: { code: true, floor: true, tower: true } },
             contractor: true,
             activities: { orderBy: { createdAt: "asc" } },
+            payments: { orderBy: { paidAt: "desc" } },
           },
         }),
       ),
@@ -177,6 +182,60 @@ export const maintenanceRouter = router({
           actorId: ctx.user.id,
         }),
       ),
+
+    /** Registra un pago parcial o total a un proveedor/contratista por esta orden. */
+    addPayment: orgProcedure
+      .input(
+        orgIdInput.extend({
+          workOrderId: z.string(),
+          amount: z.coerce.number().positive(),
+          currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
+          method: z.string().default("TRANSFER_USD"),
+          reference: z.string().optional(),
+          description: z.string().optional(),
+          paidAt: z.coerce.date().default(() => new Date()),
+          notes: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const wo = await ctx.db.workOrder.findFirstOrThrow({
+          where: { id: input.workOrderId, organizationId: input.organizationId },
+        });
+        const rate = await getCurrentRate("BCV", input.paidAt);
+        const { amountUsd, amountBss } = buildBimonetary(
+          input.amount,
+          input.currencyPrimary as import("@prisma/client").Currency,
+          rate.vesPerUsd,
+        );
+        return ctx.db.workOrderPayment.create({
+          data: {
+            organizationId: input.organizationId,
+            communityId: wo.communityId,
+            workOrderId: input.workOrderId,
+            amountUsd: amountUsd.toFixed(2),
+            amountBss: amountBss.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
+            exchangeSource: rate.source,
+            currencyPrimary: input.currencyPrimary,
+            method: input.method,
+            reference: input.reference,
+            description: input.description,
+            paidAt: input.paidAt,
+            notes: input.notes,
+            createdById: ctx.user.id,
+          },
+        });
+      }),
+
+    /** Elimina un pago registrado (solo si fue un error). */
+    deletePayment: orgProcedure
+      .input(orgIdInput.extend({ paymentId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const payment = await ctx.db.workOrderPayment.findFirstOrThrow({
+          where: { id: input.paymentId, organizationId: input.organizationId },
+        });
+        return ctx.db.workOrderPayment.delete({ where: { id: payment.id } });
+      }),
   }),
 
   /** Importar contratistas/proveedores en lote */
