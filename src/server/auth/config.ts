@@ -22,6 +22,8 @@ export type SessionMembership = {
   scope: MembershipScope;
   organizationId: string | null;
   communityId: string | null;
+  cargo: string | null;
+  permissions: string[];
 };
 
 const credentialsSchema = z.object({
@@ -70,7 +72,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!token.sub) return session;
       const memberships = await db.membership.findMany({
         where: { userId: token.sub, active: true, revokedAt: null },
-        select: { id: true, role: true, scope: true, organizationId: true, communityId: true },
+        select: { id: true, role: true, scope: true, organizationId: true, communityId: true, cargo: true, permissions: true },
       });
       session.user.id = token.sub;
       session.user.memberships = memberships;

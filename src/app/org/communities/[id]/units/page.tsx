@@ -15,6 +15,7 @@ export default function UnitsPage() {
   const list = trpc.org.units.list.useQuery({ organizationId, communityId });
   const [showSingle, setShowSingle] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
+  const [showTower, setShowTower] = useState(false);
   const [filterTower, setFilterTower] = useState("");
   const [filterFloor, setFilterFloor] = useState("");
 
@@ -61,6 +62,7 @@ export default function UnitsPage() {
             </select>
           )}
           <Button variant="outline" onClick={() => setShowBulk(true)}>+ Crear varias</Button>
+          <Button variant="outline" onClick={() => setShowTower(true)}>🏢 Crear por torre</Button>
           <Button onClick={() => setShowSingle(true)}>+ Unidad</Button>
         </div>
       </div>
@@ -125,6 +127,14 @@ export default function UnitsPage() {
           communityId={communityId}
           onClose={() => setShowBulk(false)}
           onCreated={() => { setShowBulk(false); void list.refetch(); }}
+        />
+      )}
+      {showTower && (
+        <TowerUnitsDialog
+          organizationId={organizationId}
+          communityId={communityId}
+          onClose={() => setShowTower(false)}
+          onCreated={() => { setShowTower(false); void list.refetch(); }}
         />
       )}
     </div>
@@ -220,6 +230,144 @@ function SingleUnitDialog({ organizationId, communityId, remaining, onClose, onC
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
             <Button type="submit" disabled={create.isPending}>{create.isPending ? "..." : "Crear"}</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Diálogo para crear unidades de una torre completa con nomenclatura venezolana.
+ * Formato: {piso}{apto}{torre}  →  153A = piso 15, apto 3, torre A
+ * PHs: PH1A, PH2A
+ */
+function TowerUnitsDialog({ organizationId, communityId, onClose, onCreated }: {
+  organizationId: string;
+  communityId: string;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const bulk = trpc.org.units.bulkCreate.useMutation();
+  const [tower, setTower] = useState("A");
+  const [floorFrom, setFloorFrom] = useState(1);
+  const [floorTo, setFloorTo] = useState(23);
+  const [aptsPerFloor, setAptsPerFloor] = useState(4);
+  const [phCount, setPhCount] = useState(2);
+  const [aliquot, setAliquot] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Genera preview de las unidades
+  const generateUnits = () => {
+    const units: { code: string; aliquot: number; type: "APARTMENT"; floor: number; tower: string }[] = [];
+    for (let floor = floorFrom; floor <= floorTo; floor++) {
+      for (let apt = 1; apt <= aptsPerFloor; apt++) {
+        units.push({
+          code: `${floor}${apt}${tower}`,
+          aliquot: Number(aliquot) || 0,
+          type: "APARTMENT",
+          floor,
+          tower,
+        });
+      }
+    }
+    for (let ph = 1; ph <= phCount; ph++) {
+      units.push({
+        code: `PH${ph}${tower}`,
+        aliquot: Number(aliquot) || 0,
+        type: "APARTMENT",
+        floor: floorTo + 1,
+        tower,
+      });
+    }
+    return units;
+  };
+
+  const units = generateUnits();
+  const totalUnits = units.length;
+  const autoAliquot = totalUnits > 0 ? (100 / totalUnits).toFixed(6) : "0";
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const finalAliquot = Number(aliquot) || Number(autoAliquot);
+    const payload = units.map((u) => ({ code: u.code, aliquot: finalAliquot, type: u.type as "APARTMENT" }));
+    try {
+      await bulk.mutateAsync({ organizationId, communityId, units: payload });
+      onCreated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error");
+    }
+  };
+
+  const preview = units.slice(0, 4);
+  const last = units[units.length - 1];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+        <h3 className="mb-1 text-lg font-semibold">Crear unidades por torre</h3>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Nomenclatura: <strong>{`{piso}{apto}{torre}`}</strong> — ej: <strong>153A</strong> = piso 15, apto 3, torre A
+        </p>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <Label>Torre</Label>
+              <Input
+                value={tower}
+                onChange={(e) => setTower(e.target.value.toUpperCase())}
+                placeholder="A, B, C..."
+                maxLength={3}
+                required
+              />
+            </div>
+            <div>
+              <Label>Piso inicial</Label>
+              <Input type="number" min={1} value={floorFrom} onChange={(e) => setFloorFrom(Number(e.target.value))} required />
+            </div>
+            <div>
+              <Label>Piso final</Label>
+              <Input type="number" min={floorFrom} value={floorTo} onChange={(e) => setFloorTo(Number(e.target.value))} required />
+            </div>
+            <div>
+              <Label>Aptos por piso</Label>
+              <Input type="number" min={1} max={20} value={aptsPerFloor} onChange={(e) => setAptsPerFloor(Number(e.target.value))} required />
+            </div>
+            <div>
+              <Label>Penthouse (PH)</Label>
+              <Input type="number" min={0} max={10} value={phCount} onChange={(e) => setPhCount(Number(e.target.value))} />
+            </div>
+            <div>
+              <Label>Alícuota % (c/u)</Label>
+              <Input
+                type="number"
+                step="0.000001"
+                placeholder={autoAliquot}
+                value={aliquot}
+                onChange={(e) => setAliquot(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div className="rounded-md bg-muted/50 p-3 text-xs space-y-1">
+            <p className="font-medium text-sm">Vista previa — {totalUnits} unidades</p>
+            <p className="text-muted-foreground">
+              {preview.map((u) => u.code).join(", ")}
+              {units.length > 4 ? ` ... ${last?.code}` : ""}
+            </p>
+            <p className="text-muted-foreground">
+              Alícuota: <strong>{Number(aliquot) || Number(autoAliquot)}%</strong> por unidad
+            </p>
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" disabled={bulk.isPending || totalUnits === 0}>
+              {bulk.isPending ? "Creando..." : `Crear ${totalUnits} unidades`}
+            </Button>
           </div>
         </form>
       </div>

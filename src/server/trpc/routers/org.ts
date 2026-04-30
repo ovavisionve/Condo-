@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Decimal } from "decimal.js";
 import { TRPCError } from "@trpc/server";
+import bcrypt from "bcryptjs";
 import { router, orgProcedure, protectedProcedure } from "@/server/trpc/init";
 import { isPlatform, canManageOrganization } from "@/server/auth/permissions";
 import type { SessionMembership } from "@/server/auth/config";
@@ -532,6 +533,135 @@ export const orgRouter = router({
           }
         }
         return { created, skipped, errors };
+      }),
+  }),
+
+  // ─── Personal / Staff de la organización ──────────────────────
+  members: router({
+    /** Lista de personal activo (excluye residentes). */
+    list: orgProcedure.input(orgIdInput).query(({ ctx, input }) =>
+      ctx.db.membership.findMany({
+        where: {
+          organizationId: input.organizationId,
+          role: { in: ["ORG_ADMIN", "COMMUNITY_ADMIN"] },
+          active: true,
+          revokedAt: null,
+        },
+        include: {
+          user: { select: { id: true, email: true, name: true, lastLoginAt: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ),
+
+    /** Crea un usuario de personal con cargo y permisos específicos. */
+    create: orgProcedure
+      .input(
+        orgIdInput.extend({
+          email: z.string().email(),
+          name: z.string().min(2),
+          password: z.string().min(8),
+          cargo: z.string().min(2),
+          permissions: z.array(z.string()),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const email = input.email.toLowerCase();
+        // Solo ORG_ADMIN puede crear personal
+        const memberships = (ctx.user.memberships ?? []) as SessionMembership[];
+        const isPlat = memberships.some((m: SessionMembership) => isPlatform(m.role));
+        const isOrgAdmin = memberships.some(
+          (m: SessionMembership) => m.organizationId === input.organizationId && m.role === "ORG_ADMIN",
+        );
+        if (!isPlat && !isOrgAdmin) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Solo un ORG_ADMIN puede crear personal" });
+        }
+
+        let user = await ctx.db.user.findUnique({ where: { email } });
+        if (!user) {
+          const hash = await bcrypt.hash(input.password, 12);
+          user = await ctx.db.user.create({
+            data: { email, name: input.name, passwordHash: hash, emailVerified: new Date(), active: true },
+          });
+        }
+
+        const existing = await ctx.db.membership.findFirst({
+          where: { userId: user.id, organizationId: input.organizationId, active: true, revokedAt: null },
+        });
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "Este usuario ya tiene acceso a esta organización" });
+        }
+
+        const membership = await ctx.db.membership.create({
+          data: {
+            userId: user.id,
+            scope: "ORGANIZATION",
+            role: "COMMUNITY_ADMIN",
+            organizationId: input.organizationId,
+            active: true,
+            cargo: input.cargo,
+            permissions: input.permissions,
+          } as never, // permite los campos nuevos aunque prisma client no los conozca aún
+          include: { user: { select: { id: true, email: true, name: true } } },
+        });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "ROLE_GRANTED",
+            entityType: "Membership",
+            entityId: membership.id,
+            after: { email, cargo: input.cargo, permissions: input.permissions },
+          },
+        });
+        return membership;
+      }),
+
+    /** Actualiza cargo y/o permisos de un miembro del personal. */
+    update: orgProcedure
+      .input(
+        orgIdInput.extend({
+          membershipId: z.string(),
+          cargo: z.string().min(2).optional(),
+          permissions: z.array(z.string()).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const mem = await ctx.db.membership.findFirstOrThrow({
+          where: { id: input.membershipId, organizationId: input.organizationId, active: true },
+        });
+        return ctx.db.membership.update({
+          where: { id: mem.id },
+          data: {
+            ...(input.cargo !== undefined ? { cargo: input.cargo } : {}),
+            ...(input.permissions !== undefined ? { permissions: input.permissions } : {}),
+          } as never,
+          include: { user: { select: { id: true, email: true, name: true } } },
+        });
+      }),
+
+    /** Revoca el acceso de un miembro del personal. */
+    revoke: orgProcedure
+      .input(orgIdInput.extend({ membershipId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const mem = await ctx.db.membership.findFirstOrThrow({
+          where: { id: input.membershipId, organizationId: input.organizationId },
+        });
+        await ctx.db.membership.update({
+          where: { id: mem.id },
+          data: { active: false, revokedAt: new Date() },
+        });
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "ROLE_REVOKED",
+            entityType: "Membership",
+            entityId: mem.id,
+          },
+        });
+        return { ok: true };
       }),
   }),
 

@@ -302,6 +302,9 @@ model Membership {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   revokedAt       DateTime?
+  // Personal con cargo y permisos específicos (no aplica a ORG_ADMIN plenos)
+  cargo           String?         // Título del cargo: "Tesorero", "Contador", texto libre
+  permissions     String[]        @default([]) // Permisos: ["view_finances","manage_payments",...]
 
   // Un usuario solo puede tener UN rol por (scope, scopeId).
   @@unique([userId, scope, organizationId, communityId])

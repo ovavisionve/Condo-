@@ -13,8 +13,11 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
 
   const memberships = session.user.memberships ?? [];
   const isPlat = memberships.some((m) => isPlatform(m.role));
+  // Permitir ORG_ADMIN, COMMUNITY_ADMIN (personal con cargo) y PLATFORM roles
   const canManage = memberships.some((m) => canManageOrganization(m.role));
   if (!canManage) redirect("/");
+  // Solo ORG_ADMIN+ puede gestionar personal
+  const isOrgAdmin = memberships.some((m) => isPlatform(m.role) || m.role === "ORG_ADMIN");
 
   const orgs = isPlat
     ? await db.organization.findMany({
@@ -50,6 +53,9 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
               </Link>
               <nav className="flex gap-4 text-sm">
                 <Link href="/org" className="hover:underline">Edificios</Link>
+                {isOrgAdmin && (
+                  <Link href="/org/members" className="hover:underline">Personal</Link>
+                )}
               </nav>
             </div>
             <div className="flex items-center gap-3">

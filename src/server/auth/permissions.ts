@@ -21,7 +21,8 @@ export function isPlatform(role: Role): boolean {
 }
 
 export function canManageOrganization(role: Role): boolean {
-  return isPlatform(role) || role === "ORG_ADMIN";
+  // COMMUNITY_ADMIN con scope ORGANIZATION = personal con cargo asignado por el admin
+  return isPlatform(role) || role === "ORG_ADMIN" || role === "COMMUNITY_ADMIN";
 }
 
 export function canManageCommunity(role: Role): boolean {
