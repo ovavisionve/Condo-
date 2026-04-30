@@ -732,6 +732,7 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
   type Report = {
     id: string; unitCode: string; personName: string; banco: string;
     referencia: string; monto: number; moneda: string; fechaPago: string;
+    tipoPago: string; tipoPagoLabel: string; invoiceId: string | null;
     notas: string | null; estado: string; notifiedAt: Date;
     unitId: string; communityId: string; personId: string; communityName: string; createdAt: string;
   };
@@ -767,41 +768,56 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
                 <th className="px-3 py-2 font-semibold">Fecha notificado</th>
                 <th className="px-3 py-2 font-semibold">Unidad</th>
                 <th className="px-3 py-2 font-semibold">Residente</th>
-                <th className="px-3 py-2 font-semibold">Banco / Método</th>
-                <th className="px-3 py-2 font-semibold">Referencia</th>
+                <th className="px-3 py-2 font-semibold">Tipo</th>
+                <th className="px-3 py-2 font-semibold">Banco / Ref.</th>
                 <th className="px-3 py-2 font-semibold text-right">Monto</th>
                 <th className="px-3 py-2 font-semibold">Fecha pago</th>
                 <th className="px-3 py-2 font-semibold">Notas</th>
               </tr>
             </thead>
             <tbody>
-              {reports.map((r, i) => (
-                <tr key={r.id} className={`border-t hover:bg-muted/20 ${i % 2 === 0 ? "" : "bg-slate-50/50"}`}>
-                  <td className="px-3 py-2 text-muted-foreground text-xs">
-                    {new Date(r.notifiedAt).toLocaleString("es-VE", { dateStyle: "short", timeStyle: "short" })}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className="font-semibold">{r.unitCode}</span>
-                  </td>
-                  <td className="px-3 py-2">{r.personName}</td>
-                  <td className="px-3 py-2">{r.banco}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.referencia}</td>
-                  <td className="px-3 py-2 text-right font-semibold">
-                    {r.moneda === "USD" ? "$" : "Bs. "}{r.monto.toFixed(2)}&nbsp;{r.moneda}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
-                    {new Date(r.fechaPago).toLocaleDateString("es-VE")}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground max-w-[180px] truncate" title={r.notas ?? ""}>
-                    {r.notas ?? "—"}
-                  </td>
-                </tr>
-              ))}
+              {reports.map((r, i) => {
+                const isAnticipo = r.tipoPago === "ANTICIPO";
+                const isCuota   = r.tipoPago === "CUOTA_ESPECIFICA";
+                return (
+                  <tr key={r.id} className={`border-t hover:bg-muted/20 ${i % 2 === 0 ? "" : "bg-slate-50/50"}`}>
+                    <td className="px-3 py-2 text-muted-foreground text-xs">
+                      {new Date(r.notifiedAt).toLocaleString("es-VE", { dateStyle: "short", timeStyle: "short" })}
+                    </td>
+                    <td className="px-3 py-2 font-semibold">{r.unitCode}</td>
+                    <td className="px-3 py-2">{r.personName}</td>
+                    <td className="px-3 py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        isAnticipo ? "bg-amber-100 text-amber-800" :
+                        isCuota   ? "bg-blue-100 text-blue-800" :
+                                    "bg-slate-100 text-slate-700"
+                      }`}>
+                        {isAnticipo ? "💰 Anticipo" : isCuota ? "📄 Cuota" : "💳 General"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div>{r.banco}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{r.referencia}</div>
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold">
+                      {r.moneda === "USD" ? "$" : "Bs. "}{r.monto.toFixed(2)}&nbsp;{r.moneda}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {new Date(r.fechaPago).toLocaleDateString("es-VE")}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground max-w-[160px] truncate" title={r.notas ?? ""}>
+                      {r.notas ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <p className="px-4 py-2 text-xs text-muted-foreground border-t bg-muted/20">
             Total: {reports.length} pago{reports.length !== 1 ? "s" : ""} reportado{reports.length !== 1 ? "s" : ""}.
-            Para registrar un pago, ve a <strong>Finanzas → Pagos → Registrar pago</strong> con los datos de la tabla.
+            {" "}Para registrar: ve a <strong>Finanzas → Pagos → Registrar pago</strong>.
+            {" "}Los <strong>💰 Anticipos</strong> se registran sin asignar a factura — el saldo queda como crédito y se descuenta de la deuda del residente automáticamente.
+            {" "}Los <strong>📄 Cuota específica</strong> se asignan a la factura indicada.
           </p>
         </div>
       )}

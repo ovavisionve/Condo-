@@ -206,12 +206,29 @@ async function buildUnitPayload(
     };
   });
 
-  // Total pending USD across all invoices (not just pending-status)
+  // Total pending USD across all invoices (gross — before applying unallocated credit)
   const totalPendingUsd = invoices.reduce(
     (acc, inv) => acc.plus(inv.totalUsd.toString()).minus(inv.paidUsd.toString()),
     new Decimal(0),
   );
-  const pendingBsHoy = totalPendingUsd.mul(todayRate);
+
+  // Unallocated credit (anticipos): total paid minus total allocated to invoices
+  const totalPaidUsd = payments.reduce(
+    (acc, p) => acc.plus(p.amountUsd.toString()),
+    new Decimal(0),
+  );
+  const totalAllocatedUsd = payments.reduce(
+    (acc, p) =>
+      acc.plus(
+        p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0)),
+      ),
+    new Decimal(0),
+  );
+  const creditAvailableUsd = Decimal.max(new Decimal(0), totalPaidUsd.minus(totalAllocatedUsd));
+  // Net pending = gross pending minus unallocated credit
+  const netPendingUsd = Decimal.max(new Decimal(0), totalPendingUsd.minus(creditAvailableUsd));
+
+  const pendingBsHoy = netPendingUsd.mul(todayRate);
 
   // Aging buckets (based on pendingInvoices)
   const agingBuckets = AGING_BUCKETS.map((b) => {
@@ -290,8 +307,9 @@ async function buildUnitPayload(
     lastInvoice,
     lastPayment,
     monthlyPaymentTotals,
-    pendingUsd: totalPendingUsd.toFixed(2),
+    pendingUsd: netPendingUsd.toFixed(2),
     pendingBsHoy: pendingBsHoy.toFixed(2),
+    creditAvailableUsd: creditAvailableUsd.toFixed(2),
   };
 }
 
@@ -955,6 +973,8 @@ export const portalRouter = router({
         monto: z.coerce.number().positive(),
         moneda: z.enum(["USD", "VES"]).default("USD"),
         fechaPago: z.coerce.date(),
+        tipoPago: z.enum(["ANTICIPO", "CUOTA_ESPECIFICA", "GENERAL"]).default("GENERAL"),
+        invoiceId: z.string().optional(), // si tipoPago === "CUOTA_ESPECIFICA"
         notas: z.string().optional(),
       }),
     )
@@ -1023,6 +1043,13 @@ export const portalRouter = router({
       });
       const montoStr = `${input.moneda === "USD" ? "$" : "Bs."}${input.monto.toFixed(2)}`;
 
+      const TIPO_PAGO_LABELS_EMAIL: Record<string, string> = {
+        ANTICIPO: "Anticipo / Adelanto (sin factura específica)",
+        CUOTA_ESPECIFICA: "Cuota específica",
+        GENERAL: "Pago general",
+      };
+      const tipoPagoStr = TIPO_PAGO_LABELS_EMAIL[input.tipoPago] ?? input.tipoPago;
+
       // Send email to admin
       if (adminUser?.email) {
         await sendEmail({
@@ -1035,20 +1062,27 @@ export const portalRouter = router({
               <table style="border-collapse:collapse;width:100%">
                 <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Comunidad</td><td style="padding:6px 12px">${community.name}</td></tr>
                 <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Unidad</td><td style="padding:6px 12px">${unit.code}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Tipo de pago</td><td style="padding:6px 12px"><strong style="color:#1e3a5f">${tipoPagoStr}</strong></td></tr>
                 <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Banco / Método</td><td style="padding:6px 12px">${input.banco}</td></tr>
                 <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Referencia</td><td style="padding:6px 12px">${input.referencia}</td></tr>
-                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Monto</td><td style="padding:6px 12px">${montoStr}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Monto</td><td style="padding:6px 12px"><strong>${montoStr}</strong></td></tr>
                 <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Fecha de pago</td><td style="padding:6px 12px">${fechaStr}</td></tr>
                 ${input.notas ? `<tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Notas</td><td style="padding:6px 12px">${input.notas}</td></tr>` : ""}
               </table>
+              ${input.tipoPago === "ANTICIPO" ? `<p style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;margin-top:16px;font-size:13px;color:#92400e">⚠️ <strong>Anticipo:</strong> Este pago no tiene factura asignada. Regístralo como anticipo en Finanzas → Pagos. El crédito se aplicará automáticamente cuando generes las próximas facturas.</p>` : ""}
               <p style="color:#888;font-size:12px;margin-top:24px">Este correo fue generado automáticamente desde el portal de residentes.</p>
             </div>
           `,
-          text: `Pago reportado por ${person.firstName} ${person.lastName}: ${montoStr} via ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.`,
+          text: `[${tipoPagoStr}] Pago reportado por ${person.firstName} ${person.lastName}: ${montoStr} via ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.`,
         });
       }
 
       // Create Notification record with structured JSON prefix for admin panel
+      const TIPO_PAGO_LABELS: Record<string, string> = {
+        ANTICIPO: "Anticipo / Adelanto",
+        CUOTA_ESPECIFICA: "Cuota específica",
+        GENERAL: "Pago general",
+      };
       const paymentReportPayload = JSON.stringify({
         unitId: unit.id,
         unitCode: unit.code,
@@ -1061,6 +1095,9 @@ export const portalRouter = router({
         monto: input.monto,
         moneda: input.moneda,
         fechaPago: input.fechaPago.toISOString(),
+        tipoPago: input.tipoPago,
+        tipoPagoLabel: TIPO_PAGO_LABELS[input.tipoPago] ?? input.tipoPago,
+        invoiceId: input.invoiceId ?? null,
         notas: input.notas ?? null,
         estado: "PENDIENTE",
         createdAt: new Date().toISOString(),

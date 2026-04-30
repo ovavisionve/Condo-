@@ -62,6 +62,7 @@ type UnitData = {
   pendingInvoices: PendingInvoiceItem[];
   payments: PaymentItem[];
   pendingUsd: string; pendingBsHoy: string;
+  creditAvailableUsd: string;
   lastInvoice: { id: string; totalUsd: string; totalBss: string; periodYear: number | null; periodMonth: number | null } | null;
   lastPayment: { amountUsd: string; amountBss: string; paidAt: Date } | null;
   agingBuckets: { label: string; usd: number }[];
@@ -389,6 +390,7 @@ type TabKey = typeof TABS[number]["key"];
 function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: string; onTab: (t: TabKey) => void }) {
   const pendingBs = Number(unit.pendingBsHoy);
   const pendingUsd = Number(unit.pendingUsd);
+  const creditUsd = Number(unit.creditAvailableUsd ?? 0);
   const lastInv = unit.lastInvoice;
   const lastPay = unit.lastPayment;
 
@@ -396,12 +398,17 @@ function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: s
     <div className="space-y-6">
       {/* Hero deuda */}
       <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100 border px-8 py-10 text-center space-y-2">
-        <p className="text-lg font-medium text-slate-500">Deuda total</p>
+        <p className="text-lg font-medium text-slate-500">Deuda neta</p>
         <p className={`text-5xl font-bold tracking-tight ${pendingBs > 0 ? "text-slate-800" : "text-green-700"}`}>
           {pendingBs > 0
             ? `Bs. ${pendingBs.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
             : "Bs. 0,00"}
         </p>
+        {creditUsd > 0 && (
+          <p className="text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-4 py-1 inline-block">
+            💰 Anticipo disponible: US$ {creditUsd.toFixed(2)} (ya descontado de tu deuda)
+          </p>
+        )}
         <div className="pt-2">
           <Button
             className="bg-[#1e7a5f] hover:bg-[#15604a] text-white px-8 py-2.5 rounded-full text-base font-semibold"
@@ -411,7 +418,7 @@ function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: s
           </Button>
         </div>
         <p className={`text-lg font-semibold ${pendingUsd > 0 ? "text-[#1e7a5f]" : "text-green-700"}`}>
-          Deuda Total en US$: {pendingUsd.toFixed(2)}
+          Deuda neta en US$: {pendingUsd.toFixed(2)}
         </p>
         <p className="text-xs text-slate-500">
           Calculado a la tasa BCV del día: {new Date().toLocaleDateString("es-VE")} / Bs. {Number(todayRate).toFixed(8)}
@@ -470,6 +477,8 @@ function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: s
 
 // ─── PENDIENTES TAB ───────────────────────────────────────────────────────────
 function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string }) {
+  const creditUsd = Number(unit.creditAvailableUsd ?? 0);
+  const grossPendingUsd = unit.pendingInvoices.reduce((acc, inv) => acc + Number(inv.pendingAmountUsd), 0);
   const totalPendingUsd = Number(unit.pendingUsd);
 
   return (
@@ -500,9 +509,17 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
       <div>
         <h3 className="text-xl font-bold">Cuotas Pendientes</h3>
         <p className="text-sm text-[#1e7a5f]">Expresado en US$</p>
-        <div className="text-right text-sm mb-2">
-          <span className="text-muted-foreground">Deuda total: </span>
-          <span className="font-semibold">US$ {totalPendingUsd.toFixed(2)}</span>
+        <div className="text-right text-sm mb-2 space-y-0.5">
+          {creditUsd > 0 && (
+            <>
+              <div><span className="text-muted-foreground">Deuda bruta: </span><span className="font-medium">US$ {grossPendingUsd.toFixed(2)}</span></div>
+              <div><span className="text-amber-700">Anticipo disponible: </span><span className="font-medium text-amber-700">- US$ {creditUsd.toFixed(2)}</span></div>
+            </>
+          )}
+          <div>
+            <span className="text-muted-foreground">Deuda neta: </span>
+            <span className="font-semibold">US$ {totalPendingUsd.toFixed(2)}</span>
+          </div>
         </div>
         <div className="overflow-auto rounded-lg border">
           <table className="w-full text-sm">
@@ -529,9 +546,23 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
                   <td className="px-4 py-2 text-right font-semibold">{Number(inv.pendingAmountUsd).toFixed(2)}</td>
                 </tr>
               ))}
-              {unit.pendingInvoices.length === 0 && (
+              {creditUsd > 0 && (
+                <tr className="border-t bg-amber-50">
+                  <td className="px-4 py-2 text-amber-700 font-medium" colSpan={2}>💰 Anticipo disponible (no aplicado a factura)</td>
+                  <td className="px-4 py-2 text-right text-amber-700 font-semibold">-{creditUsd.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right text-amber-700">—</td>
+                  <td className="px-4 py-2 text-right text-amber-700 font-semibold">-{creditUsd.toFixed(2)}</td>
+                </tr>
+              )}
+              {unit.pendingInvoices.length === 0 && creditUsd === 0 && (
                 <tr><td colSpan={5} className="px-4 py-6 text-center text-green-700 font-medium">✓ Sin cuotas pendientes</td></tr>
               )}
+              {unit.pendingInvoices.length > 0 || creditUsd > 0 ? (
+                <tr className="border-t bg-[#1e3a5f]/5 font-bold">
+                  <td colSpan={2} className="px-4 py-2 text-right text-sm">Deuda neta total:</td>
+                  <td colSpan={3} className="px-4 py-2 text-right text-[#1e3a5f]">US$ {totalPendingUsd.toFixed(2)}</td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -743,9 +774,14 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
   const notify = trpc.portal.notificarPago.useMutation();
   const [form, setForm] = useState({
     banco: "", referencia: "", monto: "", moneda: "USD" as "USD" | "VES",
-    fechaPago: new Date().toISOString().split("T")[0]!, notas: "",
+    fechaPago: new Date().toISOString().split("T")[0]!,
+    tipoPago: "GENERAL" as "ANTICIPO" | "CUOTA_ESPECIFICA" | "GENERAL",
+    invoiceId: "",
+    notas: "",
   });
   const [done, setDone] = useState(false);
+
+  const pendingInvoices = unit.pendingInvoices;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -757,9 +793,16 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
       monto: parseFloat(form.monto),
       moneda: form.moneda,
       fechaPago: new Date(form.fechaPago + "T12:00:00"),
+      tipoPago: form.tipoPago,
+      invoiceId: form.tipoPago === "CUOTA_ESPECIFICA" && form.invoiceId ? form.invoiceId : undefined,
       notas: form.notas || undefined,
     });
     setDone(true);
+  };
+
+  const resetForm = () => {
+    setDone(false);
+    setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, tipoPago: "GENERAL", invoiceId: "", notas: "" });
   };
 
   if (done) return (
@@ -767,8 +810,12 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
       <p className="text-4xl">✅</p>
       <p className="text-xl font-semibold text-green-800">Pago notificado correctamente</p>
       <p className="text-sm text-green-700">La administración recibió tu notificación y verificará tu pago a la brevedad posible.</p>
-      <button onClick={() => { setDone(false); setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, notas: "" }); }}
-        className="mt-4 text-sm underline text-green-800">Notificar otro pago</button>
+      {form.tipoPago === "ANTICIPO" && (
+        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-4 py-2 inline-block">
+          💰 Tu anticipo se descontará de tu deuda una vez que sea registrado por la administración.
+        </p>
+      )}
+      <button onClick={resetForm} className="mt-4 text-sm underline text-green-800">Notificar otro pago</button>
     </div>
   );
 
@@ -784,6 +831,65 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
 
       <div className="rounded-xl border bg-white shadow-sm p-6 max-w-lg">
         <form onSubmit={onSubmit} className="space-y-4">
+
+          {/* Tipo de pago */}
+          <div>
+            <Label>Tipo de pago *</Label>
+            <div className="mt-1 grid grid-cols-3 gap-2">
+              {([
+                { value: "GENERAL",         label: "Pago general",       desc: "Cubre cuotas pendientes", icon: "💳" },
+                { value: "CUOTA_ESPECIFICA", label: "Cuota específica",   desc: "Para un mes en particular", icon: "📄" },
+                { value: "ANTICIPO",         label: "Anticipo",           desc: "Adelanto para próximas cuotas", icon: "💰" },
+              ] as const).map(opt => (
+                <button type="button" key={opt.value}
+                  onClick={() => setForm(f => ({ ...f, tipoPago: opt.value, invoiceId: "" }))}
+                  className={`rounded-lg border p-3 text-left text-xs transition-all ${
+                    form.tipoPago === opt.value
+                      ? "border-[#1e7a5f] bg-[#e8f5f0] ring-1 ring-[#1e7a5f]"
+                      : "border-slate-200 hover:border-slate-400"
+                  }`}
+                >
+                  <div className="text-lg mb-1">{opt.icon}</div>
+                  <div className="font-semibold text-xs">{opt.label}</div>
+                  <div className="text-[10px] text-muted-foreground">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+            {form.tipoPago === "ANTICIPO" && (
+              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                💰 <strong>Anticipo:</strong> Pagas antes de que llegue la factura. Tu crédito quedará guardado y se descontará automáticamente de tu próxima deuda.
+              </p>
+            )}
+          </div>
+
+          {/* Si es cuota específica: selector de factura pendiente */}
+          {form.tipoPago === "CUOTA_ESPECIFICA" && pendingInvoices.length > 0 && (
+            <div>
+              <Label>¿A qué cuota aplica este pago? *</Label>
+              <select
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm mt-1"
+                value={form.invoiceId}
+                onChange={(e) => setForm(f => ({ ...f, invoiceId: e.target.value }))}
+                required
+              >
+                <option value="">— Seleccionar cuota —</option>
+                {pendingInvoices.map(inv => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.periodMonth && inv.periodYear
+                      ? `${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear} — ${inv.typeLabel}`
+                      : inv.typeLabel}
+                    {" | Pendiente: US$ "}{Number(inv.pendingAmountUsd).toFixed(2)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {form.tipoPago === "CUOTA_ESPECIFICA" && pendingInvoices.length === 0 && (
+            <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+              ✓ No tienes cuotas pendientes. Considera usar "Anticipo" si vas a pagar por adelantado.
+            </p>
+          )}
+
           <div>
             <Label>Banco emisor *</Label>
             <Input placeholder="Ej: Banesco, Mercantil, Zelle..." required
