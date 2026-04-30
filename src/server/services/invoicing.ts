@@ -104,8 +104,10 @@ export async function issueMonthlyInvoices(params: {
   dueDate: Date;
   issuedAt?: Date;
   createdById: string;
+  asDraft?: boolean; // true = crea en DRAFT para publicar después
 }) {
   const { organizationId, communityId, year, month, dueDate, createdById } = params;
+  const asDraft = params.asDraft ?? false;
   const issuedAt = params.issuedAt ?? new Date();
 
   const result = await db.$transaction(async (tx) => {
@@ -224,7 +226,7 @@ export async function issueMonthlyInvoices(params: {
           exchangeRate: refRate.vesPerUsd.toFixed(8),
           exchangeSource: refRate.source,
           currencyPrimary: community.primaryCurrency,
-          status: "ISSUED",
+          status: asDraft ? "DRAFT" : "ISSUED",
           items: {
             create: lines.map((l) => ({
               expenseId: l.expenseId,

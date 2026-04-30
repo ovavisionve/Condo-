@@ -175,6 +175,7 @@ export const financeRouter = router({
           dueDate: z.coerce.date().transform((d) =>
             new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0))
           ),
+          asDraft: z.boolean().default(false),
         }),
       )
       .mutation(async ({ ctx, input }) =>

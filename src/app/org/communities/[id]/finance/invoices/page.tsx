@@ -33,10 +33,10 @@ export default function InvoicesPage() {
     }
   };
 
-  const onIssue = async () => {
+  const onIssue = async (asDraft = false) => {
     setError(null);
     setSuccess(null);
-    const dueDate = new Date(year, month - 1, 28); // día 28 del mes
+    const dueDate = new Date(year, month, 5); // día 5 del mes siguiente como vencimiento
     try {
       const r = await issue.mutateAsync({
         organizationId,
@@ -44,8 +44,13 @@ export default function InvoicesPage() {
         year,
         month,
         dueDate,
+        asDraft,
       });
-      setSuccess(`✅ ${r.invoicesCount} factura(s) emitidas a partir de ${r.expensesCount} gasto(s).`);
+      if (asDraft) {
+        setSuccess(`📋 ${r.invoicesCount} borrador(es) preparado(s). Se publicarán y enviarán automáticamente el día 1 del mes siguiente.`);
+      } else {
+        setSuccess(`✅ ${r.invoicesCount} factura(s) emitidas a partir de ${r.expensesCount} gasto(s).`);
+      }
       void list.refetch();
       void utils.finance.expenses.list.invalidate();
       void utils.finance.aging.invalidate();
@@ -81,8 +86,11 @@ export default function InvoicesPage() {
             <Label>Mes</Label>
             <Input type="number" min={1} max={12} value={month} onChange={(e) => setMonth(Number(e.target.value))} className="w-20" />
           </div>
-          <Button onClick={onIssue} disabled={issue.isPending}>
-            {issue.isPending ? "Emitiendo..." : "Emitir mes"}
+          <Button variant="outline" onClick={() => onIssue(true)} disabled={issue.isPending} title="Crea las facturas en borrador. Se publicarán y enviarán por email el día 1 del mes siguiente automáticamente.">
+            {issue.isPending ? "..." : "📋 Preparar borrador"}
+          </Button>
+          <Button onClick={() => onIssue(false)} disabled={issue.isPending}>
+            {issue.isPending ? "Emitiendo..." : "Emitir ahora"}
           </Button>
         </div>
       </div>
