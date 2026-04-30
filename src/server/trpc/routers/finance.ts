@@ -199,6 +199,96 @@ export const financeRouter = router({
         }),
       ),
 
+    /** Genera el PDF del recibo y lo devuelve como base64 para descarga en el cliente. */
+    downloadPdf: orgProcedure
+      .input(orgIdInput.extend({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const inv = await ctx.db.invoice.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+          include: {
+            unit: true,
+            items: { orderBy: { description: "asc" } },
+            payments: {
+              include: {
+                payment: {
+                  select: { paidAt: true, method: true, amountUsd: true, amountBss: true, reference: true },
+                },
+              },
+            },
+          },
+        });
+        const [community, ownership, bankAccounts] = await Promise.all([
+          ctx.db.community.findFirstOrThrow({
+            where: { id: inv.communityId },
+            select: { name: true, address: true, rif: true },
+          }),
+          ctx.db.ownership.findFirst({
+            where: { unitId: inv.unitId, endDate: null },
+            include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+          }),
+          ctx.db.bankAccount.findMany({
+            where: { communityId: inv.communityId, active: true },
+            select: { bankName: true, accountNumber: true, accountHolder: true, accountType: true, currency: true },
+          }),
+        ]);
+
+        const { generateInvoicePdf } = await import("@/server/services/pdf");
+
+        const data = {
+          communityName: community.name,
+          communityAddress: community.address ?? "",
+          communityRif: community.rif,
+          invoiceNumber: inv.invoiceNumber,
+          periodYear: inv.periodYear,
+          periodMonth: inv.periodMonth,
+          issuedAt: inv.issuedAt,
+          dueDate: inv.dueDate,
+          status: inv.status,
+          exchangeRate: inv.exchangeRate.toString(),
+          exchangeSource: inv.exchangeSource,
+          unitCode: inv.unit.code,
+          unitFloor: inv.unit.floor,
+          unitTower: inv.unit.tower,
+          ownerName: ownership?.person
+            ? `${ownership.person.firstName} ${ownership.person.lastName}`
+            : "Sin propietario registrado",
+          ownerIdType: ownership?.person?.idType,
+          ownerIdNumber: ownership?.person?.idNumber,
+          items: inv.items.map((it) => ({
+            description: it.description,
+            aliquot: it.aliquot?.toString(),
+            amountUsd: it.amountUsd.toString(),
+            amountBss: it.amountBss.toString(),
+          })),
+          totalUsd: inv.totalUsd.toString(),
+          totalBss: inv.totalBss.toString(),
+          paidUsd: inv.paidUsd.toString(),
+          paidBss: inv.paidBss.toString(),
+          paymentsApplied: inv.payments.map((pa) => ({
+            paidAt: pa.payment.paidAt,
+            method: pa.payment.method,
+            amountUsd: pa.payment.amountUsd.toString(),
+            amountBss: pa.payment.amountBss.toString(),
+            reference: pa.payment.reference,
+          })),
+          bankAccounts: bankAccounts.map((b) => ({
+            bankName: b.bankName,
+            accountNumber: b.accountNumber,
+            accountHolder: b.accountHolder,
+            accountType: b.accountType,
+            currency: b.currency,
+          })),
+        };
+
+        const buffer = await generateInvoicePdf(data);
+        const base64 = buffer.toString("base64");
+        return {
+          base64,
+          fileName: `Recibo-${inv.invoiceNumber}.pdf`,
+          mimeType: "application/pdf",
+        };
+      }),
+
     sendByEmail: orgProcedure
       .input(orgIdInput.extend({ invoiceId: z.string() }))
       .mutation(async ({ ctx, input }) => {

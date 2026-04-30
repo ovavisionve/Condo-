@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useSession, signIn, signOut } from "next-auth/react";
 import { trpc } from "@/lib/trpc/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,9 +24,76 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Formulario para solicitar acceso por email
+// Formulario de login para residentes
 // ──────────────────────────────────────────────────────────────────────────────
-function RequestAccessForm() {
+function ResidentLoginForm({ onBack }: { onBack: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    const res = await signIn("credentials", { email, password, redirect: false });
+    setLoading(false);
+    if (res?.error) {
+      setError("Email o contraseña incorrectos. Si olvidaste tu contraseña, contacta a la administración.");
+    }
+    // Si ok, useSession detectará el cambio y el componente padre re-renderizará
+  };
+
+  return (
+    <Card className="w-full max-w-sm">
+      <CardHeader>
+        <CardTitle>Iniciar sesión</CardTitle>
+        <CardDescription>
+          Ingresa el email y contraseña que te envió la administración.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              required
+              placeholder="tu@email.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label htmlFor="password">Contraseña</Label>
+            <Input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? "Verificando..." : "Entrar al portal"}
+          </Button>
+          <Button variant="ghost" type="button" className="w-full text-xs" onClick={onBack}>
+            ← Volver / solicitar enlace de acceso
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Formulario para solicitar acceso por magic link
+// ──────────────────────────────────────────────────────────────────────────────
+function RequestAccessForm({ onShowLogin }: { onShowLogin: () => void }) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const request = trpc.portal.requestAccess.useMutation();
@@ -68,13 +136,21 @@ function RequestAccessForm() {
       <CardHeader>
         <CardTitle>Portal del residente</CardTitle>
         <CardDescription>
-          Ingresa el email registrado con la administración. Te enviaremos un enlace de acceso.
+          Si la administración te asignó una contraseña, usa el botón de abajo. Si no, ingresa tu email y te enviaremos un enlace.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
+      <CardContent className="space-y-3">
+        <Button className="w-full" onClick={onShowLogin}>
+          🔑 Tengo usuario y contraseña
+        </Button>
+        <div className="relative flex items-center gap-2">
+          <div className="flex-1 border-t" />
+          <span className="text-xs text-muted-foreground">o</span>
+          <div className="flex-1 border-t" />
+        </div>
+        <form onSubmit={onSubmit} className="space-y-3">
           <div>
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email">Enviarme un enlace de acceso</Label>
             <Input
               id="email"
               type="email"
@@ -86,7 +162,7 @@ function RequestAccessForm() {
             />
           </div>
           {err && <p className="text-sm text-destructive">{err}</p>}
-          <Button type="submit" className="w-full" disabled={request.isPending}>
+          <Button type="submit" variant="outline" className="w-full" disabled={request.isPending}>
             {request.isPending ? "Enviando..." : "Enviar enlace de acceso"}
           </Button>
         </form>
@@ -96,11 +172,97 @@ function RequestAccessForm() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Dashboard del residente (cuando tiene token válido)
+// Botón de descarga de PDF
 // ──────────────────────────────────────────────────────────────────────────────
-function ResidentDashboard({ token }: { token: string }) {
-  const { data, isLoading, error } = trpc.portal.getByToken.useQuery({ token });
+function PdfDownloadButton({ invoiceId, token }: { invoiceId: string; token?: string }) {
+  const download = trpc.portal.downloadInvoicePdf.useMutation();
+  const [busy, setBusy] = useState(false);
 
+  const handleDownload = async () => {
+    setBusy(true);
+    try {
+      const result = await download.mutateAsync({ invoiceId, token });
+      const byteCharacters = atob(result.base64);
+      const byteArray = new Uint8Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteArray[i] = byteCharacters.charCodeAt(i);
+      }
+      const blob = new Blob([byteArray], { type: result.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Error al generar el PDF. Intenta de nuevo.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={busy}
+      title="Descargar recibo PDF"
+      className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
+    >
+      {busy ? "..." : "⬇ PDF"}
+    </button>
+  );
+}
+
+// Tipo compartido del dashboard (getByToken y getBySession devuelven la misma forma)
+type PortalData = {
+  person: {
+    firstName: string; lastName: string; email: string | null;
+    idType: string; idNumber: string; phone: string | null; whatsapp: string | null;
+  };
+  units: Array<{
+    unitId: string; unitCode: string; communityName: string;
+    communityAddress: string | null; role: "Propietario" | "Inquilino";
+    invoices: Array<{
+      id: string; invoiceNumber: string; type: string; typeLabel: string;
+      periodYear: number | null; periodMonth: number | null;
+      issuedAt: Date; dueDate: Date;
+      totalUsd: string; paidUsd: string; pendingUsd: string;
+      status: string; statusLabel: string;
+    }>;
+    payments: Array<{
+      id: string; paidAt: Date; method: string; methodLabel: string;
+      amountUsd: string; amountBss: string; reference: string | null; invoices: string[];
+    }>;
+    pendingUsd: string; pendingBsHoy: string;
+  }>;
+  todayRate: string;
+  tokenExpiresAt: Date | null;
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Dashboard del residente (token O sesión)
+// ──────────────────────────────────────────────────────────────────────────────
+function ResidentDashboardByToken({ token }: { token: string }) {
+  const { data, isLoading, error } = trpc.portal.getByToken.useQuery({ token });
+  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} error={error?.message} token={token} />;
+}
+
+function ResidentDashboardBySession() {
+  const { data, isLoading, error } = trpc.portal.getBySession.useQuery();
+  return <ResidentDashboardView data={data as PortalData | undefined} isLoading={isLoading} error={error?.message} />;
+}
+
+function ResidentDashboardView({
+  data,
+  isLoading,
+  error,
+  token,
+}: {
+  data: PortalData | undefined;
+  isLoading: boolean;
+  error?: string;
+  token?: string;
+}) {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -114,12 +276,12 @@ function ResidentDashboard({ token }: { token: string }) {
       <div className="min-h-screen flex items-center justify-center p-4">
         <Card className="w-full max-w-sm">
           <CardHeader>
-            <CardTitle className="text-destructive">Enlace inválido</CardTitle>
-            <CardDescription>{error.message}</CardDescription>
+            <CardTitle className="text-destructive">Sin acceso</CardTitle>
+            <CardDescription>{error}</CardDescription>
           </CardHeader>
           <CardContent>
             <a href="/portal">
-              <Button className="w-full">Solicitar nuevo enlace</Button>
+              <Button className="w-full">Volver al portal</Button>
             </a>
           </CardContent>
         </Card>
@@ -141,9 +303,20 @@ function ResidentDashboard({ token }: { token: string }) {
             <h1 className="text-xl font-bold">Portal del Residente</h1>
             <p className="text-sm text-blue-200">{data.person.firstName} {data.person.lastName}</p>
           </div>
-          <div className="text-right">
-            <p className="text-xs text-blue-300">Tasa BCV hoy</p>
-            <p className="text-lg font-semibold">{Number(data.todayRate).toFixed(2)} Bs/$</p>
+          <div className="flex items-center gap-6">
+            <div className="text-right">
+              <p className="text-xs text-blue-300">Tasa BCV hoy</p>
+              <p className="text-lg font-semibold">{Number(data.todayRate).toFixed(2)} Bs/$</p>
+            </div>
+            {/* Botón cerrar sesión (solo si acceso por sesión, no por token) */}
+            {!token && (
+              <button
+                onClick={() => signOut({ callbackUrl: "/portal" })}
+                className="text-xs text-blue-300 hover:text-white border border-blue-400 hover:border-white px-3 py-1.5 rounded transition-colors"
+              >
+                Cerrar sesión
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -225,6 +398,7 @@ function ResidentDashboard({ token }: { token: string }) {
                       <th className="px-3 py-2 text-right">Bs hoy</th>
                       <th className="px-3 py-2">Estado</th>
                       <th className="px-3 py-2">Vence</th>
+                      <th className="px-3 py-2">Recibo</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -255,12 +429,15 @@ function ResidentDashboard({ token }: { token: string }) {
                           <td className="px-3 py-2 text-xs text-muted-foreground">
                             {new Date(inv.dueDate).toLocaleDateString("es-VE")}
                           </td>
+                          <td className="px-3 py-2 text-center">
+                            <PdfDownloadButton invoiceId={inv.id} token={token} />
+                          </td>
                         </tr>
                       );
                     })}
                     {unit.invoices.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">Sin facturas</td>
+                        <td colSpan={10} className="px-3 py-6 text-center text-muted-foreground">Sin facturas</td>
                       </tr>
                     )}
                   </tbody>
@@ -361,9 +538,26 @@ function ResidentDashboard({ token }: { token: string }) {
 function PortalContent() {
   const params = useSearchParams();
   const token = params.get("t");
+  const { data: session, status } = useSession();
+  const [showLogin, setShowLogin] = useState(false);
 
-  if (token) return <ResidentDashboard token={token} />;
+  // 1. Token mágico en URL → modo legacy
+  if (token) return <ResidentDashboardByToken token={token} />;
 
+  // 2. Sesión activa → modo sesión permanente
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-muted-foreground">Cargando...</p>
+      </div>
+    );
+  }
+
+  if (status === "authenticated" && session) {
+    return <ResidentDashboardBySession />;
+  }
+
+  // 3. Sin sesión → formulario de acceso
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-sm space-y-4">
@@ -371,7 +565,10 @@ function PortalContent() {
           <h1 className="text-2xl font-bold text-[#1e3a5f]">Portal del Residente</h1>
           <p className="text-sm text-muted-foreground mt-1">Consulta tu saldo y facturas en línea</p>
         </div>
-        <RequestAccessForm />
+        {showLogin
+          ? <ResidentLoginForm onBack={() => setShowLogin(false)} />
+          : <RequestAccessForm onShowLogin={() => setShowLogin(true)} />
+        }
       </div>
     </div>
   );

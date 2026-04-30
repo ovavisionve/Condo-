@@ -534,6 +534,110 @@ export const orgRouter = router({
         }
         return { created, skipped, errors };
       }),
+
+    /**
+     * Crea (o actualiza) una cuenta de usuario para el residente y le envía
+     * sus credenciales por email para que pueda entrar siempre al portal.
+     */
+    sendPortalCredentials: orgProcedure
+      .input(orgIdInput.extend({ personId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const person = await ctx.db.person.findFirstOrThrow({
+          where: { id: input.personId, organizationId: input.organizationId, deletedAt: null },
+        });
+
+        if (!person.email) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "El residente no tiene email registrado. Agrégalo antes de enviar acceso.",
+          });
+        }
+
+        // Generar contraseña aleatoria de 10 caracteres
+        const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+        let rawPassword = "";
+        for (let i = 0; i < 10; i++) {
+          rawPassword += chars[Math.floor(Math.random() * chars.length)];
+        }
+        const passwordHash = await bcrypt.hash(rawPassword, 12);
+
+        // Crear o actualizar el User vinculado a la Person
+        let user = person.userId
+          ? await ctx.db.user.findUnique({ where: { id: person.userId } })
+          : await ctx.db.user.findUnique({ where: { email: person.email } });
+
+        if (user) {
+          // Actualizar hash y activar
+          user = await ctx.db.user.update({
+            where: { id: user.id },
+            data: { passwordHash, active: true, emailVerified: new Date() },
+          });
+        } else {
+          user = await ctx.db.user.create({
+            data: {
+              email: person.email,
+              name: `${person.firstName} ${person.lastName}`,
+              passwordHash,
+              emailVerified: new Date(),
+              active: true,
+            },
+          });
+        }
+
+        // Vincular Person → User si no estaba vinculado
+        if (person.userId !== user.id) {
+          await ctx.db.person.update({
+            where: { id: person.id },
+            data: { userId: user.id },
+          });
+        }
+
+        const portalUrl = `${process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app"}/portal`;
+
+        const { sendEmail } = await import("@/server/services/email");
+        await sendEmail({
+          to: person.email,
+          subject: "Tu acceso al Portal del Residente",
+          html: `
+            <div style="font-family:sans-serif;max-width:520px;margin:auto;color:#111">
+              <div style="background:#1e3a5f;color:#fff;padding:20px 28px;border-radius:8px 8px 0 0">
+                <h2 style="margin:0;font-size:20px">Portal del Residente</h2>
+              </div>
+              <div style="border:1px solid #e5e7eb;border-top:0;padding:24px 28px;border-radius:0 0 8px 8px">
+                <p>Hola <strong>${person.firstName} ${person.lastName}</strong>,</p>
+                <p>La administración te ha creado un acceso permanente al portal. Puedes entrar cuando quieras usando estas credenciales:</p>
+                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px 20px;margin:20px 0">
+                  <p style="margin:0 0 8px;font-size:13px;color:#6b7280">USUARIO (email)</p>
+                  <p style="margin:0 0 16px;font-size:16px;font-weight:600">${person.email}</p>
+                  <p style="margin:0 0 8px;font-size:13px;color:#6b7280">CONTRASEÑA</p>
+                  <p style="margin:0;font-size:20px;font-weight:700;letter-spacing:2px;font-family:monospace">${rawPassword}</p>
+                </div>
+                <p style="text-align:center;margin:28px 0">
+                  <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
+                    Entrar al Portal
+                  </a>
+                </p>
+                <p style="font-size:13px;color:#6b7280">Una vez dentro, puedes ver tus facturas, pagos y saldo en tiempo real.</p>
+                <p style="font-size:12px;color:#9ca3af;margin-top:24px">Si no solicitaste este acceso, ignora este correo o comunícate con la administración.</p>
+              </div>
+            </div>
+          `,
+          text: `Hola ${person.firstName}, tu acceso al portal: ${portalUrl} — Usuario: ${person.email} — Contraseña: ${rawPassword}`,
+        });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Person",
+            entityId: person.id,
+            after: { email: person.email, userId: user.id },
+          },
+        });
+
+        return { ok: true, email: person.email };
+      }),
   }),
 
   // ─── Personal / Staff de la organización ──────────────────────

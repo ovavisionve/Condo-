@@ -58,6 +58,7 @@ export default function ResidentsPage() {
   const createPerson = trpc.org.persons.create.useMutation();
   const assignOwner = trpc.org.persons.assignOwner.useMutation();
   const assignTenant = trpc.org.persons.assignTenant.useMutation();
+  const sendCredentials = trpc.org.persons.sendPortalCredentials.useMutation();
 
   const resetForm = () => {
     setFirstName("");
@@ -406,6 +407,10 @@ export default function ResidentsPage() {
               unitTower={unit.tower}
               communityId={communityId}
               unitId={unit.id}
+              organizationId={organizationId}
+              onSendCredentials={(personId) =>
+                sendCredentials.mutateAsync({ organizationId, personId })
+              }
             />
           ))
         )}
@@ -425,7 +430,11 @@ export default function ResidentsPage() {
               unitTower={unit.tower}
               communityId={communityId}
               unitId={unit.id}
+              organizationId={organizationId}
               isTenant
+              onSendCredentials={(personId) =>
+                sendCredentials.mutateAsync({ organizationId, personId })
+              }
             />
           ))
         )}
@@ -447,6 +456,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
               <th className="px-3 py-2">Contacto</th>
               <th className="px-3 py-2">Unidad</th>
               <th className="px-3 py-2">Vehículos</th>
+              <th className="px-3 py-2">Portal</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
@@ -459,7 +469,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function EmptyRow({ msg }: { msg: string }) {
   return (
-    <tr><td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">{msg}</td></tr>
+    <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">{msg}</td></tr>
   );
 }
 
@@ -471,6 +481,7 @@ function ResidentRow({
   communityId,
   unitId,
   isTenant = false,
+  onSendCredentials,
 }: {
   person: {
     id: string;
@@ -488,8 +499,28 @@ function ResidentRow({
   unitTower?: string | null;
   communityId: string;
   unitId: string;
+  organizationId: string;
   isTenant?: boolean;
+  onSendCredentials: (personId: string) => Promise<{ ok: boolean; email: string }>;
 }) {
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+  const [sendErr, setSendErr] = useState<string | null>(null);
+
+  const handleSendAccess = async () => {
+    setSending(true);
+    setSent(null);
+    setSendErr(null);
+    try {
+      const result = await onSendCredentials(person.id);
+      setSent(result.email);
+    } catch (err: unknown) {
+      setSendErr(err instanceof Error ? err.message : "Error al enviar");
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <tr className="border-t">
       <td className="px-3 py-2">
@@ -524,6 +555,25 @@ function ResidentRow({
               </div>
             ))}
           </div>
+        )}
+      </td>
+      {/* Portal access */}
+      <td className="px-3 py-2">
+        {person.email ? (
+          <div className="space-y-0.5">
+            <button
+              onClick={handleSendAccess}
+              disabled={sending}
+              className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
+              title="Crear/actualizar acceso y enviar credenciales por email"
+            >
+              {sending ? "Enviando..." : "📧 Enviar acceso"}
+            </button>
+            {sent && <div className="text-xs text-green-700">✓ Enviado a {sent}</div>}
+            {sendErr && <div className="text-xs text-destructive">{sendErr}</div>}
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground" title="Agrega un email al residente primero">Sin email</span>
         )}
       </td>
       <td className="px-3 py-2">
