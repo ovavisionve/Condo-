@@ -222,71 +222,119 @@ export async function generateNonDebtCertPdf(data: NonDebtCertData): Promise<Buf
 const MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
                   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
+// Paleta corporativa: Navy #1e3a5f · Gold #b8962e · Offwhite #f8f9fa
+const NAVY  = "#1e3a5f";
+const GOLD  = "#b8962e";
+const GRAY1 = "#374151";  // texto principal
+const GRAY2 = "#6b7280";  // texto secundario
+const GRAY3 = "#e5e7eb";  // bordes
+const GRAY4 = "#f3f4f6";  // fondo filas alternas
+const GREEN = "#166534";
+const RED   = "#991b1b";
+
 const inv = StyleSheet.create({
-  page: { fontFamily: "Helvetica", fontSize: 9, padding: "30 36", color: "#111827", backgroundColor: "#fff" },
-  // Header de la comunidad
-  communityHeader: { backgroundColor: "#1e3a5f", padding: "14 16", marginBottom: 0, borderRadius: "4 4 0 0" },
-  communityName: { fontSize: 14, fontFamily: "Helvetica-Bold", color: "#fff", marginBottom: 2 },
-  communitySubtitle: { fontSize: 8, color: "#93c5fd" },
-  // Banda del título de recibo
-  receiptBand: { backgroundColor: "#e8f0fe", padding: "8 16", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  receiptTitle: { fontSize: 13, fontFamily: "Helvetica-Bold", color: "#1e3a5f", letterSpacing: 1 },
-  receiptNumber: { fontSize: 9, color: "#4b5563" },
-  // Layout de dos columnas
-  twoCol: { flexDirection: "row", gap: 12, marginBottom: 12 },
-  card: { flex: 1, border: "1 solid #e5e7eb", borderRadius: 4, padding: "8 10" },
-  cardTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, borderBottom: "1 solid #f3f4f6", paddingBottom: 3 },
-  dataRow: { flexDirection: "row", marginBottom: 3 },
-  dataLabel: { width: "42%", color: "#6b7280", fontSize: 8 },
-  dataValue: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8 },
-  // Tabla de conceptos
+  page: { fontFamily: "Helvetica", fontSize: 9, padding: "28 32", color: GRAY1, backgroundColor: "#fff" },
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  header: { backgroundColor: NAVY, padding: "0 0", marginBottom: 0 },
+  headerTop: { padding: "12 16 4 16", flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  headerLeft: {},
+  communityName: { fontSize: 15, fontFamily: "Helvetica-Bold", color: "#ffffff", letterSpacing: 0.5, marginBottom: 3 },
+  communityMeta: { fontSize: 7.5, color: "#93c5fd", lineHeight: 1.4 },
+  headerRight: { alignItems: "flex-end" },
+  headerRifBox: { fontSize: 7.5, color: "#93c5fd", textAlign: "right" },
+  goldBar: { height: 3, backgroundColor: GOLD, marginTop: 8 },
+
+  // ── Banda título documento ──────────────────────────────────────────────
+  docBand: { flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+             padding: "9 16", borderBottom: "1 solid " + GRAY3, marginBottom: 10 },
+  docTitle: { fontSize: 13, fontFamily: "Helvetica-Bold", color: NAVY, letterSpacing: 1.5 },
+  docNumBox: { alignItems: "flex-end" },
+  docNumber: { fontSize: 9, fontFamily: "Helvetica-Bold", color: NAVY },
+  docPeriod: { fontSize: 8, color: GRAY2 },
+
+  // ── Cards de dos columnas ───────────────────────────────────────────────
+  twoCol: { flexDirection: "row", gap: 10, marginBottom: 10 },
+  card: { flex: 1, border: "1 solid " + GRAY3, borderRadius: 3, overflow: "hidden" },
+  cardHeader: { backgroundColor: NAVY, padding: "4 8" },
+  cardHeaderText: { fontSize: 7.5, fontFamily: "Helvetica-Bold", color: "#ffffff", letterSpacing: 0.8, textTransform: "uppercase" },
+  cardBody: { padding: "7 8" },
+  dataRow: { flexDirection: "row", marginBottom: 3.5 },
+  dataLabel: { width: "44%", color: GRAY2, fontSize: 8 },
+  dataValue: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8, color: GRAY1 },
+
+  // ── Estado ──────────────────────────────────────────────────────────────
+  statusPaid:    { fontSize: 8.5, color: GREEN, fontFamily: "Helvetica-Bold" },
+  statusPartial: { fontSize: 8.5, color: "#92400e", fontFamily: "Helvetica-Bold" },
+  statusPending: { fontSize: 8.5, color: RED, fontFamily: "Helvetica-Bold" },
+
+  // ── Tabla gastos comunes ────────────────────────────────────────────────
   tableSection: { marginBottom: 10 },
-  tableTitle: { fontSize: 9, fontFamily: "Helvetica-Bold", color: "#1e3a5f", marginBottom: 4, padding: "4 0", borderBottom: "2 solid #1e3a5f" },
-  tableHead: { flexDirection: "row", backgroundColor: "#1e3a5f", padding: "5 6", borderRadius: "2 2 0 0" },
+  tableSectionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 5 },
+  tableSectionTitle: { fontSize: 9, fontFamily: "Helvetica-Bold", color: NAVY, flex: 1 },
+  tableSectionLine: { flex: 1, height: 1, backgroundColor: GOLD },
+  tableHead: { flexDirection: "row", backgroundColor: NAVY, padding: "5 7" },
   thDesc: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8 },
-  thAliq: { width: 50, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
-  thUsd: { width: 65, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
-  thBss: { width: 80, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
-  tableBody: { border: "1 solid #e5e7eb", borderTop: 0, borderRadius: "0 0 2 2" },
-  tableRow: { flexDirection: "row", padding: "5 6", borderBottom: "1 solid #f3f4f6" },
-  tableRowAlt: { flexDirection: "row", padding: "5 6", borderBottom: "1 solid #f3f4f6", backgroundColor: "#f9fafb" },
-  tdDesc: { flex: 1, color: "#374151" },
-  tdAliq: { width: 50, color: "#6b7280", textAlign: "right" },
-  tdUsd: { width: 65, textAlign: "right" },
-  tdBss: { width: 80, textAlign: "right", color: "#6b7280" },
-  // Totales
-  totalsBox: { marginBottom: 10 },
-  totalLineRow: { flexDirection: "row", padding: "4 6", borderBottom: "1 solid #f3f4f6" },
-  totalLineLabel: { flex: 1, color: "#374151" },
-  totalLineUsd: { width: 65, textAlign: "right" },
-  totalLineBss: { width: 80, textAlign: "right", color: "#6b7280" },
-  deductionRow: { flexDirection: "row", padding: "4 6", borderBottom: "1 solid #f3f4f6", backgroundColor: "#f0fdf4" },
-  deductionLabel: { flex: 1, color: "#166534" },
-  deductionUsd: { width: 65, textAlign: "right", color: "#166534" },
-  deductionBss: { width: 80, textAlign: "right", color: "#166534" },
-  grandTotalRow: { flexDirection: "row", padding: "8 6", backgroundColor: "#1e3a5f", borderRadius: 4, marginTop: 4 },
+  thAliq: { width: 56, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "center" },
+  thUsd: { width: 68, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
+  thBss: { width: 86, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
+  tableRow:    { flexDirection: "row", padding: "5 7", borderBottom: "1 solid " + GRAY3 },
+  tableRowAlt: { flexDirection: "row", padding: "5 7", borderBottom: "1 solid " + GRAY3, backgroundColor: GRAY4 },
+  tdDesc: { flex: 1, color: GRAY1 },
+  tdAliq: { width: 56, color: GRAY2, textAlign: "center" },
+  tdUsd:  { width: 68, textAlign: "right", fontFamily: "Helvetica-Bold" },
+  tdBss:  { width: 86, textAlign: "right", color: GRAY2 },
+
+  // ── Totales ─────────────────────────────────────────────────────────────
+  totalsBox: { marginBottom: 10, border: "1 solid " + GRAY3, borderRadius: 3 },
+  totalLineRow: { flexDirection: "row", padding: "5 8", borderBottom: "1 solid " + GRAY3 },
+  totalLineLabel: { flex: 1, color: GRAY1 },
+  totalLineUsd: { width: 72, textAlign: "right" },
+  totalLineBss: { width: 86, textAlign: "right", color: GRAY2 },
+  deductionRow: { flexDirection: "row", padding: "5 8", borderBottom: "1 solid " + GRAY3, backgroundColor: "#f0fdf4" },
+  deductionLabel: { flex: 1, color: GREEN },
+  deductionUsd: { width: 72, textAlign: "right", color: GREEN },
+  deductionBss: { width: 86, textAlign: "right", color: GREEN },
+  grandTotalRow: { flexDirection: "row", padding: "8 8", backgroundColor: NAVY },
   gtLabel: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
-  gtUsd: { width: 65, textAlign: "right", color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
-  gtBss: { width: 80, textAlign: "right", color: "#93c5fd", fontFamily: "Helvetica-Bold", fontSize: 10 },
-  // Caja de tasa
-  rateBox: { flexDirection: "row", backgroundColor: "#eff6ff", border: "1 solid #bfdbfe", borderRadius: 4, padding: "6 10", marginBottom: 10, alignItems: "center", gap: 8 },
-  rateLabel: { color: "#1e40af", fontSize: 8 },
-  rateValue: { fontFamily: "Helvetica-Bold", color: "#1e40af", fontSize: 9 },
-  // Pagos aplicados
-  paymentsTitle: { fontSize: 9, fontFamily: "Helvetica-Bold", color: "#374151", marginBottom: 3 },
-  paymentRow: { flexDirection: "row", padding: "3 0", borderBottom: "1 solid #f3f4f6" },
-  paymentLabel: { flex: 1, color: "#374151" },
-  paymentAmt: { width: 70, textAlign: "right", color: "#166534" },
-  // Instrucciones de pago
-  payInfoBox: { border: "1 solid #e5e7eb", borderRadius: 4, padding: "8 10", marginBottom: 10 },
-  payInfoTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#374151", marginBottom: 4 },
-  payInfoText: { fontSize: 8, color: "#6b7280", marginBottom: 2 },
-  // Footer
-  footer: { position: "absolute", bottom: 24, left: 36, right: 36, borderTop: "1 solid #e5e7eb", paddingTop: 5 },
-  footerText: { fontSize: 7, color: "#9ca3af", textAlign: "center" },
-  // Badge de estado
-  statusPaid: { fontSize: 8, color: "#166534", fontFamily: "Helvetica-Bold" },
-  statusPending: { fontSize: 8, color: "#dc2626", fontFamily: "Helvetica-Bold" },
+  gtUsd:   { width: 72, textAlign: "right", color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  gtBss:   { width: 86, textAlign: "right", color: "#93c5fd", fontFamily: "Helvetica-Bold", fontSize: 9 },
+  cancelledRow: { flexDirection: "row", padding: "8 8", backgroundColor: GREEN },
+  cancelledLabel: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  cancelledUsd:   { width: 72, textAlign: "right", color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  cancelledBss:   { width: 86, textAlign: "right", color: "#bbf7d0", fontFamily: "Helvetica-Bold", fontSize: 9 },
+
+  // ── Tasa BCV ─────────────────────────────────────────────────────────────
+  rateBox: { flexDirection: "row", backgroundColor: "#fffbeb", border: "1 solid #fde68a",
+             borderRadius: 3, padding: "5 8", marginBottom: 9, alignItems: "center" },
+  rateIcon: { width: 14, fontSize: 8, color: GOLD, fontFamily: "Helvetica-Bold" },
+  rateLabel: { color: "#78350f", fontSize: 7.5, flex: 1 },
+  rateValue:  { fontFamily: "Helvetica-Bold", color: "#78350f", fontSize: 8 },
+
+  // ── Pagos aplicados ──────────────────────────────────────────────────────
+  paymentsSection: { marginBottom: 9 },
+  paymentsTitle: { fontSize: 8.5, fontFamily: "Helvetica-Bold", color: GRAY1, marginBottom: 4,
+                   borderBottom: "1 solid " + GRAY3, paddingBottom: 3 },
+  paymentRow: { flexDirection: "row", padding: "3.5 0", borderBottom: "1 solid " + GRAY4 },
+  paymentLabel: { flex: 1, color: GRAY1, fontSize: 8 },
+  paymentAmt: { width: 70, textAlign: "right", color: GREEN, fontFamily: "Helvetica-Bold", fontSize: 8 },
+
+  // ── Instrucciones de pago ────────────────────────────────────────────────
+  payInfoBox: { border: "1 solid " + GRAY3, borderRadius: 3, marginBottom: 10, overflow: "hidden" },
+  payInfoHeader: { backgroundColor: GRAY4, padding: "4 8" },
+  payInfoTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: NAVY },
+  payInfoBody: { padding: "6 8" },
+  payInfoText: { fontSize: 7.5, color: GRAY2, marginBottom: 2.5 },
+  payInfoRef: { fontSize: 7.5, color: NAVY, fontFamily: "Helvetica-Bold", marginTop: 4 },
+
+  // ── Footer ──────────────────────────────────────────────────────────────
+  footer: { position: "absolute", bottom: 20, left: 32, right: 32 },
+  footerDivider: { height: 2, backgroundColor: NAVY, marginBottom: 5 },
+  footerGold: { height: 1, backgroundColor: GOLD, marginBottom: 5 },
+  footerRow: { flexDirection: "row", justifyContent: "space-between" },
+  footerLeft: { fontSize: 7, color: GRAY2 },
+  footerRight: { fontSize: 7, color: GRAY2, textAlign: "right" },
+  footerLegal: { fontSize: 7, color: NAVY, fontFamily: "Helvetica-Bold", textAlign: "center", marginTop: 3 },
 });
 
 export type InvoicePdfData = {
@@ -345,7 +393,7 @@ const METHOD_SHORT: Record<string, string> = {
   CRYPTO: "Cripto", CHECK: "Cheque", OTHER: "Otro",
 };
 
-function r(label: string, value: string) {
+function dr(label: string, value: string) {
   return React.createElement(View, { style: inv.dataRow },
     React.createElement(Text, { style: inv.dataLabel }, label),
     React.createElement(Text, { style: inv.dataValue }, value),
@@ -357,82 +405,111 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
   const periodo = `${mes} ${data.periodYear}`;
   const pendingUsd = Math.max(0, Number(data.totalUsd) - Number(data.paidUsd));
   const pendingBss = Math.max(0, Number(data.totalBss) - Number(data.paidBss));
-  const isPaid = pendingUsd < 0.005;
+  const isPaid    = pendingUsd < 0.005;
+  const isPartial = !isPaid && Number(data.paidUsd) > 0.005;
   const issuedStr = data.issuedAt.toLocaleDateString("es-VE");
-  const dueStr = data.dueDate.toLocaleDateString("es-VE");
+  const dueStr    = data.dueDate.toLocaleDateString("es-VE");
   const idStr = data.ownerIdType && data.ownerIdNumber
     ? `${data.ownerIdType}-${data.ownerIdNumber}` : "";
+  const genStr = new Date().toLocaleDateString("es-VE");
 
   const fmtUsd = (v: string | number) => `$${Number(v).toFixed(2)}`;
-  const fmtBss = (v: string | number) => `Bs ${Number(v).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtBss = (v: string | number) =>
+    `Bs ${Number(v).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  return React.createElement(Document, { title: `Recibo ${data.invoiceNumber}` },
+  const statusStyle = isPaid ? inv.statusPaid : isPartial ? inv.statusPartial : inv.statusPending;
+  const statusLabel = isPaid ? "CANCELADO" : isPartial ? "PAGO PARCIAL" : "PENDIENTE DE PAGO";
+
+  return React.createElement(Document, { title: `Recibo de Condominio ${data.invoiceNumber}` },
     React.createElement(Page, { size: "A4", style: inv.page },
 
-      // ── Header comunidad ────────────────────────────────────────
-      React.createElement(View, { style: inv.communityHeader },
-        React.createElement(Text, { style: inv.communityName }, data.communityName.toUpperCase()),
-        React.createElement(Text, { style: inv.communitySubtitle },
-          [data.communityRif ? `RIF: ${data.communityRif}` : null,
-           data.communityAddress,
-           data.communityPhone].filter(Boolean).join("  ·  "),
-        ),
-      ),
-
-      // ── Banda título ────────────────────────────────────────────
-      React.createElement(View, { style: inv.receiptBand },
-        React.createElement(Text, { style: inv.receiptTitle }, "RECIBO DE CONDOMINIO"),
-        React.createElement(View, { style: { alignItems: "flex-end" } },
-          React.createElement(Text, { style: { ...inv.receiptNumber, fontFamily: "Helvetica-Bold" } }, data.invoiceNumber),
-          React.createElement(Text, { style: inv.receiptNumber }, `Período: ${periodo}`),
-        ),
-      ),
-
-      // ── Dos columnas: factura | unidad/propietario ──────────────
-      React.createElement(View, { style: inv.twoCol },
-        // Columna izquierda: datos de la factura
-        React.createElement(View, { style: inv.card },
-          React.createElement(Text, { style: inv.cardTitle }, "Datos del recibo"),
-          r("N° Recibo:", data.invoiceNumber),
-          r("Período:", periodo),
-          r("Fecha emisión:", issuedStr),
-          r("Fecha vencimiento:", dueStr),
-          React.createElement(View, { style: inv.dataRow },
-            React.createElement(Text, { style: inv.dataLabel }, "Estado:"),
-            React.createElement(Text, { style: isPaid ? inv.statusPaid : inv.statusPending },
-              isPaid ? "✓ PAGADO" : pendingUsd < Number(data.totalUsd) - 0.005 ? "PAGO PARCIAL" : "PENDIENTE"),
+      // ── Header ─────────────────────────────────────────────────
+      React.createElement(View, { style: inv.header },
+        React.createElement(View, { style: inv.headerTop },
+          React.createElement(View, { style: inv.headerLeft },
+            React.createElement(Text, { style: inv.communityName }, data.communityName.toUpperCase()),
+            React.createElement(Text, { style: inv.communityMeta },
+              "JUNTA DE CONDOMINIO" +
+              (data.communityRif ? "  |  RIF: " + data.communityRif : "")),
+            React.createElement(Text, { style: { ...inv.communityMeta, marginTop: 2 } },
+              [data.communityAddress, data.communityPhone].filter(Boolean).join("  ·  ")),
+          ),
+          React.createElement(View, { style: inv.headerRight },
+            React.createElement(Text, { style: { ...inv.headerRifBox, fontFamily: "Helvetica-Bold", fontSize: 9 } },
+              "RECIBO DE CONDOMINIO"),
+            React.createElement(Text, { style: { ...inv.headerRifBox, marginTop: 3 } },
+              data.invoiceNumber),
           ),
         ),
-        // Columna derecha: unidad y propietario
-        React.createElement(View, { style: inv.card },
-          React.createElement(Text, { style: inv.cardTitle }, "Unidad y propietario"),
-          r("Unidad:", data.unitCode),
-          data.unitTower ? r("Torre:", data.unitTower) : null,
-          data.unitFloor != null ? r("Piso:", String(data.unitFloor)) : null,
-          r("Propietario:", data.ownerName),
-          idStr ? r("Cédula/RIF:", idStr) : null,
+        React.createElement(View, { style: inv.goldBar }),
+      ),
+
+      // ── Banda doc ──────────────────────────────────────────────
+      React.createElement(View, { style: inv.docBand },
+        React.createElement(View, null,
+          React.createElement(Text, { style: inv.docTitle }, "RECIBO DE CONDOMINIO"),
+          React.createElement(Text, { style: { fontSize: 7.5, color: GRAY2, marginTop: 2 } },
+            "Documento con fuerza ejecutiva — Art. 14 Ley de Propiedad Horizontal"),
+        ),
+        React.createElement(View, { style: inv.docNumBox },
+          React.createElement(Text, { style: inv.docNumber }, data.invoiceNumber),
+          React.createElement(Text, { style: inv.docPeriod }, `Período: ${periodo}`),
+          React.createElement(Text, { style: { ...inv.docPeriod, marginTop: 2 } },
+            `Emitido: ${issuedStr}  |  Vence: ${dueStr}`),
         ),
       ),
 
-      // ── Tabla de conceptos ──────────────────────────────────────
+      // ── Dos columnas ───────────────────────────────────────────
+      React.createElement(View, { style: inv.twoCol },
+        React.createElement(View, { style: inv.card },
+          React.createElement(View, { style: inv.cardHeader },
+            React.createElement(Text, { style: inv.cardHeaderText }, "Datos del Recibo"),
+          ),
+          React.createElement(View, { style: inv.cardBody },
+            dr("N° Recibo:", data.invoiceNumber),
+            dr("Período:", periodo),
+            dr("Fecha emisión:", issuedStr),
+            dr("Fecha vencimiento:", dueStr),
+            React.createElement(View, { style: inv.dataRow },
+              React.createElement(Text, { style: inv.dataLabel }, "Estado:"),
+              React.createElement(Text, { style: statusStyle }, statusLabel),
+            ),
+          ),
+        ),
+        React.createElement(View, { style: inv.card },
+          React.createElement(View, { style: inv.cardHeader },
+            React.createElement(Text, { style: inv.cardHeaderText }, "Unidad y Propietario"),
+          ),
+          React.createElement(View, { style: inv.cardBody },
+            dr("Unidad:", data.unitCode),
+            data.unitTower ? dr("Torre:", data.unitTower) : null,
+            data.unitFloor != null ? dr("Piso:", String(data.unitFloor)) : null,
+            dr("Propietario:", data.ownerName),
+            idStr ? dr("Cédula / RIF:", idStr) : null,
+          ),
+        ),
+      ),
+
+      // ── Gastos comunes ─────────────────────────────────────────
       React.createElement(View, { style: inv.tableSection },
-        React.createElement(Text, { style: inv.tableTitle }, "CONCEPTOS FACTURADOS"),
+        React.createElement(View, { style: inv.tableSectionHeader },
+          React.createElement(Text, { style: inv.tableSectionTitle }, "GASTOS COMUNES"),
+          React.createElement(View, { style: inv.tableSectionLine }),
+        ),
         React.createElement(View, { style: inv.tableHead },
           React.createElement(Text, { style: inv.thDesc }, "Concepto"),
-          React.createElement(Text, { style: inv.thAliq }, "Alícuota"),
+          React.createElement(Text, { style: inv.thAliq }, "Cuota Part."),
           React.createElement(Text, { style: inv.thUsd }, "USD"),
           React.createElement(Text, { style: inv.thBss }, "Bs.S"),
         ),
-        React.createElement(View, { style: inv.tableBody },
-          ...data.items.map((item, i) =>
-            React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
-              React.createElement(Text, { style: inv.tdDesc }, item.description),
-              React.createElement(Text, { style: inv.tdAliq },
-                item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"),
-              React.createElement(Text, { style: inv.tdUsd }, fmtUsd(item.amountUsd)),
-              React.createElement(Text, { style: inv.tdBss }, fmtBss(item.amountBss)),
-            )
-          ),
+        ...data.items.map((item, i) =>
+          React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
+            React.createElement(Text, { style: inv.tdDesc }, item.description),
+            React.createElement(Text, { style: inv.tdAliq },
+              item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"),
+            React.createElement(Text, { style: inv.tdUsd }, fmtUsd(item.amountUsd)),
+            React.createElement(Text, { style: inv.tdBss }, fmtBss(item.amountBss)),
+          )
         ),
       ),
 
@@ -448,62 +525,81 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
           React.createElement(Text, { style: inv.deductionUsd }, `–${fmtUsd(data.paidUsd)}`),
           React.createElement(Text, { style: inv.deductionBss }, `–${fmtBss(data.paidBss)}`),
         ),
-        React.createElement(View, { style: inv.grandTotalRow },
-          React.createElement(Text, { style: inv.gtLabel }, isPaid ? "SALDO: CANCELADO" : "TOTAL A PAGAR"),
-          React.createElement(Text, { style: inv.gtUsd }, isPaid ? "$0.00" : fmtUsd(pendingUsd)),
-          React.createElement(Text, { style: inv.gtBss }, isPaid ? "Bs 0.00" : fmtBss(pendingBss)),
-        ),
+        isPaid
+          ? React.createElement(View, { style: inv.cancelledRow },
+              React.createElement(Text, { style: inv.cancelledLabel }, "SALDO: CANCELADO"),
+              React.createElement(Text, { style: inv.cancelledUsd }, "$0.00"),
+              React.createElement(Text, { style: inv.cancelledBss }, "Bs 0,00"),
+            )
+          : React.createElement(View, { style: inv.grandTotalRow },
+              React.createElement(Text, { style: inv.gtLabel }, "TOTAL A PAGAR"),
+              React.createElement(Text, { style: inv.gtUsd }, fmtUsd(pendingUsd)),
+              React.createElement(Text, { style: inv.gtBss }, fmtBss(pendingBss)),
+            ),
       ),
 
-      // ── Tasa de cambio ──────────────────────────────────────────
+      // ── Tasa BCV ─────────────────────────────────────────────────
       React.createElement(View, { style: inv.rateBox },
-        React.createElement(Text, { style: inv.rateLabel }, "Tasa de cambio aplicada:"),
+        React.createElement(Text, { style: inv.rateIcon }, "BCV"),
+        React.createElement(Text, { style: inv.rateLabel },
+          `Tasa de cambio aplicada: `),
         React.createElement(Text, { style: inv.rateValue },
-          `${Number(data.exchangeRate).toFixed(4)} Bs/$ (${data.exchangeSource})`),
+          `${Number(data.exchangeRate).toFixed(4)} Bs/$  (${data.exchangeSource})`),
         React.createElement(Text, { style: { ...inv.rateLabel, flex: 1, textAlign: "right" } },
-          `El saldo en USD es fijo. El equivalente en Bs puede variar según la tasa del día.`),
+          "El saldo en USD es fijo. El equiv. en Bs puede variar."),
       ),
 
-      // ── Pagos aplicados ─────────────────────────────────────────
+      // ── Pagos recibidos ───────────────────────────────────────
       data.paymentsApplied && data.paymentsApplied.length > 0 &&
-        React.createElement(View, { style: { marginBottom: 10 } },
-          React.createElement(Text, { style: inv.paymentsTitle }, "Pagos recibidos en esta factura:"),
+        React.createElement(View, { style: inv.paymentsSection },
+          React.createElement(Text, { style: inv.paymentsTitle }, "Pagos recibidos en este recibo:"),
           ...data.paymentsApplied.map((p, i) =>
             React.createElement(View, { key: i, style: inv.paymentRow },
               React.createElement(Text, { style: inv.paymentLabel },
-                `${p.paidAt.toLocaleDateString("es-VE")} · ${METHOD_SHORT[p.method] ?? p.method}${p.reference ? ` · Ref: ${p.reference}` : ""}`),
+                `${p.paidAt.toLocaleDateString("es-VE")} · ${METHOD_SHORT[p.method] ?? p.method}` +
+                (p.reference ? ` · Ref: ${p.reference}` : "")),
               React.createElement(Text, { style: inv.paymentAmt }, fmtUsd(p.amountUsd)),
             )
           ),
         ),
 
-      // ── Instrucciones de pago ───────────────────────────────────
+      // ── Instrucciones de pago ─────────────────────────────────
       !isPaid && React.createElement(View, { style: inv.payInfoBox },
-        React.createElement(Text, { style: inv.payInfoTitle }, "INSTRUCCIONES DE PAGO"),
-        React.createElement(Text, { style: inv.payInfoText },
-          "Métodos aceptados: Transferencia bancaria, Pago Móvil, Zelle, Efectivo USD, Efectivo Bs"),
-        data.bankAccounts && data.bankAccounts.length > 0
-          ? data.bankAccounts.map((acc, i) =>
-              React.createElement(Text, { key: i, style: inv.payInfoText },
-                [
-                  `${acc.bankName} · ${acc.accountType}`,
-                  acc.accountNumber !== "-" ? `${acc.currency}: ${acc.accountNumber}` : null,
-                  `A nombre de: ${acc.accountHolder}`,
-                  acc.notes ? acc.notes : null,
-                ].filter(Boolean).join("  ·  "))
-            )
-          : React.createElement(Text, { style: inv.payInfoText },
-              "Contacta a la administración para obtener los datos bancarios."),
-        React.createElement(Text, { style: { ...inv.payInfoText, marginTop: 4 } },
-          `Incluye el N° de recibo ${data.invoiceNumber} en el concepto del pago.`),
+        React.createElement(View, { style: inv.payInfoHeader },
+          React.createElement(Text, { style: inv.payInfoTitle }, "INSTRUCCIONES DE PAGO"),
+        ),
+        React.createElement(View, { style: inv.payInfoBody },
+          React.createElement(Text, { style: inv.payInfoText },
+            "Métodos aceptados: Transferencia bancaria · Pago Móvil · Zelle · Efectivo USD · Efectivo Bs"),
+          ...(data.bankAccounts && data.bankAccounts.length > 0
+            ? data.bankAccounts.map((acc, i) =>
+                React.createElement(Text, { key: i, style: inv.payInfoText },
+                  [
+                    `${acc.bankName} · ${acc.accountType}`,
+                    acc.accountNumber !== "-" ? `${acc.currency}: ${acc.accountNumber}` : null,
+                    `Titular: ${acc.accountHolder}`,
+                    acc.notes ?? null,
+                  ].filter(Boolean).join("  ·  "))
+              )
+            : [React.createElement(Text, { style: inv.payInfoText },
+                "Contacte a la Junta de Condominio para obtener los datos bancarios.")]),
+          React.createElement(Text, { style: inv.payInfoRef },
+            `Incluir el N° de recibo ${data.invoiceNumber} en el concepto de la transferencia.`),
+        ),
       ),
 
-      // ── Footer ─────────────────────────────────────────────────
+      // ── Footer ────────────────────────────────────────────────
       React.createElement(View, { style: inv.footer },
-        React.createElement(Text, { style: inv.footerText },
-          `Generado el ${new Date().toLocaleDateString("es-VE")} · ${data.communityName} · Este documento es de carácter informativo.`),
-        React.createElement(Text, { style: { ...inv.footerText, marginTop: 1 } },
-          "Los montos en Bs.S se calculan con la tasa BCV del período de emisión. Conserva este recibo como comprobante."),
+        React.createElement(View, { style: inv.footerGold }),
+        React.createElement(View, { style: inv.footerDivider }),
+        React.createElement(View, { style: inv.footerRow },
+          React.createElement(Text, { style: inv.footerLeft },
+            `Generado el ${genStr}  ·  ${data.communityName}`),
+          React.createElement(Text, { style: inv.footerRight },
+            "Los montos en Bs.S se calculan con la tasa BCV del período de emisión"),
+        ),
+        React.createElement(Text, { style: inv.footerLegal },
+          "Titulo Ejecutivo segun el Articulo 14 de la Ley de Propiedad Horizontal de la Republica Bolivariana de Venezuela"),
       ),
     ),
   );
@@ -516,15 +612,10 @@ export async function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> 
 // ─── Bauche / Comprobante de pago ─────────────────────────────────────────────
 
 const METHOD_LABEL: Record<string, string> = {
-  CASH_BSS: "Efectivo Bs",
-  CASH_USD: "Efectivo USD",
-  TRANSFER_BSS: "Transferencia Bs",
-  TRANSFER_USD: "Transferencia USD",
-  ZELLE: "Zelle",
-  PAGO_MOVIL: "Pago Móvil",
-  CRYPTO: "Criptomoneda",
-  CHECK: "Cheque",
-  OTHER: "Otro",
+  CASH_BSS: "Efectivo Bs", CASH_USD: "Efectivo USD",
+  TRANSFER_BSS: "Transferencia Bancaria (Bs)", TRANSFER_USD: "Transferencia Bancaria (USD)",
+  ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil",
+  CRYPTO: "Criptomoneda", CHECK: "Cheque", OTHER: "Otro",
 };
 
 export type PaymentVoucherData = {
@@ -546,124 +637,222 @@ export type PaymentVoucherData = {
   invoices: { number: string; period: string; amountUsd: string }[];
 };
 
-const v = StyleSheet.create({
-  page: { fontFamily: "Helvetica", fontSize: 9, padding: "30 36", color: "#111827", backgroundColor: "#fff" },
-  header: { backgroundColor: "#1e3a5f", padding: "14 16", borderRadius: "4 4 0 0", marginBottom: 0 },
-  headerName: { fontSize: 13, fontFamily: "Helvetica-Bold", color: "#fff", marginBottom: 2 },
-  headerSub: { fontSize: 8, color: "#93c5fd" },
-  band: { backgroundColor: "#dcfce7", padding: "8 16", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
-  bandTitle: { fontSize: 13, fontFamily: "Helvetica-Bold", color: "#166534", letterSpacing: 1 },
-  bandRef: { fontSize: 8, color: "#4b5563", textAlign: "right" },
-  twoCol: { flexDirection: "row", gap: 12, marginBottom: 12 },
-  card: { flex: 1, border: "1 solid #e5e7eb", borderRadius: 4, padding: "8 10" },
-  cardTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, borderBottom: "1 solid #f3f4f6", paddingBottom: 3 },
-  row: { flexDirection: "row", marginBottom: 3 },
-  lbl: { width: "40%", color: "#6b7280", fontSize: 8 },
-  val: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8 },
-  amountBox: { backgroundColor: "#f0fdf4", border: "2 solid #16a34a", borderRadius: 6, padding: "12 16", marginBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  amountLabel: { fontSize: 10, fontFamily: "Helvetica-Bold", color: "#166534" },
-  amountUsd: { fontSize: 20, fontFamily: "Helvetica-Bold", color: "#166534" },
-  amountBss: { fontSize: 10, color: "#4b5563", marginTop: 2 },
-  invoiceTable: { border: "1 solid #e5e7eb", borderRadius: 4, marginBottom: 12 },
-  invoiceHead: { flexDirection: "row", backgroundColor: "#f9fafb", padding: "5 8", borderRadius: "3 3 0 0" },
-  invoiceRow: { flexDirection: "row", padding: "5 8", borderTop: "1 solid #f3f4f6" },
-  colDesc: { flex: 1, fontSize: 8 },
-  colPeriod: { width: 60, fontSize: 8, textAlign: "center" },
-  colAmt: { width: 70, fontSize: 8, textAlign: "right" },
-  stamp: { border: "2 solid #16a34a", borderRadius: 4, padding: "6 12", alignSelf: "flex-end", marginBottom: 12 },
-  stampText: { fontSize: 11, fontFamily: "Helvetica-Bold", color: "#16a34a", textAlign: "center" },
-  stampDate: { fontSize: 8, color: "#4b5563", textAlign: "center", marginTop: 2 },
-  footer: { position: "absolute", bottom: 24, left: 36, right: 36, borderTop: "1 solid #e5e7eb", paddingTop: 5 },
-  footerText: { fontSize: 7, color: "#9ca3af", textAlign: "center" },
+const vc = StyleSheet.create({
+  page: { fontFamily: "Helvetica", fontSize: 9, padding: "28 32", color: GRAY1, backgroundColor: "#fff" },
+
+  // ── Header ─────────────────────────────────────────────────────────────
+  header: { backgroundColor: NAVY, padding: "0 0", marginBottom: 0 },
+  headerTop: { padding: "12 16 4 16", flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  communityName: { fontSize: 15, fontFamily: "Helvetica-Bold", color: "#ffffff", letterSpacing: 0.5, marginBottom: 3 },
+  communityMeta: { fontSize: 7.5, color: "#93c5fd", lineHeight: 1.4 },
+  headerRight: { alignItems: "flex-end" },
+  headerDocType: { fontSize: 9, fontFamily: "Helvetica-Bold", color: "#ffffff", textAlign: "right" },
+  headerRef: { fontSize: 8, color: "#93c5fd", textAlign: "right", marginTop: 3 },
+  goldBar: { height: 3, backgroundColor: GOLD },
+
+  // ── Banda de estado ─────────────────────────────────────────────────────
+  statusBand: { flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+                padding: "8 16", borderBottom: "1 solid " + GRAY3, marginBottom: 12 },
+  statusBandTitle: { fontSize: 13, fontFamily: "Helvetica-Bold", color: NAVY, letterSpacing: 1.5 },
+  statusBandRight: { alignItems: "flex-end" },
+  statusBandRef: { fontSize: 8.5, fontFamily: "Helvetica-Bold", color: NAVY },
+  statusBandDate: { fontSize: 8, color: GRAY2 },
+
+  // ── Caja monto principal ────────────────────────────────────────────────
+  amountOuter: { border: "1 solid " + GRAY3, borderRadius: 4, marginBottom: 12, overflow: "hidden" },
+  amountHeader: { backgroundColor: NAVY, padding: "5 12" },
+  amountHeaderText: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#fff", letterSpacing: 0.8 },
+  amountBody: { flexDirection: "row", padding: "12 14", justifyContent: "space-between", alignItems: "center" },
+  amountLeft: {},
+  amountLabelText: { fontSize: 8.5, color: GRAY2, marginBottom: 2 },
+  amountUsdText: { fontSize: 26, fontFamily: "Helvetica-Bold", color: NAVY, marginBottom: 3 },
+  amountBssText: { fontSize: 9.5, color: GRAY2 },
+  amountRateText: { fontSize: 7.5, color: GRAY2, marginTop: 2 },
+  stampBox: { border: "2 solid " + GREEN, borderRadius: 4, padding: "8 14", alignItems: "center" },
+  stampVerified: { fontSize: 12, fontFamily: "Helvetica-Bold", color: GREEN, letterSpacing: 1 },
+  stampCheckmark: { fontSize: 18, color: GREEN, textAlign: "center", marginBottom: 2 },
+  stampDate: { fontSize: 7.5, color: GRAY2, marginTop: 3, textAlign: "center" },
+
+  // ── Cards dos columnas ──────────────────────────────────────────────────
+  twoCol: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  card: { flex: 1, border: "1 solid " + GRAY3, borderRadius: 3, overflow: "hidden" },
+  cardHeader: { backgroundColor: NAVY, padding: "4 8" },
+  cardHeaderText: { fontSize: 7.5, fontFamily: "Helvetica-Bold", color: "#fff", letterSpacing: 0.8 },
+  cardBody: { padding: "7 8" },
+  vRow: { flexDirection: "row", marginBottom: 3.5 },
+  vLbl: { width: "40%", color: GRAY2, fontSize: 8 },
+  vVal: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8, color: GRAY1 },
+
+  // ── Tabla recibos aplicados ─────────────────────────────────────────────
+  invoiceSection: { marginBottom: 12 },
+  invoiceSectionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 5 },
+  invoiceSectionTitle: { fontSize: 9, fontFamily: "Helvetica-Bold", color: NAVY, flex: 1 },
+  invoiceSectionLine: { flex: 1, height: 1, backgroundColor: GOLD },
+  invoiceTableHead: { flexDirection: "row", backgroundColor: NAVY, padding: "5 7" },
+  invoiceThDesc: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8 },
+  invoiceThPeriod: { width: 70, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "center" },
+  invoiceThAmt: { width: 80, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
+  invoiceRow: { flexDirection: "row", padding: "5 7", borderBottom: "1 solid " + GRAY3 },
+  invoiceRowAlt: { flexDirection: "row", padding: "5 7", borderBottom: "1 solid " + GRAY3, backgroundColor: GRAY4 },
+  invoiceTdDesc: { flex: 1, fontSize: 8, color: GRAY1 },
+  invoiceTdPeriod: { width: 70, fontSize: 8, textAlign: "center", color: GRAY2 },
+  invoiceTdAmt: { width: 80, fontSize: 8, textAlign: "right", fontFamily: "Helvetica-Bold", color: GREEN },
+
+  // ── Anticipo notice ─────────────────────────────────────────────────────
+  anticipoBox: { backgroundColor: "#fffbeb", border: "1 solid #fde68a", borderRadius: 3,
+                  padding: "8 10", marginBottom: 12 },
+  anticipoText: { fontSize: 8.5, color: "#78350f" },
+
+  // ── Footer ──────────────────────────────────────────────────────────────
+  footer: { position: "absolute", bottom: 20, left: 32, right: 32 },
+  footerGold: { height: 1, backgroundColor: GOLD, marginBottom: 4 },
+  footerDivider: { height: 2, backgroundColor: NAVY, marginBottom: 5 },
+  footerRow: { flexDirection: "row", justifyContent: "space-between" },
+  footerLeft: { fontSize: 7, color: GRAY2 },
+  footerRight: { fontSize: 7, color: GRAY2, textAlign: "right" },
+  footerLegal: { fontSize: 7, color: NAVY, fontFamily: "Helvetica-Bold", textAlign: "center", marginTop: 3 },
 });
 
-function r2(label: string, value: string) {
-  return React.createElement(View, { style: v.row },
-    React.createElement(Text, { style: v.lbl }, label),
-    React.createElement(Text, { style: v.val }, value),
+function vcRow(label: string, value: string) {
+  return React.createElement(View, { style: vc.vRow },
+    React.createElement(Text, { style: vc.vLbl }, label),
+    React.createElement(Text, { style: vc.vVal }, value),
   );
 }
 
 function VoucherDoc({ data }: { data: PaymentVoucherData }) {
   const paidStr = data.paidAt.toLocaleDateString("es-VE", { day: "2-digit", month: "long", year: "numeric" });
+  const paidShort = data.paidAt.toLocaleDateString("es-VE");
   const shortRef = data.paymentId.slice(-8).toUpperCase();
+  const genStr = new Date().toLocaleDateString("es-VE");
+  const isAnticipo = data.invoices.length === 0;
 
-  return React.createElement(Document, { title: `Bauche-${shortRef}` },
-    React.createElement(Page, { size: "A4", style: v.page },
+  const fmtUsd = (v: string | number) => `$${Number(v).toFixed(2)}`;
 
-      // Header comunidad
-      React.createElement(View, { style: v.header },
-        React.createElement(Text, { style: v.headerName }, data.communityName),
-        React.createElement(Text, { style: v.headerSub },
-          [data.communityAddress, data.communityRif ? `RIF: ${data.communityRif}` : null,
-           data.communityPhone, data.communityEmail].filter(Boolean).join("  ·  ")),
-      ),
+  return React.createElement(Document, { title: `Comprobante de Pago — ${shortRef}` },
+    React.createElement(Page, { size: "A4", style: vc.page },
 
-      // Banda COMPROBANTE DE PAGO
-      React.createElement(View, { style: v.band },
-        React.createElement(Text, { style: v.bandTitle }, "COMPROBANTE DE PAGO"),
-        React.createElement(View, { style: { alignItems: "flex-end" } },
-          React.createElement(Text, { style: { ...v.bandRef, fontFamily: "Helvetica-Bold" } }, `Ref: ${shortRef}`),
-          React.createElement(Text, { style: v.bandRef }, paidStr),
+      // ── Header ──────────────────────────────────────────────────
+      React.createElement(View, { style: vc.header },
+        React.createElement(View, { style: vc.headerTop },
+          React.createElement(View, null,
+            React.createElement(Text, { style: vc.communityName }, data.communityName.toUpperCase()),
+            React.createElement(Text, { style: vc.communityMeta },
+              "JUNTA DE CONDOMINIO" +
+              (data.communityRif ? "  |  RIF: " + data.communityRif : "")),
+            React.createElement(Text, { style: { ...vc.communityMeta, marginTop: 2 } },
+              [data.communityAddress, data.communityPhone, data.communityEmail].filter(Boolean).join("  ·  ")),
+          ),
+          React.createElement(View, { style: vc.headerRight },
+            React.createElement(Text, { style: vc.headerDocType }, "COMPROBANTE DE PAGO"),
+            React.createElement(Text, { style: vc.headerRef }, `Ref: ${shortRef}`),
+            React.createElement(Text, { style: { ...vc.headerRef, marginTop: 1 } }, paidShort),
+          ),
         ),
+        React.createElement(View, { style: vc.goldBar }),
       ),
 
-      // Monto destacado
-      React.createElement(View, { style: v.amountBox },
+      // ── Banda título ────────────────────────────────────────────
+      React.createElement(View, { style: vc.statusBand },
         React.createElement(View, null,
-          React.createElement(Text, { style: v.amountLabel }, "MONTO RECIBIDO"),
-          React.createElement(Text, { style: v.amountUsd }, `$${Number(data.amountUsd).toFixed(2)} USD`),
-          React.createElement(Text, { style: v.amountBss }, `Bs ${Number(data.amountBss).toFixed(2)}  (Tasa: ${Number(data.exchangeRate).toFixed(2)} Bs/USD)`),
+          React.createElement(Text, { style: vc.statusBandTitle }, "COMPROBANTE DE PAGO"),
+          React.createElement(Text, { style: { fontSize: 7.5, color: GRAY2, marginTop: 2 } },
+            "Constancia de pago emitida por la Junta de Condominio"),
         ),
-        React.createElement(View, { style: v.stamp },
-          React.createElement(Text, { style: v.stampText }, "✓ RECIBIDO"),
-          React.createElement(Text, { style: v.stampDate }, paidStr),
-        ),
-      ),
-
-      // Dos columnas: pago | propietario
-      React.createElement(View, { style: v.twoCol },
-        React.createElement(View, { style: v.card },
-          React.createElement(Text, { style: v.cardTitle }, "Datos del pago"),
-          r2("Método:", METHOD_LABEL[data.method] ?? data.method),
-          data.reference ? r2("Referencia:", data.reference) : null,
-          r2("Fecha:", paidStr),
-          r2("Ref. sistema:", shortRef),
-        ),
-        React.createElement(View, { style: v.card },
-          React.createElement(Text, { style: v.cardTitle }, "Propietario / Unidad"),
-          r2("Nombre:", data.personName),
-          data.personId ? r2("ID:", data.personId) : null,
-          r2("Unidad:", data.unitCode),
+        React.createElement(View, { style: vc.statusBandRight },
+          React.createElement(Text, { style: vc.statusBandRef }, `Ref: ${shortRef}`),
+          React.createElement(Text, { style: vc.statusBandDate }, paidStr),
         ),
       ),
 
-      // Tabla de facturas aplicadas
-      data.invoices.length > 0 && React.createElement(View, { style: v.invoiceTable },
-        React.createElement(View, { style: v.invoiceHead },
-          React.createElement(Text, { style: { ...v.colDesc, fontFamily: "Helvetica-Bold" } }, "Factura aplicada"),
-          React.createElement(Text, { style: { ...v.colPeriod, fontFamily: "Helvetica-Bold" } }, "Período"),
-          React.createElement(Text, { style: { ...v.colAmt, fontFamily: "Helvetica-Bold" } }, "Monto USD"),
+      // ── Monto principal ─────────────────────────────────────────
+      React.createElement(View, { style: vc.amountOuter },
+        React.createElement(View, { style: vc.amountHeader },
+          React.createElement(Text, { style: vc.amountHeaderText }, "MONTO RECIBIDO POR LA JUNTA DE CONDOMINIO"),
         ),
-        ...data.invoices.map((inv, i) =>
-          React.createElement(View, { key: i, style: v.invoiceRow },
-            React.createElement(Text, { style: v.colDesc }, inv.number),
-            React.createElement(Text, { style: v.colPeriod }, inv.period),
-            React.createElement(Text, { style: v.colAmt }, `$${Number(inv.amountUsd).toFixed(2)}`),
+        React.createElement(View, { style: vc.amountBody },
+          React.createElement(View, { style: vc.amountLeft },
+            React.createElement(Text, { style: vc.amountLabelText }, "Total recibido en dólares (USD):"),
+            React.createElement(Text, { style: vc.amountUsdText },
+              `$${Number(data.amountUsd).toFixed(2)} USD`),
+            React.createElement(Text, { style: vc.amountBssText },
+              `Bs ${Number(data.amountBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`),
+            React.createElement(Text, { style: vc.amountRateText },
+              `Tasa BCV aplicada: ${Number(data.exchangeRate).toFixed(4)} Bs/$`),
+          ),
+          React.createElement(View, { style: vc.stampBox },
+            React.createElement(Text, { style: vc.stampCheckmark }, "✓"),
+            React.createElement(Text, { style: vc.stampVerified }, "RECIBIDO"),
+            React.createElement(Text, { style: vc.stampDate }, paidStr),
+          ),
+        ),
+      ),
+
+      // ── Dos columnas: datos pago | propietario/unidad ───────────
+      React.createElement(View, { style: vc.twoCol },
+        React.createElement(View, { style: vc.card },
+          React.createElement(View, { style: vc.cardHeader },
+            React.createElement(Text, { style: vc.cardHeaderText }, "Datos del Pago"),
+          ),
+          React.createElement(View, { style: vc.cardBody },
+            vcRow("Método de pago:", METHOD_LABEL[data.method] ?? data.method),
+            data.reference ? vcRow("Número de ref.:", data.reference) : null,
+            vcRow("Fecha de pago:", paidStr),
+            vcRow("Ref. sistema:", shortRef),
+          ),
+        ),
+        React.createElement(View, { style: vc.card },
+          React.createElement(View, { style: vc.cardHeader },
+            React.createElement(Text, { style: vc.cardHeaderText }, "Propietario y Unidad"),
+          ),
+          React.createElement(View, { style: vc.cardBody },
+            vcRow("Propietario:", data.personName),
+            data.personId ? vcRow("Cédula / RIF:", data.personId) : null,
+            vcRow("Unidad:", data.unitCode),
+          ),
+        ),
+      ),
+
+      // ── Recibos aplicados ────────────────────────────────────────
+      !isAnticipo && React.createElement(View, { style: vc.invoiceSection },
+        React.createElement(View, { style: vc.invoiceSectionHeader },
+          React.createElement(Text, { style: vc.invoiceSectionTitle }, "RECIBOS APLICADOS"),
+          React.createElement(View, { style: vc.invoiceSectionLine }),
+        ),
+        React.createElement(View, { style: vc.invoiceTableHead },
+          React.createElement(Text, { style: vc.invoiceThDesc }, "N° Recibo de Condominio"),
+          React.createElement(Text, { style: vc.invoiceThPeriod }, "Período"),
+          React.createElement(Text, { style: vc.invoiceThAmt }, "Monto USD"),
+        ),
+        ...data.invoices.map((ivRow, i) =>
+          React.createElement(View, { key: i, style: i % 2 === 0 ? vc.invoiceRow : vc.invoiceRowAlt },
+            React.createElement(Text, { style: vc.invoiceTdDesc }, ivRow.number),
+            React.createElement(Text, { style: vc.invoiceTdPeriod }, ivRow.period),
+            React.createElement(Text, { style: vc.invoiceTdAmt }, fmtUsd(ivRow.amountUsd)),
           )
         ),
       ),
 
-      data.invoices.length === 0 && React.createElement(View, { style: { ...v.card, marginBottom: 12, backgroundColor: "#fefce8" } },
-        React.createElement(Text, { style: { ...v.lbl, color: "#854d0e" } }, "Pago registrado como anticipo — se aplicará a facturas pendientes."),
+      // ── Anticipo ─────────────────────────────────────────────────
+      isAnticipo && React.createElement(View, { style: vc.anticipoBox },
+        React.createElement(Text, { style: vc.anticipoText },
+          "ANTICIPO / ADELANTO: Este pago no ha sido aplicado a un recibo específico. " +
+          "El monto de $" + Number(data.amountUsd).toFixed(2) + " USD quedará registrado como crédito a favor " +
+          "del propietario y se descontará de los próximos recibos de condominio."),
       ),
 
-      // Footer
-      React.createElement(View, { style: v.footer },
-        React.createElement(Text, { style: v.footerText },
-          `${data.communityName}  ·  Documento generado el ${new Date().toLocaleDateString("es-VE")}  ·  Ref: ${shortRef}`),
-        React.createElement(Text, { style: { ...v.footerText, marginTop: 1 } },
-          "Este comprobante es válido como constancia de pago. Consérvelo para sus registros."),
+      // ── Footer ───────────────────────────────────────────────────
+      React.createElement(View, { style: vc.footer },
+        React.createElement(View, { style: vc.footerGold }),
+        React.createElement(View, { style: vc.footerDivider }),
+        React.createElement(View, { style: vc.footerRow },
+          React.createElement(Text, { style: vc.footerLeft },
+            `Generado el ${genStr}  ·  ${data.communityName}  ·  Ref: ${shortRef}`),
+          React.createElement(Text, { style: vc.footerRight },
+            "Conserve este comprobante como constancia de pago"),
+        ),
+        React.createElement(Text, { style: vc.footerLegal },
+          "Comprobante de pago emitido por la Junta de Condominio — Ley de Propiedad Horizontal, Art. 14 — Republica Bolivariana de Venezuela"),
       ),
     ),
   );
