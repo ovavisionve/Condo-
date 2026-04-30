@@ -506,3 +506,163 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
 export async function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return renderToBuffer(InvoiceDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
 }
+
+// ─── Bauche / Comprobante de pago ─────────────────────────────────────────────
+
+const METHOD_LABEL: Record<string, string> = {
+  CASH_BSS: "Efectivo Bs",
+  CASH_USD: "Efectivo USD",
+  TRANSFER_BSS: "Transferencia Bs",
+  TRANSFER_USD: "Transferencia USD",
+  ZELLE: "Zelle",
+  PAGO_MOVIL: "Pago Móvil",
+  CRYPTO: "Criptomoneda",
+  CHECK: "Cheque",
+  OTHER: "Otro",
+};
+
+export type PaymentVoucherData = {
+  communityName: string;
+  communityAddress?: string;
+  communityRif?: string;
+  communityPhone?: string;
+  communityEmail?: string;
+  paymentId: string;
+  unitCode: string;
+  personName: string;
+  personId?: string;
+  amountUsd: string;
+  amountBss: string;
+  exchangeRate: string;
+  method: string;
+  reference?: string;
+  paidAt: Date;
+  invoices: { number: string; period: string; amountUsd: string }[];
+};
+
+const v = StyleSheet.create({
+  page: { fontFamily: "Helvetica", fontSize: 9, padding: "30 36", color: "#111827", backgroundColor: "#fff" },
+  header: { backgroundColor: "#1e3a5f", padding: "14 16", borderRadius: "4 4 0 0", marginBottom: 0 },
+  headerName: { fontSize: 13, fontFamily: "Helvetica-Bold", color: "#fff", marginBottom: 2 },
+  headerSub: { fontSize: 8, color: "#93c5fd" },
+  band: { backgroundColor: "#dcfce7", padding: "8 16", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  bandTitle: { fontSize: 13, fontFamily: "Helvetica-Bold", color: "#166534", letterSpacing: 1 },
+  bandRef: { fontSize: 8, color: "#4b5563", textAlign: "right" },
+  twoCol: { flexDirection: "row", gap: 12, marginBottom: 12 },
+  card: { flex: 1, border: "1 solid #e5e7eb", borderRadius: 4, padding: "8 10" },
+  cardTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, borderBottom: "1 solid #f3f4f6", paddingBottom: 3 },
+  row: { flexDirection: "row", marginBottom: 3 },
+  lbl: { width: "40%", color: "#6b7280", fontSize: 8 },
+  val: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8 },
+  amountBox: { backgroundColor: "#f0fdf4", border: "2 solid #16a34a", borderRadius: 6, padding: "12 16", marginBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  amountLabel: { fontSize: 10, fontFamily: "Helvetica-Bold", color: "#166534" },
+  amountUsd: { fontSize: 20, fontFamily: "Helvetica-Bold", color: "#166534" },
+  amountBss: { fontSize: 10, color: "#4b5563", marginTop: 2 },
+  invoiceTable: { border: "1 solid #e5e7eb", borderRadius: 4, marginBottom: 12 },
+  invoiceHead: { flexDirection: "row", backgroundColor: "#f9fafb", padding: "5 8", borderRadius: "3 3 0 0" },
+  invoiceRow: { flexDirection: "row", padding: "5 8", borderTop: "1 solid #f3f4f6" },
+  colDesc: { flex: 1, fontSize: 8 },
+  colPeriod: { width: 60, fontSize: 8, textAlign: "center" },
+  colAmt: { width: 70, fontSize: 8, textAlign: "right" },
+  stamp: { border: "2 solid #16a34a", borderRadius: 4, padding: "6 12", alignSelf: "flex-end", marginBottom: 12 },
+  stampText: { fontSize: 11, fontFamily: "Helvetica-Bold", color: "#16a34a", textAlign: "center" },
+  stampDate: { fontSize: 8, color: "#4b5563", textAlign: "center", marginTop: 2 },
+  footer: { position: "absolute", bottom: 24, left: 36, right: 36, borderTop: "1 solid #e5e7eb", paddingTop: 5 },
+  footerText: { fontSize: 7, color: "#9ca3af", textAlign: "center" },
+});
+
+function r2(label: string, value: string) {
+  return React.createElement(View, { style: v.row },
+    React.createElement(Text, { style: v.lbl }, label),
+    React.createElement(Text, { style: v.val }, value),
+  );
+}
+
+function VoucherDoc({ data }: { data: PaymentVoucherData }) {
+  const paidStr = data.paidAt.toLocaleDateString("es-VE", { day: "2-digit", month: "long", year: "numeric" });
+  const shortRef = data.paymentId.slice(-8).toUpperCase();
+
+  return React.createElement(Document, { title: `Bauche-${shortRef}` },
+    React.createElement(Page, { size: "A4", style: v.page },
+
+      // Header comunidad
+      React.createElement(View, { style: v.header },
+        React.createElement(Text, { style: v.headerName }, data.communityName),
+        React.createElement(Text, { style: v.headerSub },
+          [data.communityAddress, data.communityRif ? `RIF: ${data.communityRif}` : null,
+           data.communityPhone, data.communityEmail].filter(Boolean).join("  ·  ")),
+      ),
+
+      // Banda COMPROBANTE DE PAGO
+      React.createElement(View, { style: v.band },
+        React.createElement(Text, { style: v.bandTitle }, "COMPROBANTE DE PAGO"),
+        React.createElement(View, { style: { alignItems: "flex-end" } },
+          React.createElement(Text, { style: { ...v.bandRef, fontFamily: "Helvetica-Bold" } }, `Ref: ${shortRef}`),
+          React.createElement(Text, { style: v.bandRef }, paidStr),
+        ),
+      ),
+
+      // Monto destacado
+      React.createElement(View, { style: v.amountBox },
+        React.createElement(View, null,
+          React.createElement(Text, { style: v.amountLabel }, "MONTO RECIBIDO"),
+          React.createElement(Text, { style: v.amountUsd }, `$${Number(data.amountUsd).toFixed(2)} USD`),
+          React.createElement(Text, { style: v.amountBss }, `Bs ${Number(data.amountBss).toFixed(2)}  (Tasa: ${Number(data.exchangeRate).toFixed(2)} Bs/USD)`),
+        ),
+        React.createElement(View, { style: v.stamp },
+          React.createElement(Text, { style: v.stampText }, "✓ RECIBIDO"),
+          React.createElement(Text, { style: v.stampDate }, paidStr),
+        ),
+      ),
+
+      // Dos columnas: pago | propietario
+      React.createElement(View, { style: v.twoCol },
+        React.createElement(View, { style: v.card },
+          React.createElement(Text, { style: v.cardTitle }, "Datos del pago"),
+          r2("Método:", METHOD_LABEL[data.method] ?? data.method),
+          data.reference ? r2("Referencia:", data.reference) : null,
+          r2("Fecha:", paidStr),
+          r2("Ref. sistema:", shortRef),
+        ),
+        React.createElement(View, { style: v.card },
+          React.createElement(Text, { style: v.cardTitle }, "Propietario / Unidad"),
+          r2("Nombre:", data.personName),
+          data.personId ? r2("ID:", data.personId) : null,
+          r2("Unidad:", data.unitCode),
+        ),
+      ),
+
+      // Tabla de facturas aplicadas
+      data.invoices.length > 0 && React.createElement(View, { style: v.invoiceTable },
+        React.createElement(View, { style: v.invoiceHead },
+          React.createElement(Text, { style: { ...v.colDesc, fontFamily: "Helvetica-Bold" } }, "Factura aplicada"),
+          React.createElement(Text, { style: { ...v.colPeriod, fontFamily: "Helvetica-Bold" } }, "Período"),
+          React.createElement(Text, { style: { ...v.colAmt, fontFamily: "Helvetica-Bold" } }, "Monto USD"),
+        ),
+        ...data.invoices.map((inv, i) =>
+          React.createElement(View, { key: i, style: v.invoiceRow },
+            React.createElement(Text, { style: v.colDesc }, inv.number),
+            React.createElement(Text, { style: v.colPeriod }, inv.period),
+            React.createElement(Text, { style: v.colAmt }, `$${Number(inv.amountUsd).toFixed(2)}`),
+          )
+        ),
+      ),
+
+      data.invoices.length === 0 && React.createElement(View, { style: { ...v.card, marginBottom: 12, backgroundColor: "#fefce8" } },
+        React.createElement(Text, { style: { ...v.lbl, color: "#854d0e" } }, "Pago registrado como anticipo — se aplicará a facturas pendientes."),
+      ),
+
+      // Footer
+      React.createElement(View, { style: v.footer },
+        React.createElement(Text, { style: v.footerText },
+          `${data.communityName}  ·  Documento generado el ${new Date().toLocaleDateString("es-VE")}  ·  Ref: ${shortRef}`),
+        React.createElement(Text, { style: { ...v.footerText, marginTop: 1 } },
+          "Este comprobante es válido como constancia de pago. Consérvelo para sus registros."),
+      ),
+    ),
+  );
+}
+
+export async function generatePaymentVoucherPdf(data: PaymentVoucherData): Promise<Buffer> {
+  return renderToBuffer(VoucherDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
+}

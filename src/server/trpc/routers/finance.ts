@@ -397,6 +397,63 @@ export const financeRouter = router({
           actorId: ctx.user.id,
         }),
       ),
+    /** Genera el PDF de bauche de pago y lo devuelve como base64. */
+    getVoucherPdf: orgProcedure
+      .input(orgIdInput.extend({ paymentId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const payment = await ctx.db.payment.findFirstOrThrow({
+          where: { id: input.paymentId, organizationId: input.organizationId },
+          include: {
+            unit: { select: { code: true, floor: true, tower: true } },
+            allocations: {
+              include: {
+                invoice: { select: { invoiceNumber: true, periodYear: true, periodMonth: true } },
+              },
+            },
+          },
+        });
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: payment.communityId },
+          select: { name: true, address: true, city: true, state: true, rif: true, phone: true, email: true },
+        });
+        // Propietario o inquilino activo de la unidad
+        const ownership = await ctx.db.ownership.findFirst({
+          where: { unitId: payment.unitId, endDate: null },
+          include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+        });
+        const tenancy = !ownership
+          ? await ctx.db.tenancy.findFirst({
+              where: { unitId: payment.unitId, endDate: null },
+              include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+            })
+          : null;
+        const person = ownership?.person ?? tenancy?.person ?? null;
+
+        const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
+        const buffer = await generatePaymentVoucherPdf({
+          communityName: community.name,
+          communityAddress: `${community.address}, ${community.city}${community.state ? `, ${community.state}` : ""}`,
+          communityRif: community.rif ?? undefined,
+          communityPhone: community.phone ?? undefined,
+          communityEmail: community.email ?? undefined,
+          paymentId: payment.id,
+          unitCode: payment.unit.code,
+          personName: person ? `${person.firstName} ${person.lastName}` : "—",
+          personId: person ? `${person.idType}: ${person.idNumber}` : undefined,
+          amountUsd: payment.amountUsd.toString(),
+          amountBss: payment.amountBss.toString(),
+          exchangeRate: payment.exchangeRate.toString(),
+          method: payment.method,
+          reference: payment.reference ?? undefined,
+          paidAt: payment.paidAt,
+          invoices: payment.allocations.map((a) => ({
+            number: a.invoice.invoiceNumber,
+            period: `${a.invoice.periodMonth}/${a.invoice.periodYear}`,
+            amountUsd: a.amountUsd.toString(),
+          })),
+        });
+        return { base64: buffer.toString("base64") };
+      }),
   }),
 
   // ─── Ingresos ──────────────────────────────────────────────────

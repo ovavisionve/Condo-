@@ -20,6 +20,24 @@ const METHODS = [
   "OTHER",
 ] as const;
 
+const METHOD_LABEL: Record<string, string> = {
+  CASH_BSS: "Efectivo Bs", CASH_USD: "Efectivo USD",
+  TRANSFER_BSS: "Transfer. Bs", TRANSFER_USD: "Transfer. USD",
+  ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil",
+  CRYPTO: "Cripto", CHECK: "Cheque", OTHER: "Otro",
+};
+
+function downloadBase64Pdf(base64: string, filename: string) {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function PaymentsPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -50,26 +68,19 @@ export default function PaymentsPage() {
               <th className="px-3 py-2 text-right">USD</th>
               <th className="px-3 py-2 text-right">Bs</th>
               <th className="px-3 py-2">Aplicado a</th>
+              <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {list.data?.map((p) => (
-              <tr key={p.id} className={`border-t ${p.voidedAt ? "text-muted-foreground line-through" : ""}`}>
-                <td className="px-3 py-2">{new Date(p.paidAt).toLocaleDateString("es-VE")}</td>
-                <td className="px-3 py-2">{p.unit.code}</td>
-                <td className="px-3 py-2 text-xs">{p.method}</td>
-                <td className="px-3 py-2 text-muted-foreground">{p.reference ?? "—"}</td>
-                <td className="px-3 py-2 text-right">${Number(p.amountUsd.toString()).toFixed(2)}</td>
-                <td className="px-3 py-2 text-right">{Number(p.amountBss.toString()).toFixed(2)}</td>
-                <td className="px-3 py-2 text-xs">
-                  {p.allocations.length > 0
-                    ? p.allocations.map((a) => a.invoice.invoiceNumber).join(", ")
-                    : <span className="text-amber-700">anticipo</span>}
-                </td>
-              </tr>
+              <PaymentRow
+                key={p.id}
+                payment={p}
+                organizationId={organizationId}
+              />
             ))}
             {list.data?.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">Sin pagos registrados</td></tr>
             )}
           </tbody>
         </table>
@@ -89,6 +100,61 @@ export default function PaymentsPage() {
         />
       )}
     </div>
+  );
+}
+
+function PaymentRow({ payment, organizationId }: {
+  payment: {
+    id: string;
+    paidAt: Date | string;
+    amountUsd: { toString(): string };
+    amountBss: { toString(): string };
+    method: string;
+    reference?: string | null;
+    voidedAt?: Date | string | null;
+    unit: { code: string };
+    allocations: { invoice: { invoiceNumber: string } }[];
+  };
+  organizationId: string;
+}) {
+  const getVoucher = trpc.finance.payments.getVoucherPdf.useMutation();
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const res = await getVoucher.mutateAsync({ organizationId, paymentId: payment.id });
+      downloadBase64Pdf(res.base64, `bauche-${payment.id.slice(-8)}.pdf`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <tr className={`border-t ${payment.voidedAt ? "text-muted-foreground line-through" : ""}`}>
+      <td className="px-3 py-2">{new Date(payment.paidAt).toLocaleDateString("es-VE")}</td>
+      <td className="px-3 py-2">{payment.unit.code}</td>
+      <td className="px-3 py-2 text-xs">{METHOD_LABEL[payment.method] ?? payment.method}</td>
+      <td className="px-3 py-2 text-muted-foreground">{payment.reference ?? "—"}</td>
+      <td className="px-3 py-2 text-right">${Number(payment.amountUsd.toString()).toFixed(2)}</td>
+      <td className="px-3 py-2 text-right">{Number(payment.amountBss.toString()).toFixed(2)}</td>
+      <td className="px-3 py-2 text-xs">
+        {payment.allocations.length > 0
+          ? payment.allocations.map((a) => a.invoice.invoiceNumber).join(", ")
+          : <span className="text-amber-700">anticipo</span>}
+      </td>
+      <td className="px-3 py-2">
+        {!payment.voidedAt && (
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
+          >
+            {downloading ? "..." : "📄 Bauche"}
+          </button>
+        )}
+      </td>
+    </tr>
   );
 }
 
@@ -161,94 +227,115 @@ function NewPaymentDialog({ organizationId, communityId, onClose, onCreated }: {
               onChange={(e) => { setUnitId(e.target.value); setAllocs({}); }}
               required
             >
-              <option value="">Selecciona unidad</option>
-              {units.data?.map((u) => <option key={u.id} value={u.id}>{u.code}</option>)}
+              <option value="">Selecciona una unidad...</option>
+              {units.data?.map((u) => (
+                <option key={u.id} value={u.id}>{u.code}</option>
+              ))}
             </select>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Monto</Label>
-              <Input aria-label="Monto" type="number" step="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} required />
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={form.amount}
+                onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                required
+              />
             </div>
             <div>
               <Label>Moneda</Label>
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={form.currencyPrimary}
-                onChange={(e) => setForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+                onChange={(e) => setForm({ ...form, currencyPrimary: e.target.value as "USD" | "VES" })}
               >
                 <option value="USD">USD</option>
-                <option value="VES">VES</option>
+                <option value="VES">VES (Bs)</option>
               </select>
-            </div>
-            <div>
-              <Label>Fecha</Label>
-              <Input type="date" value={form.paidAt} onChange={(e) => setForm((f) => ({ ...f, paidAt: e.target.value }))} required />
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Método</Label>
+              <Label>Método de pago</Label>
               <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={form.method}
-                onChange={(e) => setForm((f) => ({ ...f, method: e.target.value as (typeof METHODS)[number] }))}
+                onChange={(e) => setForm({ ...form, method: e.target.value as (typeof METHODS)[number] })}
               >
-                {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+                {METHODS.map((m) => <option key={m} value={m}>{METHOD_LABEL[m] ?? m}</option>)}
               </select>
             </div>
             <div>
-              <Label>Referencia</Label>
-              <Input value={form.reference} onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))} />
+              <Label>Referencia (opcional)</Label>
+              <Input
+                value={form.reference}
+                onChange={(e) => setForm({ ...form, reference: e.target.value })}
+                placeholder="N° de transacción"
+              />
             </div>
           </div>
 
-          {unitId && pendingInvoices.length > 0 && (
+          <div>
+            <Label>Fecha del pago</Label>
+            <Input
+              type="date"
+              value={form.paidAt}
+              onChange={(e) => setForm({ ...form, paidAt: e.target.value })}
+              required
+            />
+          </div>
+
+          {pendingInvoices.length > 0 && (
             <div>
-              <Label>Aplicar a facturas (opcional, sino queda como anticipo)</Label>
-              <div className="rounded border">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-left">
-                    <tr>
-                      <th className="px-2 py-1"># Factura</th>
-                      <th className="px-2 py-1 text-right">Pendiente USD</th>
-                      <th className="px-2 py-1">Aplicar</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendingInvoices.map((inv) => {
-                      const pendingUsd = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
-                      return (
-                        <tr key={inv.id} className="border-t">
-                          <td className="px-2 py-1">{inv.invoiceNumber}</td>
-                          <td className="px-2 py-1 text-right">${pendingUsd.toFixed(2)}</td>
-                          <td className="px-2 py-1">
-                            <Input
-                              type="number"
-                              step="0.01"
-                              value={allocs[inv.id] ?? ""}
-                              onChange={(e) => setAllocs((a) => ({ ...a, [inv.id]: e.target.value }))}
-                              className="h-8 w-32"
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <Label>Aplicar a facturas pendientes</Label>
+              <div className="mt-2 space-y-2 rounded-md border p-3">
+                {pendingInvoices.map((inv) => (
+                  <div key={inv.id} className="flex items-center gap-3">
+                    <div className="flex-1 text-sm">
+                      <span className="font-mono text-xs">{inv.invoiceNumber}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        Pendiente: ${(Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString())).toFixed(2)}
+                      </span>
+                    </div>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="w-28"
+                      placeholder="0.00"
+                      value={allocs[inv.id] ?? ""}
+                      onChange={(e) => setAllocs({ ...allocs, [inv.id]: e.target.value })}
+                    />
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  Suma asignada: {sumAllocs.toFixed(2)} {form.currencyPrimary} · Monto: {form.amount || "0"} {form.currencyPrimary}
+                </p>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Suma asignaciones: {sumAllocs.toFixed(2)} {form.currencyPrimary} · Monto pago: {form.amount || "0"} {form.currencyPrimary}
-              </p>
             </div>
           )}
 
+          <div>
+            <Label>Notas (opcional)</Label>
+            <Input
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder="Observaciones..."
+            />
+          </div>
+
           {error && <p className="text-sm text-destructive">{error}</p>}
+
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-            <Button type="submit" disabled={record.isPending}>{record.isPending ? "..." : "Registrar"}</Button>
+            <Button type="submit" disabled={record.isPending}>
+              {record.isPending ? "Guardando..." : "Registrar pago"}
+            </Button>
           </div>
         </form>
       </div>
