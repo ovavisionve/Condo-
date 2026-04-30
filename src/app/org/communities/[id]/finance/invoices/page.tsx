@@ -10,6 +10,17 @@ import { Label } from "@/components/ui/label";
 
 const today = new Date();
 
+function downloadBase64Pdf(base64: string, filename: string) {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function InvoicesPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -18,12 +29,14 @@ export default function InvoicesPage() {
   const list = trpc.finance.invoices.list.useQuery({ organizationId, communityId, year, month });
   const issue = trpc.finance.invoices.issueMonth.useMutation();
   const sendEmail = trpc.finance.invoices.sendByEmail.useMutation();
+  const downloadPdf = trpc.finance.invoices.downloadPdf.useMutation();
   const rate = trpc.finance.exchange.current.useQuery({ organizationId });
   const todayRate = Number(rate.data?.vesPerUsd ?? 0);
   const utils = trpc.useUtils();
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [emailStates, setEmailStates] = useState<Record<string, "sending" | "ok" | "err">>({});
+  const [pdfStates, setPdfStates] = useState<Record<string, boolean>>({});
 
   const onSendEmail = async (invoiceId: string) => {
     setEmailStates((s) => ({ ...s, [invoiceId]: "sending" }));
@@ -32,6 +45,16 @@ export default function InvoicesPage() {
       setEmailStates((s) => ({ ...s, [invoiceId]: r.success ? "ok" : "err" }));
     } catch {
       setEmailStates((s) => ({ ...s, [invoiceId]: "err" }));
+    }
+  };
+
+  const onDownloadPdf = async (invoiceId: string, invoiceNumber: string) => {
+    setPdfStates((s) => ({ ...s, [invoiceId]: true }));
+    try {
+      const r = await downloadPdf.mutateAsync({ organizationId, id: invoiceId });
+      downloadBase64Pdf(r.base64, `Recibo-${invoiceNumber}.pdf`);
+    } finally {
+      setPdfStates((s) => ({ ...s, [invoiceId]: false }));
     }
   };
 
@@ -146,21 +169,33 @@ export default function InvoicesPage() {
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{new Date(inv.dueDate).toLocaleDateString("es-VE")}</td>
                   <td className="px-3 py-2">
-                    {es === "ok" ? (
-                      <span className="text-xs text-green-600 font-medium">✓ Enviado</span>
-                    ) : es === "err" ? (
-                      <button onClick={() => onSendEmail(inv.id)} className="text-xs text-destructive hover:underline">
-                        Error — reintentar
-                      </button>
-                    ) : (
+                    <div className="flex items-center gap-3">
+                      {/* Descargar PDF */}
                       <button
-                        onClick={() => onSendEmail(inv.id)}
-                        disabled={es === "sending"}
-                        className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                        onClick={() => onDownloadPdf(inv.id, inv.invoiceNumber)}
+                        disabled={pdfStates[inv.id]}
+                        className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 whitespace-nowrap"
+                        title="Descargar recibo en PDF"
                       >
-                        {es === "sending" ? "Enviando..." : "Enviar por email"}
+                        {pdfStates[inv.id] ? "..." : "📄 PDF"}
                       </button>
-                    )}
+                      {/* Enviar por email */}
+                      {es === "ok" ? (
+                        <span className="text-xs text-green-600 font-medium">✓ Enviado</span>
+                      ) : es === "err" ? (
+                        <button onClick={() => onSendEmail(inv.id)} className="text-xs text-destructive hover:underline">
+                          Error — reintentar
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => onSendEmail(inv.id)}
+                          disabled={es === "sending"}
+                          className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                        >
+                          {es === "sending" ? "Enviando..." : "✉️ Email"}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
