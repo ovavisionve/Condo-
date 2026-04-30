@@ -207,5 +207,91 @@ export const platformRouter = router({
           data: { active: false, deletedAt: new Date() },
         }),
       ),
+
+    // ─── Admins de la organización ──────────────────────────────
+    listAdmins: platformProcedure
+      .input(z.object({ organizationId: z.string() }))
+      .query(({ ctx, input }) =>
+        ctx.db.membership.findMany({
+          where: {
+            organizationId: input.organizationId,
+            role: { in: ["ORG_ADMIN", "COMMUNITY_ADMIN"] },
+            revokedAt: null,
+            active: true,
+          },
+          include: { user: { select: { id: true, email: true, name: true, active: true } } },
+          orderBy: { createdAt: "asc" },
+        }),
+      ),
+
+    createAdmin: platformProcedure
+      .input(z.object({
+        organizationId: z.string(),
+        email: z.string().email(),
+        name: z.string().min(2),
+        password: z.string().min(8),
+        role: z.enum(["ORG_ADMIN", "COMMUNITY_ADMIN"]).default("ORG_ADMIN"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const email = input.email.toLowerCase();
+        // Si ya existe el usuario, solo crea la membresía
+        let user = await ctx.db.user.findUnique({ where: { email } });
+        if (!user) {
+          const hash = await bcrypt.hash(input.password, 12);
+          user = await ctx.db.user.create({
+            data: { email, name: input.name, passwordHash: hash, emailVerified: new Date(), active: true },
+          });
+        }
+        // Verificar que no tenga ya membresía activa en esta org
+        const existing = await ctx.db.membership.findFirst({
+          where: { userId: user.id, organizationId: input.organizationId, active: true, revokedAt: null },
+        });
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "Este usuario ya tiene acceso a esta organización" });
+        }
+        const membership = await ctx.db.membership.create({
+          data: {
+            userId: user.id,
+            scope: "ORGANIZATION",
+            role: input.role,
+            organizationId: input.organizationId,
+            active: true,
+          },
+          include: { user: { select: { id: true, email: true, name: true, active: true } } },
+        });
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "ROLE_GRANTED",
+            entityType: "Membership",
+            entityId: membership.id,
+            after: { email, role: input.role },
+          },
+        });
+        return membership;
+      }),
+
+    removeAdmin: platformProcedure
+      .input(z.object({ membershipId: z.string(), organizationId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const mem = await ctx.db.membership.findFirstOrThrow({
+          where: { id: input.membershipId, organizationId: input.organizationId },
+        });
+        await ctx.db.membership.update({
+          where: { id: mem.id },
+          data: { active: false, revokedAt: new Date() },
+        });
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "ROLE_REVOKED",
+            entityType: "Membership",
+            entityId: mem.id,
+          },
+        });
+        return { ok: true };
+      }),
   }),
 });

@@ -35,6 +35,12 @@ export default function FinanceDashboard() {
     try {
       await setFee.mutateAsync({ organizationId, communityId, monthlyFeeUsd: Number(feeVal) });
       setFeeOk(true);
+      // Optimistic update: actualizar el cache localmente sin esperar el refetch
+      const { Decimal } = await import("decimal.js");
+      utils.org.communities.byId.setData(
+        { organizationId, id: communityId },
+        (old) => old ? { ...old, monthlyFeeUsd: new Decimal(feeVal), monthlyFeeSetAt: new Date() } : old,
+      );
       setFeeVal("");
       void utils.org.communities.byId.invalidate();
     } catch (e: unknown) {

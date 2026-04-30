@@ -14,11 +14,22 @@ export default function OrganizationDetailPage() {
   const router = useRouter();
 
   const { data: org, isLoading, refetch } = trpc.platform.organizations.byId.useQuery({ id });
+  const { data: admins, refetch: refetchAdmins } = trpc.platform.organizations.listAdmins.useQuery(
+    { organizationId: id },
+    { enabled: !!id },
+  );
   const updateMutation = trpc.platform.organizations.update.useMutation({
     onSuccess: () => { void refetch(); setEditing(false); },
   });
   const softDeleteMutation = trpc.platform.organizations.softDelete.useMutation({
     onSuccess: () => router.push("/platform/organizations"),
+  });
+  const createAdminMutation = trpc.platform.organizations.createAdmin.useMutation({
+    onSuccess: () => { void refetchAdmins(); setShowNewAdmin(false); setAdminForm({ email: "", name: "", password: "", role: "ORG_ADMIN" }); setAdminErr(null); },
+    onError: (e) => setAdminErr(e.message),
+  });
+  const removeAdminMutation = trpc.platform.organizations.removeAdmin.useMutation({
+    onSuccess: () => { void refetchAdmins(); },
   });
 
   const [editing, setEditing] = useState(false);
@@ -26,6 +37,10 @@ export default function OrganizationDetailPage() {
     name: string; legalName: string; rif: string; email: string;
     phone: string; address: string; city: string;
   }>({ name: "", legalName: "", rif: "", email: "", phone: "", address: "", city: "" });
+
+  const [showNewAdmin, setShowNewAdmin] = useState(false);
+  const [adminForm, setAdminForm] = useState({ email: "", name: "", password: "", role: "ORG_ADMIN" as "ORG_ADMIN" | "COMMUNITY_ADMIN" });
+  const [adminErr, setAdminErr] = useState<string | null>(null);
 
   function startEdit() {
     if (!org) return;
@@ -104,8 +119,9 @@ export default function OrganizationDetailPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Datos de la organización */}
+        {/* Columna principal */}
         <div className="lg:col-span-2 space-y-4">
+          {/* Datos */}
           <Card>
             <CardHeader>
               <CardTitle>Datos de la organización</CardTitle>
@@ -189,9 +205,119 @@ export default function OrganizationDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Administradores ────────────────────────────────────── */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <div>
+                <CardTitle>Administradores</CardTitle>
+                <CardDescription>Usuarios con acceso a esta organización</CardDescription>
+              </div>
+              <Button size="sm" onClick={() => { setShowNewAdmin(true); setAdminErr(null); }}>
+                + Agregar admin
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* Formulario nuevo admin */}
+              {showNewAdmin && (
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+                  <p className="text-sm font-medium">Nuevo administrador</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>Nombre completo *</Label>
+                      <Input
+                        value={adminForm.name}
+                        onChange={e => setAdminForm(f => ({ ...f, name: e.target.value }))}
+                        placeholder="Luis Ilarraza"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Email *</Label>
+                      <Input
+                        type="email"
+                        value={adminForm.email}
+                        onChange={e => setAdminForm(f => ({ ...f, email: e.target.value }))}
+                        placeholder="admin@edificio.com"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Contraseña inicial *</Label>
+                      <Input
+                        type="text"
+                        value={adminForm.password}
+                        onChange={e => setAdminForm(f => ({ ...f, password: e.target.value }))}
+                        placeholder="mínimo 8 caracteres"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Rol</Label>
+                      <select
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        value={adminForm.role}
+                        onChange={e => setAdminForm(f => ({ ...f, role: e.target.value as "ORG_ADMIN" | "COMMUNITY_ADMIN" }))}
+                      >
+                        <option value="ORG_ADMIN">ORG_ADMIN — acceso completo a la organización</option>
+                        <option value="COMMUNITY_ADMIN">COMMUNITY_ADMIN — solo gestiona edificios</option>
+                      </select>
+                    </div>
+                  </div>
+                  {adminErr && <p className="text-sm text-destructive">{adminErr}</p>}
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      disabled={createAdminMutation.isPending}
+                      onClick={() => createAdminMutation.mutate({
+                        organizationId: id,
+                        email: adminForm.email,
+                        name: adminForm.name,
+                        password: adminForm.password,
+                        role: adminForm.role,
+                      })}
+                    >
+                      {createAdminMutation.isPending ? "Creando..." : "Crear administrador"}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setShowNewAdmin(false)}>Cancelar</Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Lista de admins */}
+              {!admins || admins.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Sin administradores asignados.</p>
+              ) : (
+                <div className="divide-y">
+                  {admins.map((m) => (
+                    <div key={m.id} className="py-3 flex items-center justify-between text-sm">
+                      <div>
+                        <p className="font-medium">{m.user.name ?? m.user.email}</p>
+                        <p className="text-muted-foreground">{m.user.email}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          <span className="inline-block bg-secondary px-1.5 py-0.5 rounded text-xs">{m.role}</span>
+                          {" · "}Desde {new Date(m.createdAt).toLocaleDateString("es-VE")}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:bg-destructive/10"
+                        disabled={removeAdminMutation.isPending}
+                        onClick={() => {
+                          if (confirm(`¿Revocar acceso de ${m.user.email}?`)) {
+                            removeAdminMutation.mutate({ membershipId: m.id, organizationId: id });
+                          }
+                        }}
+                      >
+                        Revocar
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Panel lateral: suscripción */}
+        {/* Panel lateral */}
         <div className="space-y-4">
           <Card>
             <CardHeader>
