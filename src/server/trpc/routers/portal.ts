@@ -1116,4 +1116,65 @@ export const portalRouter = router({
 
       return { ok: true };
     }),
+
+  /** Resumen financiero del condominio para el mes indicado (visible en portal). */
+  getCommunityMonthSummary: publicProcedure
+    .input(z.object({
+      communityId: z.string(),
+      year:  z.number().int(),
+      month: z.number().int().min(1).max(12),
+    }))
+    .query(async ({ ctx, input }) => {
+      const monthStart = new Date(Date.UTC(input.year, input.month - 1, 1));
+      const monthEnd   = new Date(Date.UTC(input.year, input.month, 1));
+
+      const [invoiceAgg, paymentAgg, totalUnits, paidUnits] = await Promise.all([
+        ctx.db.invoice.aggregate({
+          where: {
+            communityId: input.communityId,
+            periodYear:  input.year,
+            periodMonth: input.month,
+            status: { not: "VOIDED" },
+          },
+          _sum: { totalUsd: true },
+          _count: true,
+        }),
+        ctx.db.payment.aggregate({
+          where: {
+            communityId: input.communityId,
+            voidedAt: null,
+            paidAt: { gte: monthStart, lt: monthEnd },
+          },
+          _sum: { amountUsd: true },
+          _count: true,
+        }),
+        ctx.db.unit.count({ where: { communityId: input.communityId, active: true, deletedAt: null } }),
+        ctx.db.invoice.count({
+          where: {
+            communityId: input.communityId,
+            periodYear:  input.year,
+            periodMonth: input.month,
+            status: "PAID",
+          },
+        }),
+      ]);
+
+      const totalInvoiced  = Number(invoiceAgg._sum.totalUsd ?? 0);
+      const totalCollected = Number(paymentAgg._sum.amountUsd ?? 0);
+
+      return {
+        year: input.year,
+        month: input.month,
+        totalInvoicedUsd:  totalInvoiced.toFixed(2),
+        totalCollectedUsd: totalCollected.toFixed(2),
+        pendingUsd:        Math.max(0, totalInvoiced - totalCollected).toFixed(2),
+        invoiceCount:      invoiceAgg._count,
+        paymentCount:      paymentAgg._count,
+        totalUnits,
+        paidUnits,
+        collectionRate:    totalInvoiced > 0
+          ? Math.round((totalCollected / totalInvoiced) * 100)
+          : 0,
+      };
+    }),
 });

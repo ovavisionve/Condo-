@@ -418,6 +418,216 @@ export const financeRouter = router({
         const result = await sendEmail({ to: person.email, ...emailData });
         return result;
       }),
+
+    /** Progreso de envío masivo de emails del período (para el panel de estado en UI). */
+    emailProgress: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          year:  z.number().int(),
+          month: z.number().int().min(1).max(12),
+        }),
+      )
+      .query(async ({ ctx, input }) => {
+        const monthStart = new Date(Date.UTC(input.year, input.month - 1, 1));
+        const monthEnd   = new Date(Date.UTC(input.year, input.month, 1));
+
+        const [totalInvoices, sentCount, failedCount, todayCount] = await Promise.all([
+          // Total de facturas ISSUED+ para el período
+          ctx.db.invoice.count({
+            where: {
+              organizationId: input.organizationId,
+              communityId:    input.communityId,
+              periodYear:     input.year,
+              periodMonth:    input.month,
+              status: { in: ["ISSUED", "PARTIAL", "PAID", "OVERDUE"] },
+            },
+          }),
+          // Emails enviados exitosamente este período
+          ctx.db.notification.count({
+            where: {
+              organizationId: input.organizationId,
+              communityId:    input.communityId,
+              event:   "INVOICE_ISSUED",
+              channel: "EMAIL",
+              status:  "SENT",
+              sentAt:  { gte: monthStart, lt: monthEnd },
+            },
+          }),
+          // Emails fallidos este período
+          ctx.db.notification.count({
+            where: {
+              organizationId: input.organizationId,
+              communityId:    input.communityId,
+              event:   "INVOICE_ISSUED",
+              channel: "EMAIL",
+              status:  "FAILED",
+              sentAt:  { gte: monthStart, lt: monthEnd },
+            },
+          }),
+          // Emails enviados hoy (para mostrar el cap diario)
+          ctx.db.notification.count({
+            where: {
+              organizationId: input.organizationId,
+              communityId:    input.communityId,
+              event:   "INVOICE_ISSUED",
+              channel: "EMAIL",
+              status:  "SENT",
+              sentAt:  { gte: new Date(new Date().setUTCHours(0, 0, 0, 0)) },
+            },
+          }),
+        ]);
+
+        return {
+          total:   totalInvoices,
+          sent:    sentCount,
+          failed:  failedCount,
+          pending: Math.max(0, totalInvoices - sentCount - failedCount),
+          todaySent: todayCount,
+          dailyCap:  40,
+          complete: sentCount + failedCount >= totalInvoices && totalInvoices > 0,
+        };
+      }),
+
+    /** Preview de lo que se facturaría este mes (sin guardar nada). */
+    previewMonth: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        const [expenses, units, existing] = await Promise.all([
+          ctx.db.expense.findMany({
+            where: {
+              communityId: input.communityId,
+              periodYear: input.year,
+              periodMonth: input.month,
+            },
+            select: { id: true, description: true, category: true, customCategory: true, amountUsd: true, amountBss: true },
+          }),
+          ctx.db.unit.findMany({
+            where: { communityId: input.communityId, active: true, deletedAt: null },
+            select: { id: true, code: true, aliquot: true },
+          }),
+          ctx.db.invoice.count({
+            where: {
+              communityId: input.communityId,
+              periodYear: input.year,
+              periodMonth: input.month,
+              status: { not: "VOIDED" },
+            },
+          }),
+        ]);
+
+        const totalExpensesUsd = expenses.reduce((s, e) => s + Number(e.amountUsd), 0);
+        const totalExpensesBss = expenses.reduce((s, e) => s + Number(e.amountBss), 0);
+
+        // Muestra solo una distribución simple (alícuota × total)
+        const unitPreviews = units.slice(0, 20).map((u) => ({
+          unitCode: u.code,
+          aliquot: Number(u.aliquot).toFixed(4),
+          estimatedUsd: (totalExpensesUsd * Number(u.aliquot) / 100).toFixed(2),
+        }));
+
+        return {
+          expenses: expenses.map(e => ({
+            description: e.customCategory ?? e.description,
+            amountUsd: Number(e.amountUsd).toFixed(2),
+            amountBss: Number(e.amountBss).toFixed(2),
+          })),
+          totalExpensesUsd: totalExpensesUsd.toFixed(2),
+          totalExpensesBss: totalExpensesBss.toFixed(2),
+          unitCount: units.length,
+          unitPreviews,
+          alreadyIssued: existing > 0,
+        };
+      }),
+  }),
+
+  // ─── Cierre de mes ─────────────────────────────────────────────
+  monthClose: router({
+    list: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(({ ctx, input }) =>
+        ctx.db.monthClose.findMany({
+          where: { communityId: input.communityId },
+          include: { closedBy: { select: { name: true, email: true } } },
+          orderBy: [{ year: "desc" }, { month: "desc" }],
+        }),
+      ),
+
+    isOpen: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        const close = await ctx.db.monthClose.findUnique({
+          where: { communityId_year_month: { communityId: input.communityId, year: input.year, month: input.month } },
+        });
+        return { closed: !!close, closedAt: close?.closedAt ?? null };
+      }),
+
+    close: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const existing = await ctx.db.monthClose.findUnique({
+          where: { communityId_year_month: { communityId: input.communityId, year: input.year, month: input.month } },
+        });
+        if (existing) throw new Error("Este mes ya fue cerrado");
+
+        const monthStart = new Date(Date.UTC(input.year, input.month - 1, 1));
+        const monthEnd   = new Date(Date.UTC(input.year, input.month, 1));
+
+        const [expAgg, invAgg, payAgg] = await Promise.all([
+          ctx.db.expense.aggregate({
+            where: { communityId: input.communityId, periodYear: input.year, periodMonth: input.month },
+            _sum: { amountUsd: true }, _count: true,
+          }),
+          ctx.db.invoice.aggregate({
+            where: { communityId: input.communityId, periodYear: input.year, periodMonth: input.month, status: { not: "VOIDED" } },
+            _sum: { totalUsd: true, paidUsd: true }, _count: true,
+          }),
+          ctx.db.payment.aggregate({
+            where: { communityId: input.communityId, voidedAt: null, paidAt: { gte: monthStart, lt: monthEnd } },
+            _sum: { amountUsd: true }, _count: true,
+          }),
+        ]);
+
+        const expSumUsd  = Number(expAgg._sum?.amountUsd ?? 0);
+        const invTotalUsd = Number(invAgg._sum?.totalUsd ?? 0);
+        const invPaidUsd  = Number(invAgg._sum?.paidUsd ?? 0);
+        const payTotalUsd = Number(payAgg._sum?.amountUsd ?? 0);
+        const summary = {
+          totalExpensesUsd:  expSumUsd.toFixed(2),
+          expenseCount:      expAgg._count,
+          totalInvoicedUsd:  invTotalUsd.toFixed(2),
+          totalCollectedUsd: invPaidUsd.toFixed(2),
+          invoiceCount:      invAgg._count,
+          totalPaymentsUsd:  payTotalUsd.toFixed(2),
+          paymentCount:      payAgg._count,
+          collectionRate:    invTotalUsd > 0 ? Math.round((invPaidUsd / invTotalUsd) * 100) : 0,
+        };
+
+        return ctx.db.monthClose.create({
+          data: {
+            organizationId: input.organizationId,
+            communityId:    input.communityId,
+            year:           input.year,
+            month:          input.month,
+            closedById:     ctx.user.id,
+            summary,
+            notes:          input.notes,
+          },
+        });
+      }),
   }),
 
   // ─── Pagos ─────────────────────────────────────────────────────
@@ -445,6 +655,40 @@ export const financeRouter = router({
           orderBy: { paidAt: "desc" },
         }),
       ),
+    listForReconciliation: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const payments = await ctx.db.payment.findMany({
+          where: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            voidedAt: null,
+          },
+          include: {
+            unit: {
+              select: {
+                code: true,
+                ownerships: {
+                  where: { endDate: null },
+                  take: 1,
+                  include: { person: { select: { firstName: true, lastName: true } } },
+                },
+              },
+            },
+          },
+          orderBy: { paidAt: "desc" },
+        });
+        return payments.map(p => ({
+          id: p.id,
+          reference: p.reference,
+          amountUsd: p.amountUsd.toString(),
+          paidAt: p.paidAt.toISOString(),
+          unitLabel: p.unit.code,
+          ownerName: p.unit.ownerships[0]
+            ? `${p.unit.ownerships[0].person.firstName} ${p.unit.ownerships[0].person.lastName}`
+            : "Sin propietario",
+        }));
+      }),
     record: orgProcedure
       .input(
         orgIdInput.extend({

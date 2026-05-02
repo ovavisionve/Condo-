@@ -139,23 +139,27 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
             {/* Community nav */}
             <NavItem href={base} label="Resumen" icon="📊" exact />
             <NavItem href={`${base}/units`} label="Unidades" icon="🏠" />
-            <NavItem href={`${base}/residents`} label="Residentes" icon="👥" />
+            <NavItem href={`${base}/residents`} label="Propietarios" icon="👥" />
 
             <SectionLabel>Finanzas</SectionLabel>
             <NavItem href={`${base}/finance`} label="General" icon="💰" exact />
-            <NavItem href={`${base}/finance/expenses`} label="Gastos" icon="📋" exact />
+            <NavItem href={`${base}/finance/expenses`} label="Gastos Comunes" icon="📋" exact />
             <NavItem href={`${base}/finance/income`} label="Ingresos" icon="💵" exact />
-            <NavItem href={`${base}/finance/invoices`} label="Facturas" icon="📄" exact />
+            <NavItem href={`${base}/finance/invoices`} label="Recibos" icon="📄" exact />
             <NavItem href={`${base}/finance/payments`} label="Pagos" icon="💳" exact />
             <NavItem href={`${base}/finance/account`} label="Estado de cuenta" icon="📊" exact />
+            <NavItem href={`${base}/finance/conciliacion`} label="Conciliación" icon="🏦" exact />
 
             <SectionLabel>Gestión</SectionLabel>
             <NavItem href={`${base}/maintenance`} label="Mantenimiento" icon="🔧" />
             <NavItem href={`${base}/security`} label="Seguridad" icon="🔒" />
-            <NavItem href={`${base}/governance`} label="Gobernanza" icon="🏛️" />
+            <NavItem href={`${base}/governance`} label="Junta de Condominio" icon="🏛️" />
             <NavItem href={`${base}/communication`} label="Comunicación" icon="📢" />
             <NavItem href={`${base}/reports`} label="Reportes" icon="📈" />
             <NavItem href={`${base}/import`} label="Importar datos" icon="⬆️" />
+
+            <SectionLabel>Soporte</SectionLabel>
+            <NavItem href="/org/help" label="Guía de ayuda" icon="🎓" />
           </>
         ) : (
           <>

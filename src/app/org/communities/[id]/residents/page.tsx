@@ -135,7 +135,7 @@ export default function ResidentsPage() {
         await assignTenant.mutateAsync({ organizationId, unitId, personId: person.id, startDate: today });
       }
       void refetch();
-      setFormMsg({ type: "success", text: `Residente ${person.firstName} ${person.lastName} agregado correctamente.` });
+      setFormMsg({ type: "success", text: `${role === "OWNER" ? "Propietario" : "Inquilino"} ${person.firstName} ${person.lastName} agregado correctamente.` });
       resetForm();
       setShowForm(false);
     } catch (err: unknown) {
@@ -252,7 +252,7 @@ export default function ResidentsPage() {
       {/* ── Encabezado ── */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Residentes</h2>
+          <h2 className="text-lg font-semibold">Propietarios e Inquilinos</h2>
           <p className="text-sm text-muted-foreground">
             {totalOwners} propietario(s) · {totalTenants} inquilino(s) activos
           </p>
@@ -266,7 +266,7 @@ export default function ResidentsPage() {
             </Button>
           </label>
           <Button type="button" onClick={() => { setShowForm((v) => !v); setFormMsg(null); }}>
-            {showForm ? "Cancelar" : "+ Agregar residente"}
+            {showForm ? "Cancelar" : "+ Agregar propietario/inquilino"}
           </Button>
         </div>
       </div>
@@ -288,7 +288,7 @@ export default function ResidentsPage() {
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground">Unidades en mora</p>
           <p className={`text-xl font-bold ${morosos.length > 0 ? "text-red-600" : "text-green-700"}`}>
-            {morosos.length} <span className="text-sm font-normal">con facturas vencidas</span>
+            {morosos.length} <span className="text-sm font-normal">con recibos vencidos</span>
           </p>
         </div>
       </div>
@@ -314,7 +314,7 @@ export default function ResidentsPage() {
       {/* ── Formulario manual ── */}
       {showForm && (
         <div className="rounded-lg border bg-card p-5 space-y-5">
-          <h3 className="font-semibold text-base">Agregar residente manualmente</h3>
+          <h3 className="font-semibold text-base">Agregar propietario / inquilino manualmente</h3>
           {formMsg && (
             <div className={`rounded-md border px-3 py-2 text-sm ${formMsg.type === "success" ? "border-green-300 bg-green-50 text-green-800" : "border-destructive/30 bg-destructive/5 text-destructive"}`}>
               {formMsg.text}
@@ -346,7 +346,7 @@ export default function ResidentsPage() {
                 <Input id="res-idNumber" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} placeholder="12345678" />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="res-email">Email <span className="text-muted-foreground text-xs">(para facturas)</span></Label>
+                <Label htmlFor="res-email">Email <span className="text-muted-foreground text-xs">(para recibos y portal)</span></Label>
                 <Input id="res-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="juan@correo.com" />
               </div>
               <div className="space-y-1.5">
@@ -725,7 +725,7 @@ function EditPersonModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={handleBackdropClick}>
       <div className="w-full max-w-lg rounded-xl border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
-          <h3 className="font-semibold text-base">Editar residente</h3>
+          <h3 className="font-semibold text-base">Editar propietario / inquilino</h3>
           <button onClick={onClose} className="rounded-md p-1 text-muted-foreground hover:bg-muted">✕</button>
         </div>
         <div className="p-5 space-y-4">
@@ -743,7 +743,7 @@ function EditPersonModal({
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>Email <span className="text-xs text-muted-foreground">(para facturas y portal)</span></Label>
+            <Label>Email <span className="text-xs text-muted-foreground">(para recibos de condominio y portal)</span></Label>
             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="juan@correo.com" disabled={isSaving} />
           </div>
           <div className="grid grid-cols-2 gap-4">

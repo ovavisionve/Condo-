@@ -58,7 +58,7 @@ export default function CommunityOverview() {
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             {aging.data
-              ? `${aging.data.d_0_30.count + aging.data.d_31_60.count + aging.data.d_61_90.count + aging.data.d_90_plus.count} factura(s)`
+              ? `${aging.data.d_0_30.count + aging.data.d_31_60.count + aging.data.d_61_90.count + aging.data.d_90_plus.count} recibo(s) vencido(s)`
               : ""}
           </CardContent>
         </Card>

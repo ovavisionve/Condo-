@@ -28,11 +28,11 @@ const STATUS_COLORS: Record<string, string> = {
 
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Borrador",
-  ISSUED: "Emitida",
-  PARTIAL: "Parcial",
-  PAID: "Pagada",
-  OVERDUE: "Vencida",
-  VOIDED: "Anulada",
+  ISSUED: "Emitido",
+  PARTIAL: "Pago parcial",
+  PAID: "Pagado",
+  OVERDUE: "Vencido",
+  VOIDED: "Anulado",
 };
 
 export default function UnitDetailPage() {
@@ -156,14 +156,14 @@ export default function UnitDetailPage() {
         )}
       </div>
 
-      {/* Facturas */}
+      {/* Recibos de Condominio */}
       <div>
-        <h3 className="mb-2 text-sm font-semibold">Historial de facturas</h3>
+        <h3 className="mb-2 text-sm font-semibold">Historial de Recibos de Condominio</h3>
         <div className="overflow-hidden rounded-lg border bg-card">
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left">
               <tr>
-                <th className="px-3 py-2">Factura</th>
+                <th className="px-3 py-2"># Recibo</th>
                 <th className="px-3 py-2">Período</th>
                 <th className="px-3 py-2">Tipo</th>
                 <th className="px-3 py-2 text-right">Total USD</th>
@@ -198,7 +198,7 @@ export default function UnitDetailPage() {
                 );
               })}
               {unit.invoices.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">Sin facturas</td></tr>
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">Sin Recibos de Condominio</td></tr>
               )}
             </tbody>
           </table>

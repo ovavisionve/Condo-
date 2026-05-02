@@ -345,7 +345,7 @@ function NewPaymentDialog({
                     </span>
                   )}
                   <span className="ml-2 font-normal text-orange-600">
-                    · {pendingInvoices.length} {pendingInvoices.length === 1 ? "factura" : "facturas"} pendiente{pendingInvoices.length !== 1 ? "s" : ""}
+                    · {pendingInvoices.length} {pendingInvoices.length === 1 ? "recibo" : "recibos"} pendiente{pendingInvoices.length !== 1 ? "s" : ""}
                   </span>
                 </>
               ) : (
@@ -426,7 +426,7 @@ function NewPaymentDialog({
           {pendingInvoices.length > 0 && (
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <Label>Aplicar a facturas pendientes</Label>
+                <Label>Aplicar a Recibos de Condominio pendientes</Label>
                 <Button
                   type="button"
                   size="sm"

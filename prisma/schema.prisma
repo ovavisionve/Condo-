@@ -152,6 +152,7 @@ model Community {
   boardMembers        BoardMember[]
   assemblies          Assembly[]
   communityDocuments  CommunityDocument[]
+  monthCloses         MonthClose[]
 
   @@index([organizationId, active])
 }
@@ -279,6 +280,7 @@ model User {
   reportedViolations    Violation[]         @relation("ViolationReporter")
   assembliesCreated     Assembly[]          @relation("AssemblyCreator")
   documentsUploaded     CommunityDocument[] @relation("DocumentUploader")
+  monthCloses           MonthClose[]        @relation("MonthCloseUser")
 
   @@index([active])
 }
@@ -1313,4 +1315,28 @@ model PortalToken {
   createdAt DateTime @default(now())
 
   @@index([personId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CIERRE DE MES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Registro de cierre contable mensual.
+/// Una vez cerrado un período, se bloquean ediciones retroactivas.
+model MonthClose {
+  id             String    @id @default(cuid())
+  organizationId String
+  communityId    String
+  community      Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  year           Int
+  month          Int
+  closedAt       DateTime  @default(now())
+  closedById     String
+  closedBy       User      @relation("MonthCloseUser", fields: [closedById], references: [id])
+  /// Snapshot financiero del mes: totales de gastos, facturación y cobros
+  summary        Json      @default("{}")
+  notes          String?
+
+  @@unique([communityId, year, month])
+  @@index([communityId])
 }

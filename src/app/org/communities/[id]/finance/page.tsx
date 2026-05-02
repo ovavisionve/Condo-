@@ -32,6 +32,23 @@ export default function FinanceDashboard() {
   const [dueDaysErr, setDueDaysErr] = useState<string | null>(null);
   const [dueDaysOk, setDueDaysOk] = useState(false);
 
+  // Cierre de mes
+  const today = new Date();
+  const [closeYear, setCloseYear]   = useState(today.getFullYear());
+  const [closeMonth, setCloseMonth] = useState(today.getMonth() + 1);
+  const [closeNotes, setCloseNotes] = useState("");
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const monthCloseList = trpc.finance.monthClose.list.useQuery({ organizationId, communityId });
+  const monthCloseStatus = trpc.finance.monthClose.isOpen.useQuery({ organizationId, communityId, year: closeYear, month: closeMonth });
+  const closeMonthMut   = trpc.finance.monthClose.close.useMutation({
+    onSuccess: () => {
+      setShowCloseModal(false);
+      setCloseNotes("");
+      void monthCloseList.refetch();
+      void monthCloseStatus.refetch();
+    },
+  });
+
   const onSetFee = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeeErr(null);
@@ -130,17 +147,17 @@ export default function FinanceDashboard() {
             </Button>
           </form>
           {feeErr && <p className="mt-2 text-sm text-destructive">{feeErr}</p>}
-          {feeOk && <p className="mt-2 text-sm text-green-600">✓ Cuota actualizada. Se aplicará en la próxima emisión de facturas.</p>}
+          {feeOk && <p className="mt-2 text-sm text-green-600">✓ Cuota de condominio actualizada. Se aplicará en la próxima emisión de Recibos de Condominio.</p>}
         </CardContent>
       </Card>
 
       {/* ── Días de vencimiento ──────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Días de vencimiento de facturas</CardTitle>
+          <CardTitle className="text-base">Días de vencimiento de Recibos de Condominio</CardTitle>
           <CardDescription>
             Actualmente: <strong>{currentDueDays} días</strong> después de la fecha de emisión.
-            {" "}Las facturas emitidas hoy vencerían el día {new Date(new Date().setDate(new Date().getDate() + currentDueDays)).toLocaleDateString("es-VE")}.
+            {" "}Los recibos emitidos hoy vencerían el día {new Date(new Date().setDate(new Date().getDate() + currentDueDays)).toLocaleDateString("es-VE")}.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -162,7 +179,7 @@ export default function FinanceDashboard() {
             </Button>
           </form>
           {dueDaysErr && <p className="mt-2 text-sm text-destructive">{dueDaysErr}</p>}
-          {dueDaysOk && <p className="mt-2 text-sm text-green-600">✓ Actualizado. Se aplicará en la próxima emisión de facturas.</p>}
+          {dueDaysOk && <p className="mt-2 text-sm text-green-600">✓ Actualizado. Se aplicará en la próxima emisión de Recibos de Condominio.</p>}
         </CardContent>
       </Card>
 
@@ -268,6 +285,112 @@ export default function FinanceDashboard() {
           </table>
         </CardContent>
       </Card>
+
+      {/* ── Cierre de mes ─────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">🔒 Cierre de mes</CardTitle>
+              <CardDescription>
+                Congela el período contable. Una vez cerrado queda registrado con un snapshot financiero.
+              </CardDescription>
+            </div>
+            <button
+              onClick={() => setShowCloseModal(true)}
+              className="rounded-lg border border-slate-300 bg-slate-50 px-4 py-2 text-sm font-medium hover:bg-slate-100 transition-colors"
+            >
+              Cerrar mes
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {monthCloseList.data && monthCloseList.data.length > 0 ? (
+            <div className="overflow-hidden rounded border">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Período</th>
+                    <th className="px-3 py-2 text-right">Gastos</th>
+                    <th className="px-3 py-2 text-right">Facturado</th>
+                    <th className="px-3 py-2 text-right">Cobrado</th>
+                    <th className="px-3 py-2 text-right">% Cobro</th>
+                    <th className="px-3 py-2 text-left">Cerrado por</th>
+                    <th className="px-3 py-2 text-left">Fecha cierre</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthCloseList.data.map((c: { id: string; month: number; year: number; summary: unknown; closedBy: { name: string | null; email: string }; closedAt: Date | string }) => {
+                    const s = c.summary as Record<string, string | number>;
+                    return (
+                      <tr key={c.id} className="border-t">
+                        <td className="px-3 py-2 font-medium">{["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][c.month-1]} {c.year}</td>
+                        <td className="px-3 py-2 text-right">${s.totalExpensesUsd}</td>
+                        <td className="px-3 py-2 text-right">${s.totalInvoicedUsd}</td>
+                        <td className="px-3 py-2 text-right text-green-700">${s.totalCollectedUsd}</td>
+                        <td className="px-3 py-2 text-right">{s.collectionRate}%</td>
+                        <td className="px-3 py-2 text-muted-foreground">{c.closedBy.name ?? c.closedBy.email}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{new Date(c.closedAt).toLocaleDateString("es-VE")}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin meses cerrados aún.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Modal de cierre */}
+      {showCloseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Cerrar mes</h2>
+            {monthCloseStatus.data?.closed ? (
+              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                ⚠️ El período seleccionado ya fue cerrado el {monthCloseStatus.data.closedAt ? new Date(monthCloseStatus.data.closedAt).toLocaleDateString("es-VE") : "—"}.
+              </div>
+            ) : null}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Año</label>
+                <input type="number" value={closeYear} onChange={e => setCloseYear(Number(e.target.value))}
+                  className="w-full mt-1 rounded border px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Mes</label>
+                <select value={closeMonth} onChange={e => setCloseMonth(Number(e.target.value))}
+                  className="w-full mt-1 rounded border px-3 py-2 text-sm">
+                  {["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m,i) => (
+                    <option key={i} value={i+1}>{m}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Observaciones (opcional)</label>
+              <textarea value={closeNotes} onChange={e => setCloseNotes(e.target.value)} rows={2}
+                className="w-full mt-1 rounded border px-3 py-2 text-sm"
+                placeholder="Ej: Conciliado con estado de cuenta Banesco 30/04" />
+            </div>
+            {closeMonthMut.isError && (
+              <p className="text-sm text-destructive">{closeMonthMut.error.message}</p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowCloseModal(false)} className="rounded border px-4 py-2 text-sm hover:bg-muted">Cancelar</button>
+              <button
+                onClick={() => closeMonthMut.mutate({ organizationId, communityId, year: closeYear, month: closeMonth, notes: closeNotes })}
+                disabled={closeMonthMut.isPending || monthCloseStatus.data?.closed}
+                className="rounded bg-slate-900 text-white px-4 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+              >
+                {closeMonthMut.isPending ? "Cerrando..." : "🔒 Confirmar cierre"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -341,7 +464,7 @@ function PaymentChannelsCard({ organizationId, communityId }: { organizationId: 
           <div>
             <CardTitle className="text-base">💳 Canales de pago</CardTitle>
             <CardDescription>
-              Aparecen en todas las facturas PDF bajo "Instrucciones de pago". Agrega todos los métodos que aceptas.
+              Aparecen en todos los Recibos de Condominio PDF bajo "Instrucciones de pago". Agrega todos los métodos que aceptas.
             </CardDescription>
           </div>
           <Button size="sm" onClick={() => setShowForm((v) => !v)}>
@@ -378,7 +501,7 @@ function PaymentChannelsCard({ organizationId, communityId }: { organizationId: 
           </div>
         ) : (
           <p className="text-sm text-muted-foreground text-center py-4 rounded-lg border border-dashed">
-            Sin canales configurados. Las facturas mostrarán "Contacta a la administración".
+            Sin canales configurados. Los Recibos de Condominio mostrarán "Contacte a la Junta de Condominio".
           </p>
         )}
 
@@ -469,7 +592,7 @@ function AgingCell({
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="text-lg font-semibold">${Number(data?.usd ?? 0).toFixed(2)}</div>
       <div className="text-xs text-muted-foreground">
-        Bs {Number(data?.bss ?? 0).toFixed(2)} · {data?.count ?? 0} fact.
+        Bs {Number(data?.bss ?? 0).toFixed(2)} · {data?.count ?? 0} recibo(s)
       </div>
     </div>
   );

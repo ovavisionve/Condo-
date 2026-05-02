@@ -32,8 +32,8 @@ export default function AccountStatementPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Estado de cuenta</h2>
-        <p className="text-sm text-muted-foreground">Historial de facturas y pagos por unidad</p>
+        <h2 className="text-lg font-semibold">Estado de cuenta del propietario</h2>
+        <p className="text-sm text-muted-foreground">Historial de Recibos de Condominio y pagos por unidad</p>
       </div>
 
       <div className="max-w-xs">
@@ -79,16 +79,16 @@ export default function AccountStatementPage() {
             </div>
           </div>
 
-          {/* Facturas */}
+          {/* Recibos */}
           <div>
             <h3 className="mb-2 text-sm font-semibold">
-              Facturas — {unit?.code}
+              Recibos de Condominio — {unit?.code}
             </h3>
             <div className="overflow-hidden rounded-lg border bg-card">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 text-left">
                   <tr>
-                    <th className="px-3 py-2"># Factura</th>
+                    <th className="px-3 py-2"># Recibo</th>
                     <th className="px-3 py-2">Período</th>
                     <th className="px-3 py-2 text-right">Total USD</th>
                     <th className="px-3 py-2 text-right">Pagado USD</th>
@@ -126,7 +126,7 @@ export default function AccountStatementPage() {
                   {invoices.data?.length === 0 && (
                     <tr>
                       <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
-                        Sin facturas para esta unidad
+                        Sin Recibos de Condominio para esta unidad
                       </td>
                     </tr>
                   )}
@@ -184,11 +184,11 @@ export default function AccountStatementPage() {
 
 const INVOICE_STATUS_LABELS: Record<string, string> = {
   DRAFT:   "Borrador",
-  ISSUED:  "Emitida",
+  ISSUED:  "Emitido",
   PARTIAL: "Pago parcial",
-  PAID:    "Pagada",
-  OVERDUE: "Vencida",
-  VOIDED:  "Anulada",
+  PAID:    "Pagado",
+  OVERDUE: "Vencido",
+  VOIDED:  "Anulado",
 };
 
 function StatusBadge({ status }: { status: string }) {

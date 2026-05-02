@@ -96,7 +96,7 @@ function ResidentLoginForm({ onBack }: { onBack: () => void }) {
     <Card className="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Iniciar sesión</CardTitle>
-        <CardDescription>Ingresa el email y contraseña que te envió la administración.</CardDescription>
+        <CardDescription>Ingresa el email y contraseña que te envió la Junta de Condominio.</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -139,8 +139,8 @@ function RequestAccessForm({ onShowLogin }: { onShowLogin: () => void }) {
 
   return (
     <Card className="w-full max-w-sm">
-      <CardHeader><CardTitle>Portal del residente</CardTitle>
-        <CardDescription>Si la administración te asignó contraseña úsala abajo. Si no, envíate un enlace de acceso.</CardDescription></CardHeader>
+      <CardHeader><CardTitle>Portal del Propietario</CardTitle>
+        <CardDescription>Si la Junta de Condominio te asignó contraseña úsala abajo. Si no, envíate un enlace de acceso.</CardDescription></CardHeader>
       <CardContent className="space-y-3">
         <Button className="w-full" onClick={onShowLogin}>🔑 Tengo usuario y contraseña</Button>
         <div className="relative flex items-center gap-2"><div className="flex-1 border-t" /><span className="text-xs text-muted-foreground">o</span><div className="flex-1 border-t" /></div>
@@ -548,7 +548,7 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
               ))}
               {creditUsd > 0 && (
                 <tr className="border-t bg-amber-50">
-                  <td className="px-4 py-2 text-amber-700 font-medium" colSpan={2}>💰 Anticipo disponible (no aplicado a factura)</td>
+                  <td className="px-4 py-2 text-amber-700 font-medium" colSpan={2}>💰 Anticipo disponible (no aplicado a Recibo de Condominio)</td>
                   <td className="px-4 py-2 text-right text-amber-700 font-semibold">-{creditUsd.toFixed(2)}</td>
                   <td className="px-4 py-2 text-right text-amber-700">—</td>
                   <td className="px-4 py-2 text-right text-amber-700 font-semibold">-{creditUsd.toFixed(2)}</td>
@@ -748,7 +748,7 @@ function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
         )}
       </div>
 
-      {!selectedId && <p className="py-8 text-center text-muted-foreground">Sin facturas disponibles.</p>}
+      {!selectedId && <p className="py-8 text-center text-muted-foreground">Sin Recibos de Condominio disponibles.</p>}
       {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando aviso de cobro…</div>}
       {data && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
@@ -769,19 +769,69 @@ function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
   );
 }
 
+// ─── COMMUNITY MONTH SUMMARY ──────────────────────────────────────────────────
+function CommunityMonthSummary({ communityId }: { communityId: string }) {
+  const now = new Date();
+  const { data } = trpc.portal.getCommunityMonthSummary.useQuery({
+    communityId,
+    year:  now.getFullYear(),
+    month: now.getMonth() + 1,
+  });
+
+  if (!data || data.invoiceCount === 0) return null;
+
+  const pct = data.collectionRate;
+  const monthLabel = MONTHS_ES[now.getMonth()];
+
+  return (
+    <div className="rounded-xl border bg-white shadow-sm p-4 space-y-3">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+        Estado del condominio — {monthLabel} {now.getFullYear()}
+      </p>
+      <div className="grid grid-cols-3 gap-3 text-center">
+        <div>
+          <p className="text-[10px] text-muted-foreground">A cobrar</p>
+          <p className="font-bold text-[#1e3a5f] text-sm">${Number(data.totalInvoicedUsd).toFixed(0)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted-foreground">Cobrado</p>
+          <p className="font-bold text-green-700 text-sm">${Number(data.totalCollectedUsd).toFixed(0)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted-foreground">Pendiente</p>
+          <p className="font-bold text-amber-700 text-sm">${Number(data.pendingUsd).toFixed(0)}</p>
+        </div>
+      </div>
+      <div className="space-y-1">
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>Nivel de cobro</span>
+          <span>{pct}% · {data.paidUnits}/{data.totalUnits} unidades al día</span>
+        </div>
+        <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${pct >= 80 ? "bg-green-500" : pct >= 50 ? "bg-amber-400" : "bg-red-400"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── NOTIFICAR PAGO TAB ───────────────────────────────────────────────────────
 function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
   const notify = trpc.portal.notificarPago.useMutation();
   const [form, setForm] = useState({
     banco: "", referencia: "", monto: "", moneda: "USD" as "USD" | "VES",
     fechaPago: new Date().toISOString().split("T")[0]!,
-    tipoPago: "GENERAL" as "ANTICIPO" | "CUOTA_ESPECIFICA" | "GENERAL",
-    invoiceId: "",
     notas: "",
   });
   const [done, setDone] = useState(false);
 
-  const pendingInvoices = unit.pendingInvoices;
+  const pendingUsd  = Number(unit.pendingUsd);
+  const hasPending  = pendingUsd > 0.005;
+  // El tipo se determina automáticamente: si hay deuda → GENERAL, si no → ANTICIPO
+  const tipoPago: "GENERAL" | "ANTICIPO" = hasPending ? "GENERAL" : "ANTICIPO";
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -793,8 +843,7 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
       monto: parseFloat(form.monto),
       moneda: form.moneda,
       fechaPago: new Date(form.fechaPago + "T12:00:00"),
-      tipoPago: form.tipoPago,
-      invoiceId: form.tipoPago === "CUOTA_ESPECIFICA" && form.invoiceId ? form.invoiceId : undefined,
+      tipoPago,
       notas: form.notas || undefined,
     });
     setDone(true);
@@ -802,17 +851,17 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
 
   const resetForm = () => {
     setDone(false);
-    setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, tipoPago: "GENERAL", invoiceId: "", notas: "" });
+    setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, notas: "" });
   };
 
   if (done) return (
     <div className="rounded-xl border bg-green-50 border-green-200 px-6 py-10 text-center space-y-3">
       <p className="text-4xl">✅</p>
       <p className="text-xl font-semibold text-green-800">Pago notificado correctamente</p>
-      <p className="text-sm text-green-700">La administración recibió tu notificación y verificará tu pago a la brevedad posible.</p>
-      {form.tipoPago === "ANTICIPO" && (
+      <p className="text-sm text-green-700">La Junta de Condominio recibió tu notificación y verificará tu pago a la brevedad posible.</p>
+      {tipoPago === "ANTICIPO" && (
         <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-4 py-2 inline-block">
-          💰 Tu anticipo se descontará de tu deuda una vez que sea registrado por la administración.
+          💰 Tu pago quedará registrado como anticipo y se descontará de tu próxima cuota.
         </p>
       )}
       <button onClick={resetForm} className="mt-4 text-sm underline text-green-800">Notificar otro pago</button>
@@ -825,74 +874,33 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
         <h2 className="text-2xl font-bold">Notificar un pago realizado</h2>
         <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
         <p className="text-sm text-muted-foreground mt-1">
-          Si ya realizaste un pago, notifícaselo a la administración con los datos de la transacción.
+          Ingresa los datos de tu transacción para notificar a la Junta de Condominio.
         </p>
+      </div>
+
+      {/* Estado del condominio */}
+      <CommunityMonthSummary communityId={unit.communityId} />
+
+      {/* Contexto según estado de cuenta */}
+      <div className={`rounded-lg border px-4 py-3 text-sm ${hasPending ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-green-50 border-green-200 text-green-800"}`}>
+        {hasPending ? (
+          <>
+            <span className="font-semibold">Deuda actual: US$ {pendingUsd.toFixed(2)}</span>
+            <span className="text-amber-700"> — Tu pago se aplicará a las cuotas pendientes más antiguas.</span>
+          </>
+        ) : (
+          <>
+            <span className="font-semibold">✓ Estás al día.</span>
+            <span className="text-green-700"> Tu pago se registrará como anticipo para la próxima cuota.</span>
+          </>
+        )}
       </div>
 
       <div className="rounded-xl border bg-white shadow-sm p-6 max-w-lg">
         <form onSubmit={onSubmit} className="space-y-4">
-
-          {/* Tipo de pago */}
           <div>
-            <Label>Tipo de pago *</Label>
-            <div className="mt-1 grid grid-cols-3 gap-2">
-              {([
-                { value: "GENERAL",         label: "Pago general",       desc: "Cubre cuotas pendientes", icon: "💳" },
-                { value: "CUOTA_ESPECIFICA", label: "Cuota específica",   desc: "Para un mes en particular", icon: "📄" },
-                { value: "ANTICIPO",         label: "Anticipo",           desc: "Adelanto para próximas cuotas", icon: "💰" },
-              ] as const).map(opt => (
-                <button type="button" key={opt.value}
-                  onClick={() => setForm(f => ({ ...f, tipoPago: opt.value, invoiceId: "" }))}
-                  className={`rounded-lg border p-3 text-left text-xs transition-all ${
-                    form.tipoPago === opt.value
-                      ? "border-[#1e7a5f] bg-[#e8f5f0] ring-1 ring-[#1e7a5f]"
-                      : "border-slate-200 hover:border-slate-400"
-                  }`}
-                >
-                  <div className="text-lg mb-1">{opt.icon}</div>
-                  <div className="font-semibold text-xs">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.desc}</div>
-                </button>
-              ))}
-            </div>
-            {form.tipoPago === "ANTICIPO" && (
-              <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                💰 <strong>Anticipo:</strong> Pagas antes de que llegue la factura. Tu crédito quedará guardado y se descontará automáticamente de tu próxima deuda.
-              </p>
-            )}
-          </div>
-
-          {/* Si es cuota específica: selector de factura pendiente */}
-          {form.tipoPago === "CUOTA_ESPECIFICA" && pendingInvoices.length > 0 && (
-            <div>
-              <Label>¿A qué cuota aplica este pago? *</Label>
-              <select
-                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm mt-1"
-                value={form.invoiceId}
-                onChange={(e) => setForm(f => ({ ...f, invoiceId: e.target.value }))}
-                required
-              >
-                <option value="">— Seleccionar cuota —</option>
-                {pendingInvoices.map(inv => (
-                  <option key={inv.id} value={inv.id}>
-                    {inv.periodMonth && inv.periodYear
-                      ? `${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear} — ${inv.typeLabel}`
-                      : inv.typeLabel}
-                    {" | Pendiente: US$ "}{Number(inv.pendingAmountUsd).toFixed(2)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {form.tipoPago === "CUOTA_ESPECIFICA" && pendingInvoices.length === 0 && (
-            <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
-              ✓ No tienes cuotas pendientes. Considera usar "Anticipo" si vas a pagar por adelantado.
-            </p>
-          )}
-
-          <div>
-            <Label>Banco emisor *</Label>
-            <Input placeholder="Ej: Banesco, Mercantil, Zelle..." required
+            <Label>Banco / método de pago *</Label>
+            <Input placeholder="Ej: Banesco, Mercantil, Zelle, Efectivo USD..." required
               value={form.banco} onChange={(e) => setForm(f => ({ ...f, banco: e.target.value }))} />
           </div>
           <div>
@@ -922,8 +930,8 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
           </div>
           <div>
             <Label>Observaciones (opcional)</Label>
-            <textarea className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" rows={3}
-              placeholder="Información adicional sobre el pago..."
+            <textarea className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" rows={2}
+              placeholder="Ej: pago de mayo y junio, transferencia en dos partes..."
               value={form.notas} onChange={(e) => setForm(f => ({ ...f, notas: e.target.value }))} />
           </div>
 
@@ -932,8 +940,8 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
           )}
 
           <Button type="submit" disabled={notify.isPending}
-            className="w-full bg-[#1e7a5f] hover:bg-[#15604a] text-white">
-            {notify.isPending ? "Enviando notificación..." : "Enviar notificación de pago"}
+            className="w-full bg-[#1e7a5f] hover:bg-[#15604a] text-white py-3 text-base font-semibold">
+            {notify.isPending ? "Enviando..." : "Notificar pago"}
           </Button>
         </form>
       </div>
@@ -1027,7 +1035,7 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
 
   if (!unit) return (
     <div className="min-h-screen flex items-center justify-center">
-      <p className="text-muted-foreground">No tienes unidades asignadas. Contacta a la administración.</p>
+      <p className="text-muted-foreground">No tienes unidades asignadas. Contacta a la Junta de Condominio.</p>
     </div>
   );
 
@@ -1133,8 +1141,8 @@ function PortalContent() {
     <div className="min-h-screen flex items-center justify-center bg-muted/30 px-4 py-12">
       <div className="w-full max-w-sm space-y-4">
         <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-[#1e3a5f]">Portal del Residente</h1>
-          <p className="text-sm text-muted-foreground mt-1">Consulta tu saldo y facturas en línea</p>
+          <h1 className="text-2xl font-bold text-[#1e3a5f]">Portal del Propietario</h1>
+          <p className="text-sm text-muted-foreground mt-1">Consulta tu saldo y Recibos de Condominio en línea</p>
         </div>
         {showLogin
           ? <ResidentLoginForm onBack={() => setShowLogin(false)} />

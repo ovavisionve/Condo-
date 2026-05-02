@@ -53,7 +53,7 @@ export default function GovernancePage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Gobernanza</h2>
+        <h2 className="text-lg font-semibold">Gobernanza — Junta de Condominio</h2>
       </div>
 
       {/* Tabs */}
@@ -61,7 +61,7 @@ export default function GovernancePage() {
         {(["board", "assemblies", "documents", "certificates"] as Tab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm border-b-2 transition-colors ${tab === t ? "border-primary text-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-            {t === "board" ? "Junta Directiva" : t === "assemblies" ? "Asambleas" : t === "documents" ? "Documentos" : "Certificados"}
+            {t === "board" ? "Junta de Condominio" : t === "assemblies" ? "Asambleas de Propietarios" : t === "documents" ? "Documentos" : "Certificados"}
           </button>
         ))}
       </div>
@@ -212,7 +212,7 @@ function AssembliesTab({ organizationId, communityId }: { organizationId: string
         <form onSubmit={onCreateAssembly} className="rounded-lg border bg-card p-4 space-y-3">
           <p className="text-sm font-semibold">Convocar asamblea</p>
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><Label>Tipo / Título</Label><Input aria-label="Tipo / Título" value={newForm.title} onChange={(e) => setNewForm((f) => ({ ...f, title: e.target.value }))} placeholder="Ej: Asamblea Ordinaria 2026" required /></div>
+            <div className="col-span-2"><Label>Tipo / Título</Label><Input aria-label="Tipo / Título" value={newForm.title} onChange={(e) => setNewForm((f) => ({ ...f, title: e.target.value }))} placeholder="Ej: Asamblea Ordinaria de Propietarios 2026" required /></div>
             <div><Label>Fecha y hora</Label><Input type="datetime-local" value={newForm.scheduledAt} onChange={(e) => setNewForm((f) => ({ ...f, scheduledAt: e.target.value }))} required /></div>
             <div><Label>Lugar</Label><Input aria-label="Lugar" value={newForm.location} onChange={(e) => setNewForm((f) => ({ ...f, location: e.target.value }))} placeholder="Salón de usos múltiples" /></div>
             <div><Label>Quórum requerido (%)</Label><Input type="number" min="1" max="100" value={newForm.quorumRequired} onChange={(e) => setNewForm((f) => ({ ...f, quorumRequired: e.target.value }))} /></div>
