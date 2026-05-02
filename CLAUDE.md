@@ -347,6 +347,16 @@ pnpm prisma migrate reset
   - Invoices page: usa dueDaysAfterIssue del condominio en lugar de día-5 fijo
   - Patrón migración one-shot: crear `/api/admin/apply-migration`, desplegar, llamar con curl, borrar y redesplegar
   - PDFs ya usan nombre/RIF/dirección/teléfono del condominio (editar en página del edificio)
+- [x] **Sesión features cliente (Sonnet):** 16 mejoras aprobadas en reunión — migración v3 aplicada en Supabase
+  - **Schema v3:** `Expense.towerScope/isIndividual/targetUnitId`, `Income.customCategory/affectsInvoice`, nuevo modelo `RecurringExpenseTemplate`
+  - **issueMonthlyInvoices:** prorrateo por torre (towerScope), cargo individual a unidad (isIndividual+targetUnitId), descuento de ingresos con affectsInvoice=true
+  - **Gastos page:** filtros por categoría/torre/estado, nuevo campo torre/individual en form, tab "Plantillas recurrentes" con CRUD + botón "Aplicar al mes"
+  - **Ingresos page:** toggle `affectsInvoice`, `customCategory` cuando category=OTHER, banner de descuento activo
+  - **Facturas page:** fila expandible muestra total del gasto origen + alícuota aplicada + parte de la unidad
+  - **Estado de cuenta:** 3 vistas — Estado clásico / Deuda por mes (desglose con días de mora) / Libro contable (Debe/Haber/Saldo)
+  - **BCV:** scraper directo bcv.org.ve como fuente primaria; setManualRate actualiza también entrada BCV del día
+  - **Exchange.ts:** fetchBcvScrape primero, pydolarve segundo, dolarapi tercero; open.er-api.com eliminado
+  - Commits: `5eab7ca` (16 features), `8551957` (migración ejecutada y cerrada)
 
 ---
 

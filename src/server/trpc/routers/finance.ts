@@ -927,11 +927,38 @@ export const financeRouter = router({
           allocations: z
             .array(z.object({ invoiceId: z.string(), amount: z.coerce.number().positive() }))
             .optional(),
+          // Feature 7: también crear entrada de ingreso con la misma referencia
+          alsoCreateIncome: z.boolean().default(false),
+          incomeCategory: z.enum([
+            "HALL_RENTAL", "PARKING_FEE", "GUEST_FEE", "INTEREST", "DONATION", "PENALTY", "OTHER",
+          ]).optional(),
+          incomeDescription: z.string().optional(),
         }),
       )
-      .mutation(async ({ ctx, input }) =>
-        recordPayment({ ...input, createdById: ctx.user.id }),
-      ),
+      .mutation(async ({ ctx, input }) => {
+        const payment = await recordPayment({ ...input, createdById: ctx.user.id });
+
+        // Feature 7: Si se pidió también registrar como ingreso, crearlo con la misma referencia
+        if (input.alsoCreateIncome) {
+          const paidAt = new Date(input.paidAt);
+          await registerIncome({
+            organizationId:  input.organizationId,
+            communityId:     input.communityId,
+            category:        input.incomeCategory ?? "OTHER",
+            description:     input.incomeDescription ?? `Ingreso vinculado a pago — ref ${input.reference ?? payment.id}`,
+            periodYear:      paidAt.getFullYear(),
+            periodMonth:     paidAt.getMonth() + 1,
+            amount:          input.amount,
+            currencyPrimary: input.currencyPrimary,
+            reference:       input.reference,
+            affectsInvoice:  false,
+            exchangeSource:  "MANUAL",
+            createdById:     ctx.user.id,
+          });
+        }
+
+        return payment;
+      }),
     voidOne: orgProcedure
       .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3) }))
       .mutation(async ({ ctx, input }) =>
@@ -942,6 +969,105 @@ export const financeRouter = router({
           actorId: ctx.user.id,
         }),
       ),
+
+    // ── Pagos no identificados (Feature 3: flujo aparcar → asignar) ──────────
+
+    /** Lista los pagos no identificados de la comunidad, sin asignar primero. */
+    listUnidentified: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        includeAssigned: z.boolean().default(false),
+      }))
+      .query(({ ctx, input }) =>
+        ctx.db.unidentifiedPayment.findMany({
+          where: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            ...(input.includeAssigned ? {} : { assignedAt: null }),
+          },
+          include: { assignedUnit: { select: { code: true } } },
+          orderBy: { createdAt: "desc" },
+        }),
+      ),
+
+    /**
+     * Guarda un movimiento bancario no identificado para revisión posterior.
+     * Llamado desde la UI de conciliación cuando un row del banco no tiene match.
+     */
+    parkUnidentified: orgProcedure
+      .input(orgIdInput.extend({
+        communityId:     z.string(),
+        bankDate:        z.string(),
+        bankRef:         z.string().optional(),
+        bankAmountUsd:   z.coerce.number().positive(),
+        bankDescription: z.string().optional(),
+        notes:           z.string().optional(),
+      }))
+      .mutation(({ ctx, input }) =>
+        ctx.db.unidentifiedPayment.create({
+          data: {
+            organizationId:  input.organizationId,
+            communityId:     input.communityId,
+            bankDate:        input.bankDate,
+            bankRef:         input.bankRef ?? null,
+            bankAmountUsd:   input.bankAmountUsd.toFixed(2),
+            bankDescription: input.bankDescription ?? null,
+            notes:           input.notes ?? null,
+            createdById:     ctx.user.id,
+          },
+        }),
+      ),
+
+    /**
+     * Asigna un pago no identificado a una unidad: crea el Payment y marca el
+     * UnidentifiedPayment como asignado.
+     */
+    assignUnidentified: orgProcedure
+      .input(orgIdInput.extend({
+        unidentifiedId:  z.string(),
+        communityId:     z.string(),
+        unitId:          z.string(),
+        method:          z.enum(PAYMENT_METHODS),
+        bankAccountId:   z.string().optional(),
+        allocations:     z.array(z.object({
+          invoiceId: z.string(),
+          amount:    z.coerce.number().positive(),
+        })).optional(),
+        notes:           z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const unid = await ctx.db.unidentifiedPayment.findFirstOrThrow({
+          where: { id: input.unidentifiedId, organizationId: input.organizationId },
+        });
+        if (unid.assignedAt) throw new Error("Este pago ya fue asignado");
+
+        const payment = await recordPayment({
+          organizationId:  input.organizationId,
+          communityId:     input.communityId,
+          unitId:          input.unitId,
+          amount:          Number(unid.bankAmountUsd),
+          currencyPrimary: "USD",
+          method:          input.method,
+          reference:       unid.bankRef ?? undefined,
+          paidAt:          new Date(), // fecha de procesamiento; podría mejorarse
+          bankAccountId:   input.bankAccountId,
+          notes:           input.notes ?? unid.bankDescription ?? undefined,
+          allocations:     input.allocations,
+          createdById:     ctx.user.id,
+        });
+
+        await ctx.db.unidentifiedPayment.update({
+          where: { id: unid.id },
+          data: {
+            assignedAt:       new Date(),
+            assignedUnitId:   input.unitId,
+            assignedPaymentId: payment.id,
+          },
+        });
+
+        return payment;
+      }),
+
     /** Genera el PDF de bauche de pago y lo devuelve como base64. */
     getVoucherPdf: orgProcedure
       .input(orgIdInput.extend({ paymentId: z.string() }))

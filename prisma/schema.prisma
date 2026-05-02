@@ -199,7 +199,8 @@ model Unit {
   accessLogs        AccessLog[]
   violations        Violation[]
   assemblyVotes     AssemblyVote[]
-  individualExpenses Expense[]   @relation("ExpenseTargetUnit")
+  individualExpenses       Expense[]              @relation("ExpenseTargetUnit")
+  unidentifiedPayments    UnidentifiedPayment[]  @relation("UnidentifiedToUnit")
 
   @@unique([communityId, code])
   @@index([organizationId])
@@ -697,6 +698,29 @@ model BankAccount {
   payments Payment[]
 
   @@index([communityId, active])
+}
+
+/// Movimiento bancario que no pudo conciliarse automáticamente con un pago registrado.
+/// Flujo: conciliación detecta monto sin match → usuario lo "aparca" → luego lo asigna a unidad.
+model UnidentifiedPayment {
+  id              String    @id @default(cuid())
+  organizationId  String
+  communityId     String
+  bankDate        String    // fecha tal como aparece en el estado de cuenta
+  bankRef         String?   // referencia bancaria
+  bankAmountUsd   Decimal   @db.Decimal(18, 2)
+  bankDescription String?
+  notes           String?
+  // Una vez identificado
+  assignedAt      DateTime?
+  assignedUnitId  String?
+  assignedUnit    Unit?     @relation("UnidentifiedToUnit", fields: [assignedUnitId], references: [id])
+  assignedPaymentId String? // Payment creado al momento de asignar
+  createdAt       DateTime  @default(now())
+  createdById     String?
+
+  @@index([communityId, assignedAt])
+  @@index([organizationId])
 }
 
 enum BudgetStatus {

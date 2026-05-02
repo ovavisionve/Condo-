@@ -196,6 +196,9 @@ function NewPaymentDialog({
   });
   const [allocs, setAllocs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Feature 7: también registrar como ingreso con la misma referencia
+  const [alsoCreateIncome, setAlsoCreateIncome]             = useState(false);
+  const [incomeDescription, setIncomeDescription]           = useState("");
 
   // Facturas pendientes ordenadas de más antigua a más reciente
   const pendingInvoices = useMemo(() => {
@@ -272,6 +275,8 @@ function NewPaymentDialog({
         paidAt: new Date(form.paidAt),
         notes: form.notes || undefined,
         allocations: allocations.length > 0 ? allocations : undefined,
+        alsoCreateIncome,
+        incomeDescription: alsoCreateIncome && incomeDescription ? incomeDescription : undefined,
       });
       onCreated();
     } catch (err: unknown) {
@@ -540,6 +545,36 @@ function NewPaymentDialog({
               </div>
             </div>
           )}
+
+          {/* ── Feature 7: También crear ingreso con misma referencia ── */}
+          <div className="rounded-lg border border-dashed p-3 space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={alsoCreateIncome}
+                onChange={(e) => setAlsoCreateIncome(e.target.checked)}
+              />
+              <span className="text-sm">
+                <span className="font-medium">También registrar como ingreso</span>
+                <br />
+                <span className="text-muted-foreground text-xs">
+                  Crea una entrada de ingreso adicional con la misma referencia bancaria.
+                  Útil cuando el mismo depósito corresponde a un pago de cuota Y a un ingreso extra (ej: alquiler de salón).
+                </span>
+              </span>
+            </label>
+            {alsoCreateIncome && (
+              <div className="pl-6">
+                <Label>Descripción del ingreso</Label>
+                <Input
+                  value={incomeDescription}
+                  onChange={(e) => setIncomeDescription(e.target.value)}
+                  placeholder={`Ingreso vinculado a ref ${form.reference || "—"}`}
+                />
+              </div>
+            )}
+          </div>
 
           {/* ── Notas ── */}
           <div>
