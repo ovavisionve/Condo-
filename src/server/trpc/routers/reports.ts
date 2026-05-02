@@ -364,4 +364,192 @@ export const reportsRouter = router({
         byMonth,
       };
     }),
+
+  /**
+   * Feature 10: Devuelve el período (año/mes) del primer registro de cada módulo
+   * para que la UI pueda ofrecer filtros desde "el comienzo de los datos".
+   */
+  firstRecords: orgProcedure
+    .input(orgIdInput.extend({ communityId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { communityId } = input;
+      const [firstExpense, firstIncome, firstInvoice, firstPayment] = await Promise.all([
+        ctx.db.expense.findFirst({
+          where: { communityId, voidedAt: null },
+          orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }],
+          select: { periodYear: true, periodMonth: true },
+        }),
+        ctx.db.income.findFirst({
+          where: { communityId, voidedAt: null },
+          orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }],
+          select: { periodYear: true, periodMonth: true },
+        }),
+        ctx.db.invoice.findFirst({
+          where: { communityId, status: { not: "VOIDED" } },
+          orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }],
+          select: { periodYear: true, periodMonth: true },
+        }),
+        ctx.db.payment.findFirst({
+          where: { communityId, voidedAt: null },
+          orderBy: { paidAt: "asc" },
+          select: { paidAt: true },
+        }),
+      ]);
+
+      return {
+        expenses: firstExpense ?? null,
+        income:   firstIncome ?? null,
+        invoices: firstInvoice ?? null,
+        payments: firstPayment
+          ? { year: firstPayment.paidAt.getFullYear(), month: firstPayment.paidAt.getMonth() + 1 }
+          : null,
+      };
+    }),
+
+  /**
+   * Feature 8: Exportación de gastos para un rango de meses.
+   */
+  expensesExport: orgProcedure
+    .input(orgIdInput.extend({
+      communityId: z.string(),
+      startYear:   z.number().int().min(2000).max(2100),
+      startMonth:  z.number().int().min(1).max(12),
+      endYear:     z.number().int().min(2000).max(2100),
+      endMonth:    z.number().int().min(1).max(12),
+    }))
+    .query(async ({ ctx, input }) => {
+      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const expenses = await ctx.db.expense.findMany({
+        where: {
+          communityId,
+          voidedAt: null,
+          OR: [
+            { periodYear: { gt: startYear }, AND: { periodYear: { lt: endYear } } },
+            { periodYear: startYear, periodMonth: { gte: startMonth } },
+            { periodYear: endYear,   periodMonth: { lte: endMonth   } },
+          ],
+        },
+        include: { targetUnit: { select: { code: true } } },
+        orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }, { createdAt: "asc" }],
+      });
+
+      return expenses.map((e) => ({
+        año:           e.periodYear,
+        mes:           e.periodMonth,
+        categoría:     e.customCategory ?? e.category,
+        descripción:   e.description,
+        proveedor:     e.supplierName ?? "",
+        factura:       e.invoiceNumber ?? "",
+        monto_usd:     Number(e.amountUsd),
+        monto_bs:      Number(e.amountBss),
+        tasa:          Number(e.exchangeRate),
+        alcance:       e.towerScope ?? (e.isIndividual ? `Unidad ${e.targetUnit?.code ?? ""}` : "General"),
+        estado:        e.voidedAt ? "Anulado" : e.invoicedAt ? "Facturado" : "Pendiente",
+      }));
+    }),
+
+  /**
+   * Feature 8: Exportación de pagos para un rango de fechas.
+   */
+  paymentsExport: orgProcedure
+    .input(orgIdInput.extend({
+      communityId: z.string(),
+      startYear:   z.number().int().min(2000).max(2100),
+      startMonth:  z.number().int().min(1).max(12),
+      endYear:     z.number().int().min(2000).max(2100),
+      endMonth:    z.number().int().min(1).max(12),
+    }))
+    .query(async ({ ctx, input }) => {
+      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const start = new Date(Date.UTC(startYear, startMonth - 1, 1));
+      const end   = new Date(Date.UTC(endYear, endMonth, 1)); // exclusive
+
+      const payments = await ctx.db.payment.findMany({
+        where: {
+          communityId,
+          voidedAt: null,
+          paidAt: { gte: start, lt: end },
+        },
+        include: {
+          unit: { select: { code: true, floor: true, tower: true } },
+          allocations: {
+            include: { invoice: { select: { invoiceNumber: true } } },
+          },
+        },
+        orderBy: { paidAt: "asc" },
+      });
+
+      // Propietarios actuales
+      const unitIds = [...new Set(payments.map(p => p.unitId))];
+      const ownerships = await ctx.db.ownership.findMany({
+        where: { unitId: { in: unitIds }, endDate: null },
+        include: { person: { select: { firstName: true, lastName: true } } },
+      });
+      const ownerMap = new Map(ownerships.map(o => [o.unitId, o.person]));
+
+      const METHOD_ES: Record<string, string> = {
+        CASH_BSS: "Efectivo Bs", CASH_USD: "Efectivo USD",
+        TRANSFER_BSS: "Transfer. Bs", TRANSFER_USD: "Transfer. USD",
+        ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil",
+        CRYPTO: "Cripto", CHECK: "Cheque", OTHER: "Otro",
+      };
+
+      return payments.map((p) => {
+        const owner = ownerMap.get(p.unitId);
+        return {
+          fecha:         p.paidAt.toISOString().split("T")[0],
+          unidad:        p.unit.code,
+          piso:          p.unit.floor ?? "",
+          torre:         p.unit.tower ?? "",
+          propietario:   owner ? `${owner.firstName} ${owner.lastName}` : "",
+          método:        METHOD_ES[p.method] ?? p.method,
+          referencia:    p.reference ?? "",
+          monto_usd:     Number(p.amountUsd),
+          monto_bs:      Number(p.amountBss),
+          tasa:          Number(p.exchangeRate),
+          facturas:      p.allocations.map(a => a.invoice.invoiceNumber).join(", "),
+          notas:         p.notes ?? "",
+        };
+      });
+    }),
+
+  /**
+   * Feature 8: Exportación de ingresos para un rango de meses.
+   */
+  incomeExport: orgProcedure
+    .input(orgIdInput.extend({
+      communityId: z.string(),
+      startYear:   z.number().int().min(2000).max(2100),
+      startMonth:  z.number().int().min(1).max(12),
+      endYear:     z.number().int().min(2000).max(2100),
+      endMonth:    z.number().int().min(1).max(12),
+    }))
+    .query(async ({ ctx, input }) => {
+      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const incomes = await ctx.db.income.findMany({
+        where: {
+          communityId,
+          voidedAt: null,
+          OR: [
+            { periodYear: { gt: startYear }, AND: { periodYear: { lt: endYear } } },
+            { periodYear: startYear, periodMonth: { gte: startMonth } },
+            { periodYear: endYear,   periodMonth: { lte: endMonth   } },
+          ],
+        },
+        orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }, { createdAt: "asc" }],
+      });
+
+      return incomes.map((i) => ({
+        año:                i.periodYear,
+        mes:                i.periodMonth,
+        categoría:          i.customCategory ?? i.category,
+        descripción:        i.description,
+        referencia:         i.reference ?? "",
+        monto_usd:          Number(i.amountUsd),
+        monto_bs:           Number(i.amountBss),
+        tasa:               Number(i.exchangeRate),
+        descuenta_recibos:  i.affectsInvoice ? "Sí" : "No",
+        notas:              i.notes ?? "",
+      }));
+    }),
 });

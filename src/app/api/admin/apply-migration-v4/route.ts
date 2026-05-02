@@ -7,11 +7,10 @@ import { NextResponse } from "next/server";
 import { db } from "@/server/db/client";
 
 export async function GET(req: Request) {
-  // auth temporarily disabled for one-shot execution
-  // const auth = req.headers.get("authorization") ?? "";
-  // if (auth !== `Bearer ${process.env.CRON_SECRET ?? ""}`) {
-  //   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  // }
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth !== `Bearer ${process.env.CRON_SECRET ?? ""}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const steps: string[] = [];
   const errors: string[] = [];

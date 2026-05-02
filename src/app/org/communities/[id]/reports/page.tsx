@@ -38,13 +38,25 @@ export default function ReportsPage() {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [periodType, setPeriodType] = useState<"monthly" | "quarterly" | "semiannual">("monthly");
 
+  // Feature 8: rango para exportaciones por módulo
+  const [exportRange, setExportRange] = useState({
+    startYear: today.getFullYear(), startMonth: 1,
+    endYear:   today.getFullYear(), endMonth:   today.getMonth() + 1,
+  });
+
   const periodRange = getPeriodRange(year, month, periodType);
 
-  const summary   = trpc.reports.communitySummary.useQuery({ organizationId, communityId, year, month });
-  const trend     = trpc.reports.financialTrend.useQuery({ organizationId, communityId, months: 12 });
-  const debtors   = trpc.reports.topDebtors.useQuery({ organizationId, communityId, take: 10 });
-  const periodRpt = trpc.reports.periodReport.useQuery({ organizationId, communityId, ...periodRange });
-  const exportQ   = trpc.reports.invoicesExport.useQuery({ organizationId, communityId, year, month }, { enabled: false });
+  const summary       = trpc.reports.communitySummary.useQuery({ organizationId, communityId, year, month });
+  const trend         = trpc.reports.financialTrend.useQuery({ organizationId, communityId, months: 12 });
+  const debtors       = trpc.reports.topDebtors.useQuery({ organizationId, communityId, take: 10 });
+  const periodRpt     = trpc.reports.periodReport.useQuery({ organizationId, communityId, ...periodRange });
+  // Feature 10: primer registro de cada módulo
+  const firstRecords  = trpc.reports.firstRecords.useQuery({ organizationId, communityId });
+
+  const exportQ         = trpc.reports.invoicesExport.useQuery({ organizationId, communityId, year, month }, { enabled: false });
+  const expensesExportQ = trpc.reports.expensesExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
+  const paymentsExportQ = trpc.reports.paymentsExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
+  const incomeExportQ   = trpc.reports.incomeExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
 
   const onExportExcel = async () => {
     const { data } = await exportQ.refetch();
@@ -72,7 +84,45 @@ export default function ReportsPage() {
     xlsx.writeFile(wb, `recibos-${year}-${String(month).padStart(2,"0")}.xlsx`);
   };
 
+  // Feature 8: exportar módulo a Excel
+  const handleModuleExport = async (type: "expenses" | "payments" | "income") => {
+    const xlsx = await import("xlsx");
+    const wb = xlsx.utils.book_new();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const rangeName = `${exportRange.startYear}-${pad(exportRange.startMonth)}_a_${exportRange.endYear}-${pad(exportRange.endMonth)}`;
+
+    if (type === "expenses") {
+      const { data } = await expensesExportQ.refetch();
+      if (!data?.length) return;
+      const ws = xlsx.utils.json_to_sheet(data);
+      xlsx.utils.book_append_sheet(wb, ws, "Gastos");
+      xlsx.writeFile(wb, `gastos-${rangeName}.xlsx`);
+    } else if (type === "payments") {
+      const { data } = await paymentsExportQ.refetch();
+      if (!data?.length) return;
+      const ws = xlsx.utils.json_to_sheet(data);
+      xlsx.utils.book_append_sheet(wb, ws, "Pagos");
+      xlsx.writeFile(wb, `pagos-${rangeName}.xlsx`);
+    } else {
+      const { data } = await incomeExportQ.refetch();
+      if (!data?.length) return;
+      const ws = xlsx.utils.json_to_sheet(data);
+      xlsx.utils.book_append_sheet(wb, ws, "Ingresos");
+      xlsx.writeFile(wb, `ingresos-${rangeName}.xlsx`);
+    }
+  };
+
   const s = summary.data;
+  // Feature 10: años disponibles desde primer registro
+  const minYear = Math.min(
+    firstRecords.data?.expenses?.periodYear ?? today.getFullYear(),
+    firstRecords.data?.invoices?.periodYear ?? today.getFullYear(),
+    firstRecords.data?.payments?.year ?? today.getFullYear(),
+  );
+  const availableYears = Array.from(
+    { length: today.getFullYear() - minYear + 2 },
+    (_, i) => minYear + i
+  );
 
   return (
     <div className="space-y-6">
@@ -104,12 +154,110 @@ export default function ReportsPage() {
             value={year}
             onChange={(e) => setYear(Number(e.target.value))}
           >
-            {[2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}</option>)}
+            {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <Button variant="outline" onClick={onExportExcel} disabled={exportQ.isFetching}>
-            {exportQ.isFetching ? "Generando..." : "↓ Excel"}
+            {exportQ.isFetching ? "Generando..." : "↓ Recibos Excel"}
           </Button>
         </div>
+      </div>
+
+      {/* ── Feature 8 + 10: Exportaciones por módulo ───────── */}
+      <div className="rounded-lg border bg-card p-4">
+        <p className="text-sm font-semibold mb-3">📥 Exportar por módulo</p>
+        <div className="flex flex-wrap items-end gap-3">
+          {/* Rango desde / hasta — Feature 10: min desde primer registro */}
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">Desde</p>
+            <div className="flex gap-1">
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                value={exportRange.startYear}
+                onChange={(e) => setExportRange(r => ({ ...r, startYear: Number(e.target.value) }))}
+              >
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                value={exportRange.startMonth}
+                onChange={(e) => setExportRange(r => ({ ...r, startMonth: Number(e.target.value) }))}
+              >
+                {MONTHS_ES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">Hasta</p>
+            <div className="flex gap-1">
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                value={exportRange.endYear}
+                onChange={(e) => setExportRange(r => ({ ...r, endYear: Number(e.target.value) }))}
+              >
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                value={exportRange.endMonth}
+                onChange={(e) => setExportRange(r => ({ ...r, endMonth: Number(e.target.value) }))}
+              >
+                {MONTHS_ES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+          {/* Feature 10: botón "desde el inicio" */}
+          {firstRecords.data && (
+            <button
+              onClick={() => setExportRange(r => ({
+                ...r,
+                startYear: Math.min(
+                  firstRecords.data!.expenses?.periodYear ?? 9999,
+                  firstRecords.data!.invoices?.periodYear ?? 9999,
+                  firstRecords.data!.payments?.year ?? 9999,
+                ),
+                startMonth: 1,
+              }))}
+              className="h-8 px-2 text-xs rounded-md border border-dashed hover:bg-muted transition-colors text-muted-foreground"
+              title="Exportar desde el primer registro"
+            >
+              ⏮ Desde inicio
+            </button>
+          )}
+          <div className="flex gap-2 ml-auto">
+            <Button
+              size="sm" variant="outline"
+              onClick={() => void handleModuleExport("expenses")}
+              disabled={expensesExportQ.isFetching}
+            >
+              {expensesExportQ.isFetching ? "..." : "↓ Gastos"}
+            </Button>
+            <Button
+              size="sm" variant="outline"
+              onClick={() => void handleModuleExport("income")}
+              disabled={incomeExportQ.isFetching}
+            >
+              {incomeExportQ.isFetching ? "..." : "↓ Ingresos"}
+            </Button>
+            <Button
+              size="sm" variant="outline"
+              onClick={() => void handleModuleExport("payments")}
+              disabled={paymentsExportQ.isFetching}
+            >
+              {paymentsExportQ.isFetching ? "..." : "↓ Pagos"}
+            </Button>
+          </div>
+        </div>
+        {firstRecords.data && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Primer registro: gastos desde {firstRecords.data.expenses
+              ? `${MONTHS_ES[(firstRecords.data.expenses.periodMonth)-1]} ${firstRecords.data.expenses.periodYear}`
+              : "sin datos"} · facturas desde {firstRecords.data.invoices
+              ? `${MONTHS_ES[(firstRecords.data.invoices.periodMonth)-1]} ${firstRecords.data.invoices.periodYear}`
+              : "sin datos"} · pagos desde {firstRecords.data.payments
+              ? `${MONTHS_ES[(firstRecords.data.payments.month)-1]} ${firstRecords.data.payments.year}`
+              : "sin datos"}
+          </p>
+        )}
       </div>
 
       {/* ── KPI Cards ──────────────────────────────────────── */}
