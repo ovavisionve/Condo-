@@ -34,16 +34,44 @@ export default function InvoicesPage() {
     { organizationId, communityId, year, month },
     { refetchInterval: 60_000 }, // refresca cada 60 s
   );
-  const issue = trpc.finance.invoices.issueMonth.useMutation();
-  const sendEmail = trpc.finance.invoices.sendByEmail.useMutation();
-  const downloadPdf = trpc.finance.invoices.downloadPdf.useMutation();
-  const rate = trpc.finance.exchange.current.useQuery({ organizationId });
-  const todayRate = Number(rate.data?.vesPerUsd ?? 0);
-  const utils = trpc.useUtils();
-  const [error, setError] = useState<string | null>(null);
+  const issue        = trpc.finance.invoices.issueMonth.useMutation();
+  const publishDrafts = trpc.finance.invoices.publishDrafts.useMutation();
+  const sendBatch    = trpc.finance.invoices.sendEmailBatch.useMutation();
+  const sendEmail    = trpc.finance.invoices.sendByEmail.useMutation();
+  const downloadPdf  = trpc.finance.invoices.downloadPdf.useMutation();
+  const rate         = trpc.finance.exchange.current.useQuery({ organizationId });
+  const todayRate    = Number(rate.data?.vesPerUsd ?? 0);
+  const utils        = trpc.useUtils();
+  const [error, setError]   = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [emailStates, setEmailStates] = useState<Record<string, "sending" | "ok" | "err">>({});
-  const [pdfStates, setPdfStates] = useState<Record<string, boolean>>({});
+  const [pdfStates, setPdfStates]     = useState<Record<string, boolean>>({});
+  const [expandedId, setExpandedId]   = useState<string | null>(null);
+  const invoiceDetail = trpc.finance.invoices.byId.useQuery(
+    { organizationId, id: expandedId ?? "" },
+    { enabled: !!expandedId },
+  );
+
+  const draftCount = list.data?.filter(inv => inv.status === "DRAFT").length ?? 0;
+
+  const onPublishDrafts = async () => {
+    setError(null); setSuccess(null);
+    try {
+      const r = await publishDrafts.mutateAsync({ organizationId, communityId, year, month });
+      setSuccess(`✅ ${r.published} borrador(es) publicados como EMITIDOS. Los emails se enviarán con el botón de abajo o automáticamente por el cron.`);
+      void list.refetch();
+      void emailProgress.refetch();
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Error"); }
+  };
+
+  const onSendBatch = async () => {
+    setError(null); setSuccess(null);
+    try {
+      const r = await sendBatch.mutateAsync({ organizationId, communityId, year, month, batchSize: 40 });
+      setSuccess(`📧 Lote enviado: ${r.sent} exitosos · ${r.failed} fallidos · ${r.remaining ?? 0} pendientes restantes.`);
+      void emailProgress.refetch();
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Error"); }
+  };
 
   const onSendEmail = async (invoiceId: string) => {
     setEmailStates((s) => ({ ...s, [invoiceId]: "sending" }));
@@ -133,6 +161,28 @@ export default function InvoicesPage() {
       {error && <p className="rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
       {success && <p className="rounded border border-green-300 bg-green-50 p-2 text-sm text-green-800">{success}</p>}
 
+      {/* Banner de borradores pendientes */}
+      {draftCount > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-amber-800">
+              📋 {draftCount} recibo(s) en BORRADOR
+            </p>
+            <p className="text-xs text-amber-600 mt-0.5">
+              Están listos pero no son visibles para los propietarios aún. Publícalos para activarlos y luego envía los emails.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={onPublishDrafts}
+            disabled={publishDrafts.isPending}
+            className="bg-amber-600 hover:bg-amber-700 text-white shrink-0"
+          >
+            {publishDrafts.isPending ? "Publicando…" : "🚀 Publicar ahora"}
+          </Button>
+        </div>
+      )}
+
       {/* Wizard de emisión — se muestra siempre que showWizard sea true */}
       {showWizard && (
         preview.isLoading ? (
@@ -169,7 +219,11 @@ export default function InvoicesPage() {
 
       {/* Panel de progreso de envío masivo */}
       {emailProgress.data && emailProgress.data.total > 0 && (
-        <EmailProgressPanel data={emailProgress.data} />
+        <EmailProgressPanel
+          data={emailProgress.data}
+          onSendBatch={onSendBatch}
+          isSending={sendBatch.isPending}
+        />
       )}
 
       <div className="overflow-hidden rounded-lg border bg-card">
@@ -190,9 +244,18 @@ export default function InvoicesPage() {
           <tbody>
             {list.data?.map((inv) => {
               const es = emailStates[inv.id];
+              const isExpanded = expandedId === inv.id;
               return (
-                <tr key={inv.id} className="border-t">
-                  <td className="px-3 py-2 font-medium">{inv.invoiceNumber}</td>
+                <>
+                <tr
+                  key={inv.id}
+                  className={`border-t cursor-pointer hover:bg-muted/30 ${isExpanded ? "bg-muted/20" : ""}`}
+                  onClick={() => setExpandedId(isExpanded ? null : inv.id)}
+                >
+                  <td className="px-3 py-2 font-medium">
+                    <span className="mr-1 text-xs text-muted-foreground">{isExpanded ? "▼" : "▶"}</span>
+                    {inv.invoiceNumber}
+                  </td>
                   <td className="px-3 py-2">{inv.unit.code}</td>
                   <td className="px-3 py-2 text-right">${Number(inv.totalUsd.toString()).toFixed(2)}</td>
                   <td className="px-3 py-2 text-right text-green-700">${Number(inv.paidUsd.toString()).toFixed(2)}</td>
@@ -246,6 +309,79 @@ export default function InvoicesPage() {
                     </div>
                   </td>
                 </tr>
+                {/* Fila expandida: detalle de ítems con total del gasto + alícuota */}
+                {isExpanded && (
+                  <tr key={`${inv.id}-detail`} className="border-t bg-slate-50/80">
+                    <td colSpan={9} className="px-6 py-3">
+                      {invoiceDetail.isLoading ? (
+                        <p className="text-sm text-muted-foreground">Cargando detalle...</p>
+                      ) : invoiceDetail.data ? (
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                            Detalle del recibo — {invoiceDetail.data.items.length} ítem(s)
+                          </p>
+                          <table className="w-full text-xs border rounded overflow-hidden">
+                            <thead className="bg-slate-100">
+                              <tr>
+                                <th className="px-2 py-1.5 text-left">Concepto</th>
+                                <th className="px-2 py-1.5 text-right">Total gasto</th>
+                                <th className="px-2 py-1.5 text-right">Alícuota</th>
+                                <th className="px-2 py-1.5 text-right">Parte esta unidad (USD)</th>
+                                <th className="px-2 py-1.5 text-right">Parte esta unidad (Bs)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {invoiceDetail.data.items.map((item) => {
+                                type ItemWithExpense = typeof item & {
+                                  expense?: {
+                                    amountUsd: string | number | { toString(): string };
+                                    amountBss: string | number | { toString(): string };
+                                  } | null;
+                                };
+                                const it = item as ItemWithExpense;
+                                return (
+                                  <tr key={item.id} className="border-t">
+                                    <td className="px-2 py-1.5">{item.description}</td>
+                                    <td className="px-2 py-1.5 text-right text-muted-foreground">
+                                      {it.expense
+                                        ? `$${Number(it.expense.amountUsd.toString()).toFixed(2)}`
+                                        : "—"
+                                      }
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-muted-foreground">
+                                      {Number(item.aliquot.toString()) > 0
+                                        ? `${Number(item.aliquot.toString()).toFixed(4)}%`
+                                        : "—"
+                                      }
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right font-medium">
+                                      ${Number(item.amountUsd.toString()).toFixed(2)}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-right text-muted-foreground">
+                                      {Number(item.amountBss.toString()).toFixed(2)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            <tfoot className="border-t bg-slate-100 font-semibold">
+                              <tr>
+                                <td colSpan={3} className="px-2 py-1.5 text-right">TOTAL</td>
+                                <td className="px-2 py-1.5 text-right">
+                                  ${Number(invoiceDetail.data.totalUsd.toString()).toFixed(2)}
+                                </td>
+                                <td className="px-2 py-1.5 text-right text-muted-foreground">
+                                  {Number(invoiceDetail.data.totalBss.toString()).toFixed(2)}
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                )}
+                </>
               );
             })}
             {list.data?.length === 0 && (
@@ -440,23 +576,41 @@ interface EmailProgressData {
   complete: boolean;
 }
 
-function EmailProgressPanel({ data }: { data: EmailProgressData }) {
+function EmailProgressPanel({
+  data, onSendBatch, isSending,
+}: {
+  data: EmailProgressData;
+  onSendBatch: () => void;
+  isSending: boolean;
+}) {
   const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
+  const canSendMore = data.pending > 0 && !data.complete;
 
   return (
     <div className="rounded-lg border bg-muted/30 px-4 py-3 space-y-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">📧 Envío de Recibos por Email</span>
+          <span className="text-sm font-medium">📧 Envío masivo de emails</span>
           {data.complete && (
             <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 uppercase tracking-wide">
               Completado
             </span>
           )}
         </div>
-        <span className="text-xs text-muted-foreground">
-          Hoy: {data.todaySent}/{data.dailyCap} · Período: {data.sent}/{data.total}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            Hoy: {data.todaySent}/{data.dailyCap} · Total: {data.sent}/{data.total}
+          </span>
+          {canSendMore && (
+            <button
+              onClick={onSendBatch}
+              disabled={isSending}
+              className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium px-3 py-1.5 transition-colors"
+            >
+              {isSending ? "Enviando…" : `📤 Enviar lote (hasta 40)`}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Barra de progreso */}
@@ -467,16 +621,16 @@ function EmailProgressPanel({ data }: { data: EmailProgressData }) {
         />
       </div>
 
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+      <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
         <span className="text-green-700 font-medium">✓ {data.sent} enviados</span>
         {data.pending > 0 && <span>⏳ {data.pending} pendientes</span>}
-        {data.failed > 0  && <span className="text-destructive">✗ {data.failed} sin email</span>}
+        {data.failed > 0  && <span className="text-destructive">✗ {data.failed} sin email registrado</span>}
         <span className="ml-auto">{pct}% completado</span>
       </div>
 
-      {data.pending > 0 && !data.complete && (
+      {canSendMore && (
         <p className="text-[11px] text-muted-foreground border-t pt-2">
-          El cron envía hasta {data.dailyCap} emails por día (días 1–5 del mes). Los recibos restantes se enviarán automáticamente.
+          Puedes enviar manualmente hasta 40 emails por click, o dejar que el cron lo haga automáticamente cada día (8 AM UTC, días 1–5 del mes).
         </p>
       )}
     </div>

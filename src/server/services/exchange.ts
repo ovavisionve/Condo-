@@ -67,7 +67,12 @@ export async function getCurrentRate(
 }
 
 /**
- * Registra una tasa manual (cuando el admin no puede o no quiere depender del fetch automático).
+ * Registra una tasa manual (cuando el admin corrige la tasa automática).
+ *
+ * IMPORTANTE: sobreescribe también la entrada BCV del día para que
+ * getCurrentRate("BCV") devuelva el valor correcto de inmediato.
+ * Así, si la API devolvió un valor equivocado, el admin puede corregirlo
+ * y todas las transacciones del día usarán la tasa correcta.
  */
 export async function setManualRate(
   vesPerUsd: Decimal.Value,
@@ -77,27 +82,38 @@ export async function setManualRate(
   const d = dateOnly(date);
   const rate = new Decimal(vesPerUsd);
   if (rate.lte(0)) throw new Error("La tasa debe ser mayor que cero");
-  const saved = await db.exchangeRate.upsert({
+
+  // 1. Guardar como MANUAL (historial de entradas manuales del administrador)
+  await db.exchangeRate.upsert({
     where: { date_source: { date: d, source: "MANUAL" } },
     update: { vesPerUsd: rate.toString(), notes },
     create: { date: d, source: "MANUAL", vesPerUsd: rate.toString(), notes },
   });
-  return { date: saved.date, source: saved.source, vesPerUsd: new Decimal(saved.vesPerUsd) };
+
+  // 2. Sobreescribir el BCV del día para que getCurrentRate("BCV") lo use
+  //    sin volver a llamar a la API externa.
+  await db.exchangeRate.upsert({
+    where: { date_source: { date: d, source: "BCV" } },
+    update: { vesPerUsd: rate.toString(), notes: `Corregido manualmente${notes ? ": " + notes : ""}` },
+    create: { date: d, source: "BCV", vesPerUsd: rate.toString(), notes: `Ingresado manualmente` },
+  });
+
+  return { date: d, source: "MANUAL", vesPerUsd: rate };
 }
 
 /**
- * Fetch BCV oficial — intenta cuatro fuentes en orden:
- *   1. pydolarve.org        (API internacional, confiable desde Vercel/US)
- *   2. ve.dolarapi.com      (API venezolana, a veces bloqueada desde US)
- *   3. exchangerate.host    (API general con VES)
- *   4. Scraping directo BCV (funciona en redes venezolanas)
+ * Fetch BCV oficial — intenta las fuentes en este orden:
+ *   1. Scraping directo bcv.org.ve  ← FUENTE PRIMARIA (igual que el proyecto comanda)
+ *   2. pydolarve.org                ← Fallback API internacional
+ *   3. ve.dolarapi.com              ← Fallback API venezolana
+ *
+ * open.er-api.com fue removida: no actualiza VES con frecuencia suficiente.
  */
 async function fetchBcvRate(): Promise<Decimal | null> {
   const sources = [
-    fetchFromPydolarve,
-    fetchFromDolarApi,
-    fetchFromExchangeRateHost,
-    fetchBcvScrape,
+    fetchBcvScrape,        // 1° — más precisa, fuente oficial directa
+    fetchFromPydolarve,    // 2° — fallback si BCV está inaccesible desde Vercel
+    fetchFromDolarApi,     // 3° — fallback adicional
   ];
   for (const fn of sources) {
     const result = await fn();
@@ -171,35 +187,11 @@ async function fetchFromDolarApi(): Promise<Decimal | null> {
   return null;
 }
 
-/** exchangerate.host — API general con cobertura de VES */
-async function fetchFromExchangeRateHost(): Promise<Decimal | null> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
-    try {
-      const res = await fetch("https://open.er-api.com/v6/latest/USD", {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (!res.ok) return null;
-      const data = (await res.json()) as { rates?: Record<string, number>; result?: string };
-      if (data.result !== "success") return null;
-      const value = data.rates?.VES;
-      if (!value || !isFinite(value) || value < 1) return null;
-      console.info("[exchange] Tasa VES/USD de open.er-api.com:", value);
-      return new Decimal(value);
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch (err) {
-    console.warn("[exchange] open.er-api.com falló:", err instanceof Error ? err.message : err);
-    return null;
-  }
-}
+// open.er-api.com removida: no actualiza VES con la frecuencia del BCV oficial.
 
 /**
- * Scraping directo de www.bcv.org.ve (fallback).
+ * Scraping directo de www.bcv.org.ve — FUENTE PRIMARIA.
+ * Misma estrategia probada en el proyecto "comanda".
  * El BCV usa coma como separador decimal: "490,22510000".
  */
 async function fetchBcvScrape(): Promise<Decimal | null> {
@@ -211,23 +203,28 @@ async function fetchBcvScrape(): Promise<Decimal | null> {
       const res = await fetch("https://www.bcv.org.ve/", {
         signal: controller.signal,
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; Condominios/1.0)",
-          Accept: "text/html,application/xhtml+xml",
-          "Accept-Language": "es-VE,es;q=0.9",
+          // User-Agent idéntico al del proyecto comanda (probado en producción)
+          "User-Agent": "Mozilla/5.0 (compatible; Comanda/1.0; +https://comanda.app)",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "es-VE,es;q=0.9,en;q=0.8",
+          "Cache-Control": "no-cache",
         },
         cache: "no-store",
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.warn("[exchange] BCV respondió con HTTP", res.status);
+        return null;
+      }
       html = await res.text();
     } finally {
       clearTimeout(timeout);
     }
     const rate = parseBcvHtml(html);
     if (rate === null) {
-      console.warn("[exchange] BCV scraping: no se pudo extraer tasa del HTML");
+      console.warn("[exchange] BCV scraping: HTML recibido pero no se pudo extraer tasa");
       return null;
     }
-    console.info("[exchange] Tasa BCV obtenida por scraping:", rate);
+    console.info("[exchange] ✓ Tasa BCV obtenida por scraping directo:", rate);
     return new Decimal(rate);
   } catch (err) {
     console.warn("[exchange] BCV scraping falló:", err instanceof Error ? err.message : err);

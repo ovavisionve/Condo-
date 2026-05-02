@@ -206,34 +206,47 @@ export default function FinanceDashboard() {
               {refreshBcv.isPending ? "Consultando BCV..." : "🔄 Actualizar desde BCV"}
             </Button>
             {bcvOk && <p className="text-xs text-green-600 font-medium">{bcvOk}</p>}
-            {bcvErr && <p className="text-xs text-destructive">{bcvErr}</p>}
+            {bcvErr && (
+              <div className="text-xs text-destructive space-y-1">
+                <p>{bcvErr}</p>
+                <p className="text-muted-foreground">Ingresa la tasa manualmente en el formulario de la derecha.</p>
+              </div>
+            )}
           </CardContent>
         </Card>
 
         <Card className="md:col-span-2">
           <CardHeader>
-            <CardTitle className="text-base">Tasa manual</CardTitle>
+            <CardTitle className="text-base">Corregir tasa del día</CardTitle>
             <CardDescription>
-              Si el fetch automático falla o quieres usar paralelo, ingresa la tasa del día.
+              Si la tasa automática está incorrecta, ingresa aquí la tasa oficial del BCV de hoy. Esto sobreescribe la tasa automática y se usa en todas las transacciones del día.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={onSetManual} className="flex items-end gap-2">
               <div className="flex-1">
-                <Label>VES por 1 USD</Label>
+                <Label>Tasa BCV hoy — VES por 1 USD</Label>
                 <Input
                   type="number"
                   step="0.0001"
+                  min="1"
+                  placeholder="ej. 52.30"
                   value={manualVal}
                   onChange={(e) => setManualVal(e.target.value)}
                   required
                 />
               </div>
               <Button type="submit" disabled={setManual.isPending}>
-                {setManual.isPending ? "..." : "Guardar tasa"}
+                {setManual.isPending ? "Guardando..." : "✓ Aplicar tasa"}
               </Button>
             </form>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Fuente: <a href="https://www.bcv.org.ve" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">bcv.org.ve</a> → Tipo de cambio oficial
+            </p>
             {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
+            {setManual.isSuccess && (
+              <p className="mt-2 text-sm text-green-600 font-medium">✓ Tasa corregida. Se usará en todas las transacciones de hoy.</p>
+            )}
           </CardContent>
         </Card>
       </div>

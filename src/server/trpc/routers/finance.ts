@@ -158,20 +158,41 @@ export const financeRouter = router({
           communityId: z.string(),
           year: z.number().int().optional(),
           month: z.number().int().min(1).max(12).optional(),
+          category: z.enum(EXPENSE_CATEGORIES).optional(),
+          towerScope: z.string().optional(),           // "A" | "B" | "__general__"
+          status: z.enum(["pending", "invoiced", "voided"]).optional(),
         }),
       )
-      .query(({ ctx, input }) =>
-        ctx.db.expense.findMany({
-          where: {
-            organizationId: input.organizationId,
-            communityId: input.communityId,
-            ...(input.year ? { periodYear: input.year } : {}),
-            ...(input.month ? { periodMonth: input.month } : {}),
-            voidedAt: null,
-          },
+      .query(({ ctx, input }) => {
+        const where: Record<string, unknown> = {
+          organizationId: input.organizationId,
+          communityId: input.communityId,
+          ...(input.year ? { periodYear: input.year } : {}),
+          ...(input.month ? { periodMonth: input.month } : {}),
+          ...(input.category ? { category: input.category } : {}),
+        };
+        if (input.towerScope === "__general__") {
+          where.towerScope = null;
+        } else if (input.towerScope) {
+          where.towerScope = input.towerScope;
+        }
+        if (input.status === "pending") {
+          where.invoicedAt = null;
+          where.voidedAt = null;
+        } else if (input.status === "invoiced") {
+          where.invoicedAt = { not: null };
+          where.voidedAt = null;
+        } else if (input.status === "voided") {
+          where.voidedAt = { not: null };
+        } else {
+          where.voidedAt = null;
+        }
+        return ctx.db.expense.findMany({
+          where: where as import("@prisma/client").Prisma.ExpenseWhereInput,
+          include: { targetUnit: { select: { code: true } } },
           orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { createdAt: "desc" }],
-        }),
-      ),
+        });
+      }),
     create: orgProcedure
       .input(
         orgIdInput.extend({
@@ -187,6 +208,9 @@ export const financeRouter = router({
           invoiceNumber: z.string().optional(),
           receiptDate: z.coerce.date().optional(),
           notes: z.string().optional(),
+          towerScope: z.string().max(20).optional().nullable(),
+          isIndividual: z.boolean().default(false),
+          targetUnitId: z.string().optional().nullable(),
         }),
       )
       .mutation(async ({ ctx, input }) =>
@@ -230,7 +254,23 @@ export const financeRouter = router({
           where: { id: input.id, organizationId: input.organizationId },
           include: {
             unit: true,
-            items: { orderBy: { description: "asc" } },
+            items: {
+              orderBy: { description: "asc" },
+              include: {
+                // Incluir expense para mostrar total del gasto y alícuota aplicada
+                expense: {
+                  select: {
+                    id: true,
+                    description: true,
+                    amountUsd: true,
+                    amountBss: true,
+                    category: true,
+                    customCategory: true,
+                    supplierName: true,
+                  },
+                },
+              },
+            },
             payments: { include: { payment: true } },
           },
         }),
@@ -487,6 +527,189 @@ export const financeRouter = router({
           dailyCap:  40,
           complete: sentCount + failedCount >= totalInvoices && totalInvoices > 0,
         };
+      }),
+
+    /** Publica todos los borradores (DRAFT → ISSUED) de un período dado. */
+    publishDrafts: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year:  z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const now = new Date();
+        const drafts = await ctx.db.invoice.findMany({
+          where: {
+            organizationId: input.organizationId,
+            communityId:    input.communityId,
+            periodYear:     input.year,
+            periodMonth:    input.month,
+            status: "DRAFT",
+          },
+          select: { id: true, unitId: true },
+        });
+        if (drafts.length === 0) return { published: 0 };
+
+        await ctx.db.invoice.updateMany({
+          where: { id: { in: drafts.map(d => d.id) } },
+          data:  { status: "ISSUED", issuedAt: now },
+        });
+
+        // Crear notificaciones IN_APP para cada propietario
+        for (const draft of drafts) {
+          const ownership = await ctx.db.ownership.findFirst({
+            where: { unitId: draft.unitId, endDate: null },
+            select: { personId: true },
+          });
+          if (!ownership) continue;
+          await ctx.db.notification.create({
+            data: {
+              organizationId: input.organizationId,
+              communityId:    input.communityId,
+              unitId:         draft.unitId,
+              personId:       ownership.personId,
+              channel: "IN_APP",
+              event:   "INVOICE_ISSUED",
+              status:  "SENT",
+              sentAt:  now,
+              body:    `Tu recibo de condominio ${input.month}/${input.year} ha sido emitido.`,
+            },
+          }).catch(() => {/* ignore */});
+        }
+
+        return { published: drafts.length };
+      }),
+
+    /**
+     * Envía emails a las unidades que aún no recibieron su recibo del período,
+     * hasta un máximo de `batchSize` por llamada. Sin delays — ideal para disparo manual.
+     */
+    sendEmailBatch: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year:  z.number().int(),
+        month: z.number().int().min(1).max(12),
+        batchSize: z.number().int().min(1).max(40).default(40),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, year, month, batchSize } = input;
+        const monthStart = new Date(Date.UTC(year, month - 1, 1));
+        const monthEnd   = new Date(Date.UTC(year, month, 1));
+
+        // Unidades que ya recibieron email este período (SENT o FAILED = ya intentado)
+        const alreadySent = await ctx.db.notification.findMany({
+          where: {
+            organizationId, communityId,
+            event: "INVOICE_ISSUED", channel: "EMAIL",
+            status: { in: ["SENT", "FAILED"] },
+            sentAt: { gte: monthStart, lt: monthEnd },
+          },
+          select: { unitId: true },
+        });
+        const sentUnitIds = new Set(alreadySent.map(n => n.unitId).filter(Boolean) as string[]);
+
+        // Facturas ISSUED sin email enviado aún
+        const pending = await ctx.db.invoice.findMany({
+          where: {
+            organizationId, communityId,
+            periodYear: year, periodMonth: month,
+            status: { in: ["ISSUED", "PARTIAL", "PAID", "OVERDUE"] },
+            unitId: { notIn: [...sentUnitIds] },
+          },
+          include: {
+            unit: {
+              select: {
+                id: true, code: true,
+                ownerships: {
+                  where: { endDate: null }, take: 1,
+                  include: { person: { select: { id: true, firstName: true, lastName: true, email: true } } },
+                },
+              },
+            },
+            items: {
+              select: { description: true, amountUsd: true, amountBss: true },
+            },
+          },
+          take: batchSize,
+          orderBy: { invoiceNumber: "asc" },
+        });
+
+        if (pending.length === 0) return { sent: 0, failed: 0, message: "Sin pendientes" };
+
+        // Importar helpers de email (ambos están en el mismo módulo)
+        const { sendEmail, buildInvoiceEmail } = await import("@/server/services/email");
+        const now = new Date();
+        const portalBase = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+
+        // Datos de la comunidad (nombre, dirección) para el email
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: communityId, organizationId },
+          select: { name: true, address: true },
+        });
+
+        let sent = 0, failed = 0;
+        for (const inv of pending) {
+          const person = inv.unit.ownerships[0]?.person;
+          const notifData = {
+            organizationId, communityId,
+            unitId:   inv.unit.id,
+            personId: person?.id ?? null,
+            channel:  "EMAIL" as const,
+            event:    "INVOICE_ISSUED" as const,
+            sentAt:   now,
+          };
+
+          if (!person?.email) {
+            await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Sin email" } }).catch(() => {/**/});
+            failed++;
+            continue;
+          }
+
+          try {
+            // PortalToken es por persona, no por unidad
+            const portalToken = await ctx.db.portalToken.findFirst({
+              where: { personId: person.id, expiresAt: { gt: now } },
+              orderBy: { expiresAt: "desc" },
+            });
+            const portalUrl = portalToken
+              ? `${portalBase}/portal?token=${portalToken.token}`
+              : portalBase;
+
+            const emailData = buildInvoiceEmail({
+              communityName:    community.name,
+              communityAddress: community.address ?? undefined,
+              personName:       `${person.firstName} ${person.lastName}`,
+              unitCode:         inv.unit.code,
+              invoiceNumber:    inv.invoiceNumber,
+              periodYear:       inv.periodYear,
+              periodMonth:      inv.periodMonth,
+              issuedAt:         inv.issuedAt,
+              dueDate:          inv.dueDate,
+              items:            inv.items.map((item) => ({
+                description: item.description,
+                amountUsd:   item.amountUsd.toString(),
+                amountBss:   item.amountBss.toString(),
+              })),
+              totalUsd:     inv.totalUsd.toString(),
+              totalBss:     inv.totalBss.toString(),
+              paidUsd:      inv.paidUsd.toString(),
+              exchangeRate: inv.exchangeRate.toString(),
+              status:       inv.status,
+              portalUrl,
+            });
+
+            const result = await sendEmail({ to: person.email, ...emailData });
+            await ctx.db.notification.create({
+              data: { ...notifData, status: result.success ? "SENT" : "FAILED", body: emailData.text ?? "" },
+            }).catch(() => {/**/});
+            if (result.success) sent++; else failed++;
+          } catch {
+            await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Error al enviar" } }).catch(() => {/**/});
+            failed++;
+          }
+        }
+
+        return { sent, failed, remaining: pending.length - sent - failed };
       }),
 
     /** Preview de lo que se facturaría este mes (sin guardar nada). */
@@ -807,6 +1030,7 @@ export const financeRouter = router({
           category: z.enum([
             "HALL_RENTAL", "PARKING_FEE", "GUEST_FEE", "INTEREST", "DONATION", "PENALTY", "OTHER",
           ]),
+          customCategory: z.string().max(80).optional(),
           description: z.string().min(2),
           periodYear: z.number().int().min(2020).max(2100),
           periodMonth: z.number().int().min(1).max(12),
@@ -814,6 +1038,7 @@ export const financeRouter = router({
           currencyPrimary: z.enum(["VES", "USD"]),
           reference: z.string().optional(),
           notes: z.string().optional(),
+          affectsInvoice: z.boolean().default(false),
         }),
       )
       .mutation(async ({ ctx, input }) =>
@@ -1552,4 +1777,137 @@ export const financeRouter = router({
 
       return { budgetId: budget.id, year: input.year, items: items.length, totalUsd: totalUsd.toFixed(2) };
     }),
+
+  // ─── Plantillas de gastos recurrentes ─────────────────────────────────────
+  recurringTemplates: router({
+    list: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(({ ctx, input }) =>
+        ctx.db.recurringExpenseTemplate.findMany({
+          where: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+          },
+          orderBy: [{ active: "desc" }, { category: "asc" }, { description: "asc" }],
+        }),
+      ),
+
+    create: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          category: z.enum(EXPENSE_CATEGORIES),
+          customCategory: z.string().max(80).optional(),
+          description: z.string().min(2),
+          supplierName: z.string().optional(),
+          amountUsd: z.coerce.number().positive(),
+          towerScope: z.string().max(20).optional().nullable(),
+          notes: z.string().optional(),
+        }),
+      )
+      .mutation(({ ctx, input }) =>
+        ctx.db.recurringExpenseTemplate.create({
+          data: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            category: input.category,
+            customCategory: input.customCategory ?? null,
+            description: input.description,
+            supplierName: input.supplierName ?? null,
+            amountUsd: input.amountUsd.toFixed(2),
+            towerScope: input.towerScope ?? null,
+            notes: input.notes ?? null,
+            active: true,
+          },
+        }),
+      ),
+
+    update: orgProcedure
+      .input(
+        orgIdInput.extend({
+          id: z.string(),
+          description: z.string().min(2).optional(),
+          supplierName: z.string().optional(),
+          amountUsd: z.coerce.number().positive().optional(),
+          towerScope: z.string().max(20).optional().nullable(),
+          notes: z.string().optional(),
+          active: z.boolean().optional(),
+        }),
+      )
+      .mutation(({ ctx, input }) => {
+        const { id, organizationId, ...data } = input;
+        return ctx.db.recurringExpenseTemplate.update({
+          where: { id },
+          data: {
+            ...data,
+            amountUsd: data.amountUsd != null ? data.amountUsd.toFixed(2) : undefined,
+          },
+        });
+      }),
+
+    delete: orgProcedure
+      .input(orgIdInput.extend({ id: z.string() }))
+      .mutation(({ ctx, input }) =>
+        ctx.db.recurringExpenseTemplate.delete({ where: { id: input.id } }),
+      ),
+
+    /**
+     * Aplica las plantillas activas del mes: crea gastos en el período dado
+     * usando los datos de cada plantilla. Si ya existe un gasto con la misma
+     * descripción y período, lo omite (idempotente).
+     */
+    applyToMonth: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          year: z.number().int().min(2020).max(2100),
+          month: z.number().int().min(1).max(12),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, year, month } = input;
+        const templates = await ctx.db.recurringExpenseTemplate.findMany({
+          where: { organizationId, communityId, active: true },
+        });
+        if (templates.length === 0) return { created: 0 };
+
+        const rate = await getCurrentRate("BCV");
+        const usdRate = new Decimal(rate.vesPerUsd.toString());
+
+        let created = 0;
+        for (const tpl of templates) {
+          // Verificar si ya existe un gasto con la misma descripción en este período
+          const exists = await ctx.db.expense.findFirst({
+            where: { communityId, periodYear: year, periodMonth: month, description: tpl.description, voidedAt: null },
+          });
+          if (exists) continue;
+
+          const amountUsd = new Decimal(tpl.amountUsd.toString());
+          const amountBss = amountUsd.mul(usdRate);
+
+          await ctx.db.expense.create({
+            data: {
+              organizationId,
+              communityId,
+              category: tpl.category,
+              customCategory: tpl.customCategory ?? null,
+              description: tpl.description,
+              supplierName: tpl.supplierName ?? null,
+              periodYear: year,
+              periodMonth: month,
+              amountUsd: amountUsd.toFixed(2),
+              amountBss: amountBss.toFixed(2),
+              exchangeRate: usdRate.toFixed(8),
+              exchangeSource: rate.source,
+              currencyPrimary: "USD",
+              towerScope: tpl.towerScope ?? null,
+              isIndividual: false,
+              createdById: ctx.user.id,
+            },
+          });
+          created++;
+        }
+        return { created };
+      }),
+  }),
 });

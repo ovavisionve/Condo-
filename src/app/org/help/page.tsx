@@ -59,29 +59,70 @@ const GUIDES: Guide[] = [
     id: "recibos",
     icon: "📄",
     title: "Emitir recibos mensuales",
-    summary: "Genera y envía los recibos de condominio a todos los propietarios.",
+    summary: "Genera los recibos de condominio para todos los propietarios usando el asistente de emisión.",
     steps: [
       {
         step: 1,
-        title: "Ir a Finanzas → Recibos",
-        description: "Aquí verás el historial de recibos emitidos y el botón para generar los del mes actual.",
+        title: "Registra los gastos del mes (si aplica)",
+        description: "Antes de emitir, asegúrate de haber cargado todos los gastos comunes del mes en Finanzas → Gastos Comunes. El sistema también incluye automáticamente la cuota mensual configurada del edificio.",
+        tip: "Si solo usas cuota fija mensual y no hay gastos variables, puedes saltarte este paso.",
       },
       {
         step: 2,
-        title: "Click en 'Emitir ahora'",
-        description: "Se abre el asistente de 3 pasos. Primero te muestra los gastos del período.",
-        tip: "Si no hay gastos registrados, el sistema igualmente puede emitir recibos con la cuota base configurada.",
+        title: "Ir a Finanzas → Recibos y abrir el asistente",
+        description: "Haz click en '✨ Emitir recibos'. Se abre el asistente de 3 pasos. El Paso 1 muestra el resumen de gastos del período y el total a distribuir.",
       },
       {
         step: 3,
-        title: "Revisa la distribución por unidad",
-        description: "El paso 2 muestra cómo se distribuye el total entre cada unidad según su porcentaje de alícuota. La suma siempre da el total exacto (sin centavos perdidos).",
+        title: "Revisa la distribución estimada (Paso 2 del asistente)",
+        description: "El sistema calcula cuánto le corresponde a cada unidad según su alícuota. La suma de todos los recibos siempre es exactamente igual al total de gastos (sin centavos perdidos, usando el método Hamilton).",
       },
       {
         step: 4,
-        title: "Elige preparar borrador o emitir",
-        description: "'Preparar borrador' crea los recibos sin enviarlos — puedes revisar antes. 'Emitir ahora' los publica de inmediato y programa el envío de correos.",
-        tip: "Los correos se envían automáticamente a razón de 40 por día, con 5 segundos entre cada uno, comenzando al día siguiente a las 8 AM.",
+        title: "Elige el modo de emisión (Paso 3 del asistente)",
+        description: "Tienes dos opciones: '📋 Preparar borrador' crea los recibos en estado BORRADOR para que los revises antes de publicar. '⚡ Emitir ahora' los publica directamente como EMITIDOS.",
+        tip: "Recomendamos 'Preparar borrador' cuando hay muchas unidades, así puedes revisar los montos antes de que los propietarios los vean.",
+      },
+      {
+        step: 5,
+        title: "Si elegiste borrador: publicar cuando estés listo",
+        description: "En la página de Recibos aparecerá un banner amarillo indicando cuántos borradores hay. Haz click en '🚀 Publicar ahora' para cambiar todos al estado EMITIDO y que sean visibles para los propietarios.",
+        tip: "Mientras los recibos estén en BORRADOR, los propietarios no los ven y no aparecen como deudores en el sistema. Solo al publicar se activa la deuda.",
+      },
+    ],
+  },
+  {
+    id: "emails",
+    icon: "📧",
+    title: "Envío masivo de recibos por correo",
+    summary: "Envía los recibos a todos los propietarios en lotes, con control total del proceso.",
+    steps: [
+      {
+        step: 1,
+        title: "Publica los recibos primero",
+        description: "Los correos solo se pueden enviar cuando los recibos están en estado EMITIDO (no BORRADOR). Si ves el banner amarillo en Recibos, primero haz click en '🚀 Publicar ahora'.",
+      },
+      {
+        step: 2,
+        title: "Revisa el panel de estado de correos",
+        description: "Una vez publicados, aparece el panel '📧 Estado de envío de correos' en la parte inferior de la página de Recibos. Muestra: total de recibos, cuántos correos se enviaron, fallidos y pendientes.",
+      },
+      {
+        step: 3,
+        title: "Click en '📤 Enviar lote (hasta 40)'",
+        description: "El sistema envía hasta 40 correos de una vez. Cada correo incluye el detalle del recibo (monto en USD y BsS, desglose de gastos, fecha de vencimiento) y el link al portal personal del propietario.",
+        tip: "Si tienes más de 40 unidades, haz click varias veces hasta que el contador de pendientes llegue a 0. El sistema recuerda a quiénes ya les envió y no repite.",
+      },
+      {
+        step: 4,
+        title: "Gestiona los correos fallidos",
+        description: "Si algún propietario no tiene correo registrado o hay un error de envío, queda marcado como 'Fallido'. Ve a Propietarios, edita la persona para agregarle el correo, y luego vuelve a enviar el lote.",
+        tip: "El sistema nunca envía dos veces al mismo propietario para el mismo período. Si corrigiste el email y quieres reenviar, anula el registro fallido desde la BD o contacta al soporte.",
+      },
+      {
+        step: 5,
+        title: "Envío automático nocturno (opcional)",
+        description: "Si tienes configurado el cron de Vercel, el sistema también envía automáticamente los correos pendientes cada día a medianoche, en lotes de 40. El proceso manual y el automático no se pisan — ambos respetan quién ya recibió su correo.",
       },
     ],
   },
@@ -152,23 +193,29 @@ const GUIDES: Guide[] = [
       {
         step: 1,
         title: "Descarga el estado de cuenta de tu banco",
-        description: "Entra al banco en línea y descarga el estado de cuenta en formato CSV o TXT. Casi todos los bancos venezolanos ofrecen esta opción.",
-        tip: "Bancos como Mercantil, Provincial, Banesco ofrecen exportación CSV desde la banca en línea.",
+        description: "Entra al banco en línea y descarga el estado de cuenta. El sistema acepta: CSV/TXT (texto separado por comas, punto y coma o tabulaciones), Excel (.xlsx / .xls), y formato bancario OFX/QFX.",
+        tip: "Bancos como Mercantil, Provincial, Banesco y Facebank ofrecen exportación CSV o Excel desde la banca en línea.",
       },
       {
         step: 2,
         title: "Ir a Finanzas → Conciliación",
-        description: "En el menú lateral, bajo la sección Finanzas, encontrarás 'Conciliación'.",
+        description: "En el menú lateral del edificio, bajo la sección Finanzas, encontrarás 'Conciliación'.",
       },
       {
         step: 3,
         title: "Arrastra o selecciona el archivo",
-        description: "El sistema detecta automáticamente las columnas (fecha, referencia, monto). No necesitas configuración.",
+        description: "El sistema detecta automáticamente el formato del archivo (CSV, Excel u OFX), identifica las columnas de fecha, referencia y monto, y muestra el formato reconocido con un badge de color.",
+        tip: "Si el sistema no detecta las columnas, verifica que el archivo tenga encabezados con palabras como 'fecha', 'monto', 'referencia' o 'descripción'. Para OFX/QFX no se necesita configuración.",
       },
       {
         step: 4,
-        title: "Revisa los resultados",
-        description: "Verás qué movimientos del banco ya están registrados en el sistema (✅) y cuáles no (⚠️). Los sin conciliar pueden ser pagos aún no registrados.",
+        title: "Revisa los resultados en las tres tablas",
+        description: "Verás tres secciones: (1) Movimientos bancarios conciliados ✅ — ya están en el sistema, (2) Movimientos sin conciliar ⚠️ — están en el banco pero no en el sistema, (3) Pagos en sistema no encontrados en banco — posibles pagos en efectivo o errores de referencia.",
+      },
+      {
+        step: 5,
+        title: "Registra los pagos faltantes",
+        description: "Para cada movimiento sin conciliar, ve a Finanzas → Pagos y registra el pago con el monto y referencia que aparece en el estado bancario. Al volver a la conciliación, ese movimiento pasará a verde.",
       },
     ],
   },
@@ -200,8 +247,24 @@ const GUIDES: Guide[] = [
 
 const FAQS: FAQ[] = [
   {
+    q: "Los propietarios aparecen como 'Solvente' aunque acabo de emitir los recibos. ¿Por qué?",
+    a: "Esto sucede cuando los recibos están en estado BORRADOR (no publicados). El sistema no registra deuda hasta que los recibos estén EMITIDOS. Ve a Finanzas → Recibos, busca el banner amarillo y haz click en '🚀 Publicar ahora'. Luego los propietarios aparecerán como deudores en la página de Propietarios.",
+  },
+  {
+    q: "¿Cuál es la diferencia entre 'Preparar borrador' y 'Emitir ahora'?",
+    a: "'Preparar borrador' crea los recibos en estado BORRADOR: están guardados pero invisibles para los propietarios, no generan deuda y no se envían correos. Debes publicarlos manualmente cuando estés listo. 'Emitir ahora' los crea directamente como EMITIDOS: la deuda es visible de inmediato y puedes proceder a enviar los correos.",
+  },
+  {
+    q: "¿Cómo envío los correos a 188 propietarios sin que se caiga el sistema?",
+    a: "Ve a Finanzas → Recibos → panel '📧 Estado de envío'. Haz click en '📤 Enviar lote (hasta 40)' para enviar de a 40 correos. Repite el proceso hasta que el contador de pendientes llegue a 0. El sistema recuerda a quiénes ya envió y nunca duplica. También puedes dejar que el cron automático lo envíe de noche.",
+  },
+  {
     q: "¿Qué pasa si un propietario no tiene correo electrónico?",
-    a: "El sistema sigue funcionando. El recibo se emite normalmente y queda disponible en el sistema. Puedes compartir el link del portal manualmente por WhatsApp o imprimirle el recibo desde la página de Recibos.",
+    a: "El recibo se emite normalmente y queda disponible en el sistema. El propietario aparecerá como 'Fallido' en el panel de correos. Puedes agregarle el correo en Propietarios → editar, y luego volver a intentar el envío. También puedes compartir el link del portal manualmente por WhatsApp.",
+  },
+  {
+    q: "¿Los correos se envían automáticamente o debo hacerlo manualmente?",
+    a: "Ambas opciones están disponibles. El cron nocturno envía automáticamente los correos pendientes cada día (hasta 40 por ejecución). Si quieres enviarlos de inmediato — por ejemplo, al inicio de mes — usa el botón '📤 Enviar lote' en la página de Recibos. Los dos métodos se coordinan: no se duplican envíos.",
   },
   {
     q: "¿Puedo cambiar la cuota mensual de una unidad específica?",
@@ -209,11 +272,11 @@ const FAQS: FAQ[] = [
   },
   {
     q: "¿Cómo funciona la tasa de cambio?",
-    a: "El sistema consulta automáticamente la tasa BCV cada día a las 8 AM. Puedes actualizarla manualmente desde Finanzas → General → botón 'Actualizar tasa BCV'. Cada transacción guarda la tasa del momento exacto.",
+    a: "El sistema consulta automáticamente la tasa BCV cada día a las 8 AM. Puedes actualizarla manualmente desde Finanzas → General → botón 'Actualizar tasa BCV'. Cada transacción guarda la tasa del momento exacto en que se registró.",
   },
   {
     q: "¿Puedo anular un pago registrado por error?",
-    a: "Sí. Ve a Finanzas → Pagos, busca el pago y usa el botón de anular. El sistema pide una razón y guarda un registro de auditoría. El pago no se borra, queda marcado como anulado.",
+    a: "Sí. Ve a Finanzas → Pagos, busca el pago y usa el botón de anular. El sistema pide una razón y guarda un registro de auditoría. El pago no se borra, queda marcado como anulado y la factura regresa a pendiente.",
   },
   {
     q: "¿Qué es la alícuota?",
@@ -221,15 +284,19 @@ const FAQS: FAQ[] = [
   },
   {
     q: "¿Los recibos se generan automáticamente cada mes?",
-    a: "El sistema puede preparar borradores automáticamente los días 1-5 de cada mes. Los borradores esperan tu revisión y aprobación antes de enviarse a los propietarios. Puedes configurar si quieres que se auto-emitan o solo se preparen como borrador.",
+    a: "El sistema prepara borradores automáticamente el día 1 de cada mes (si hay cron configurado). Los borradores quedan en espera de tu revisión y publicación. Una vez que haces click en 'Publicar', los recibos pasan a EMITIDO y los correos se envían en el mismo día.",
+  },
+  {
+    q: "¿Qué formatos acepta la conciliación bancaria?",
+    a: "El módulo de conciliación acepta: CSV y TXT (con separadores por coma, punto y coma o tabulación), Excel (.xlsx y .xls), y OFX/QFX (formato bancario estándar usado por bancos internacionales). El formato se detecta automáticamente al subir el archivo.",
   },
   {
     q: "¿Cómo importo los datos de mis propietarios?",
-    a: "Ve a Importar datos en el menú lateral. Puedes descargar la plantilla Excel, llenarla con los datos y subirla. El sistema acepta importaciones de unidades, propietarios, pagos históricos, gastos y más.",
+    a: "Ve a Importar datos en el menú lateral. Puedes descargar la plantilla CSV, llenarla con los datos y subirla. El sistema acepta importaciones de unidades, propietarios, pagos históricos, gastos, vehículos, contratistas y presupuesto anual.",
   },
   {
     q: "¿Puedo ver cuánto le debe cada propietario?",
-    a: "Sí. Finanzas → Estado de Cuenta muestra el aging de cartera completo: qué unidades deben a 30, 60, 90 o más días. También en Reportes tienes un panel de 'Top deudores'.",
+    a: "Sí. Finanzas → Estado de Cuenta muestra el aging de cartera completo: qué unidades deben a 30, 60, 90 o más días. También en Reportes tienes un panel de 'Top deudores' con barra visual de la deuda relativa de cada uno.",
   },
 ];
 

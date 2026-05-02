@@ -56,6 +56,12 @@ export type CreateExpenseInput = {
   invoiceNumber?: string;
   receiptDate?: Date;
   notes?: string;
+  /** Scope de torre: null=general, "A"=Torre A, etc. Solo se prorratea a unidades de esa torre. */
+  towerScope?: string | null;
+  /** Si true, el gasto va directamente a una unidad específica (sin prorrateo). */
+  isIndividual?: boolean;
+  /** Unidad destino cuando isIndividual=true. */
+  targetUnitId?: string | null;
   createdById: string;
 };
 
@@ -83,6 +89,9 @@ export async function registerExpense(input: CreateExpenseInput) {
       invoiceNumber: input.invoiceNumber,
       receiptDate: input.receiptDate,
       notes: input.notes,
+      towerScope: input.towerScope ?? null,
+      isIndividual: input.isIndividual ?? false,
+      targetUnitId: input.targetUnitId ?? null,
       createdById: input.createdById,
     },
   });
@@ -140,6 +149,13 @@ export async function issueMonthlyInvoices(params: {
     where: { communityId, periodYear: year, periodMonth: month, invoicedAt: null, voidedAt: null },
   });
 
+  // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
+  const deductibleIncomes = await db.income.findMany({
+    where: { communityId, periodYear: year, periodMonth: month, affectsInvoice: true, voidedAt: null },
+  });
+  const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s.plus(i.amountUsd.toString()), new Decimal(0));
+  const totalIncomeDeductionBss = deductibleIncomes.reduce((s, i) => s.plus(i.amountBss.toString()), new Decimal(0));
+
   const hasFee = community.monthlyFeeUsd && new Decimal(community.monthlyFeeUsd.toString()).gt(0);
   if (expenses.length === 0 && !hasFee) {
     throw new TRPCError({
@@ -151,18 +167,92 @@ export async function issueMonthlyInvoices(params: {
   // ── FASE 2: Cálculo en memoria (sin tocar la BD) ──────────────────────────
   type LineDraft = { unitId: string; expenseId: string | null; description: string; bss: Decimal; usd: Decimal; aliquot: Decimal };
   const draftLines: LineDraft[] = [];
-  const participants = units.map((u) => ({ key: u.id as string, aliquot: u.aliquot.toString() }));
 
-  for (const exp of expenses) {
-    const bssDistribution = prorate(exp.amountBss.toString(), participants);
-    const usdDistribution = prorate(exp.amountUsd.toString(), participants);
-    assertSumExact(bssDistribution, exp.amountBss.toString());
-    assertSumExact(usdDistribution, exp.amountUsd.toString());
-    for (const u of units) {
-      const bss = bssDistribution.get(u.id)!;
-      const usd = usdDistribution.get(u.id)!;
+  // Separar gastos por tipo: individuales, por torre, generales
+  const individualExpenses = expenses.filter((e) => e.isIndividual && e.targetUnitId);
+  const towerExpenses = expenses.filter((e) => !e.isIndividual && e.towerScope);
+  const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+
+  // Calcular cuánto de la deducción de ingresos corresponde a cada tipo
+  // Simplificación: la deducción se aplica solo a gastos generales (prorrateados).
+  const generalExpensesTotalUsd = generalExpenses.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+  const generalExpensesTotalBss = generalExpenses.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+  const deductionFactor = generalExpensesTotalUsd.gt(0)
+    ? Decimal.min(totalIncomeDeductionUsd.div(generalExpensesTotalUsd), new Decimal(1))
+    : new Decimal(0);
+
+  // 1. Gastos individuales → van directamente a la unidad target
+  for (const exp of individualExpenses) {
+    if (!exp.targetUnitId) continue;
+    const targetUnit = units.find((u) => u.id === exp.targetUnitId);
+    if (!targetUnit) continue;
+    draftLines.push({
+      unitId: targetUnit.id,
+      expenseId: exp.id,
+      description: `${exp.customCategory ?? exp.description}`,
+      bss: new Decimal(exp.amountBss.toString()),
+      usd: new Decimal(exp.amountUsd.toString()),
+      aliquot: new Decimal("100"),
+    });
+  }
+
+  // 2. Gastos por torre → se prorratean solo entre unidades de esa torre
+  for (const exp of towerExpenses) {
+    const towerUnits = units.filter((u) => u.tower === exp.towerScope);
+    if (towerUnits.length === 0) continue;
+    const towerParticipants = towerUnits.map((u) => ({ key: u.id as string, aliquot: u.aliquot.toString() }));
+    const bssDistribution = prorate(exp.amountBss.toString(), towerParticipants);
+    const usdDistribution = prorate(exp.amountUsd.toString(), towerParticipants);
+    for (const u of towerUnits) {
+      const bss = bssDistribution.get(u.id) ?? new Decimal(0);
+      const usd = usdDistribution.get(u.id) ?? new Decimal(0);
       if (bss.eq(0) && usd.eq(0)) continue;
-      draftLines.push({ unitId: u.id, expenseId: exp.id, description: `${exp.category} — ${exp.description}`, bss, usd, aliquot: new Decimal(u.aliquot.toString()) });
+      draftLines.push({
+        unitId: u.id, expenseId: exp.id,
+        description: `${exp.customCategory ?? exp.description} (Torre ${exp.towerScope})`,
+        bss, usd, aliquot: new Decimal(u.aliquot.toString()),
+      });
+    }
+  }
+
+  // 3. Gastos generales → se prorratean entre todas las unidades, con deducción de ingresos
+  const participants = units.map((u) => ({ key: u.id as string, aliquot: u.aliquot.toString() }));
+  for (const exp of generalExpenses) {
+    // Aplicar factor de deducción proporcional a cada gasto general
+    const adjUsd = new Decimal(exp.amountUsd.toString()).mul(new Decimal(1).minus(deductionFactor));
+    const adjBss = new Decimal(exp.amountBss.toString()).mul(new Decimal(1).minus(deductionFactor));
+    // Si el ajuste deja el gasto en 0, igual creamos las líneas (puede pasar con deducción total)
+    const bssDistribution = prorate(adjBss.toFixed(2), participants);
+    const usdDistribution = prorate(adjUsd.toFixed(2), participants);
+    for (const u of units) {
+      const bss = bssDistribution.get(u.id) ?? new Decimal(0);
+      const usd = usdDistribution.get(u.id) ?? new Decimal(0);
+      if (bss.eq(0) && usd.eq(0)) continue;
+      draftLines.push({
+        unitId: u.id, expenseId: exp.id,
+        description: `${exp.customCategory ?? exp.description}`,
+        bss, usd, aliquot: new Decimal(u.aliquot.toString()),
+      });
+    }
+  }
+
+  // 4. Si hay deducción de ingresos, crear una línea de descuento en cada factura
+  if (deductionFactor.gt(0) && generalExpensesTotalUsd.gt(0)) {
+    const totalDeductedUsd = generalExpensesTotalUsd.mul(deductionFactor);
+    const totalDeductedBss = generalExpensesTotalBss.mul(deductionFactor);
+    const bssDeductionDist = prorate(totalDeductedBss.toFixed(2), participants);
+    const usdDeductionDist = prorate(totalDeductedUsd.toFixed(2), participants);
+    for (const u of units) {
+      const bss = bssDeductionDist.get(u.id) ?? new Decimal(0);
+      const usd = usdDeductionDist.get(u.id) ?? new Decimal(0);
+      if (bss.eq(0) && usd.eq(0)) continue;
+      // Línea negativa que muestra el descuento por ingresos comunes
+      draftLines.push({
+        unitId: u.id, expenseId: null,
+        description: `Descuento — Ingresos comunes del período`,
+        bss: bss.neg(), usd: usd.neg(),
+        aliquot: new Decimal(u.aliquot.toString()),
+      });
     }
   }
 

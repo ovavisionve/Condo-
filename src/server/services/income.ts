@@ -6,6 +6,7 @@ interface RegisterIncomeInput {
   organizationId: string;
   communityId: string;
   category: IncomeCategory;
+  customCategory?: string;
   description: string;
   periodYear: number;
   periodMonth: number;
@@ -14,6 +15,11 @@ interface RegisterIncomeInput {
   exchangeSource: ExchangeSource;
   reference?: string;
   notes?: string;
+  /**
+   * Si true, este ingreso reduce el total de gastos antes del prorrateo mensual.
+   * Aparece como descuento en los recibos del período.
+   */
+  affectsInvoice?: boolean;
   createdById?: string;
 }
 
@@ -37,6 +43,7 @@ export async function registerIncome(input: RegisterIncomeInput) {
       organizationId: input.organizationId,
       communityId: input.communityId,
       category: input.category,
+      customCategory: input.customCategory ?? null,
       description: input.description,
       periodYear: input.periodYear,
       periodMonth: input.periodMonth,
@@ -47,6 +54,7 @@ export async function registerIncome(input: RegisterIncomeInput) {
       currencyPrimary: input.currencyPrimary,
       reference: input.reference,
       notes: input.notes,
+      affectsInvoice: input.affectsInvoice ?? false,
       createdById: input.createdById,
     },
   });

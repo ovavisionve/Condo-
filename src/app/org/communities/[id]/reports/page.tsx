@@ -51,7 +51,7 @@ export default function ReportsPage() {
     if (!data || data.length === 0) return;
     const xlsx = await import("xlsx");
     const ws = xlsx.utils.json_to_sheet(data.map((r) => ({
-      "# Factura":       r.invoiceNumber,
+      "# Recibo":        r.invoiceNumber,
       "Unidad":          r.unitCode,
       "Piso":            r.floor,
       "Torre":           r.tower,
@@ -59,7 +59,7 @@ export default function ReportsPage() {
       "Email":           r.ownerEmail,
       "Teléfono":        r.ownerPhone,
       "Estado":          r.status,
-      "Emitida":         r.issuedAt,
+      "Emitido":         r.issuedAt,
       "Vence":           r.dueDate,
       "Total USD":       Number(r.totalUsd),
       "Total Bs":        Number(r.totalBss),
@@ -68,8 +68,8 @@ export default function ReportsPage() {
       "Tasa (Bs/USD)":   Number(r.exchangeRate),
     })));
     const wb = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(wb, ws, `Facturas ${month}-${year}`);
-    xlsx.writeFile(wb, `facturas-${year}-${String(month).padStart(2,"0")}.xlsx`);
+    xlsx.utils.book_append_sheet(wb, ws, `Recibos ${month}-${year}`);
+    xlsx.writeFile(wb, `recibos-${year}-${String(month).padStart(2,"0")}.xlsx`);
   };
 
   const s = summary.data;
@@ -114,9 +114,9 @@ export default function ReportsPage() {
 
       {/* ── KPI Cards ──────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <KpiCard label="Facturado" value={`$${s?.billing.totalUsd ?? "—"}`} sub={`${s?.billing.invoiceCount ?? 0} facturas`} color="blue" loading={summary.isLoading} />
-        <KpiCard label="Cobrado"   value={`$${s?.billing.paidUsd ?? "—"}`}  sub={`${s?.billing.collectionRate ?? 0}% de cobranza`} color="green" loading={summary.isLoading} />
-        <KpiCard label="Pendiente" value={`$${s?.billing.pendingUsd ?? "—"}`} sub="por cobrar" color={Number(s?.billing.pendingUsd ?? 0) > 0 ? "red" : "green"} loading={summary.isLoading} />
+        <KpiCard label="Recibos emitidos" value={`$${s?.billing.totalUsd ?? "—"}`} sub={`${s?.billing.invoiceCount ?? 0} recibos en el período`} color="slate" loading={summary.isLoading} />
+        <KpiCard label="Cobrado"   value={`$${s?.billing.paidUsd ?? "—"}`}  sub={`${s?.billing.collectionRate ?? 0}% de cobranza`} color={Number(s?.billing.collectionRate ?? 0) >= 80 ? "green" : Number(s?.billing.collectionRate ?? 0) >= 40 ? "amber" : "red"} loading={summary.isLoading} />
+        <KpiCard label="Por cobrar" value={`$${s?.billing.pendingUsd ?? "—"}`} sub={Number(s?.billing.pendingUsd ?? 0) > 0 ? "saldo pendiente" : "✓ todo cobrado"} color={Number(s?.billing.pendingUsd ?? 0) > 0 ? "red" : "green"} loading={summary.isLoading} />
         <KpiCard label="Unidades"  value={String(s?.occupancy.total ?? "—")} sub={`${s?.occupancy.owned ?? 0} con dueño · ${s?.occupancy.rented ?? 0} arrendadas`} color="slate" loading={summary.isLoading} />
       </div>
 
@@ -124,7 +124,7 @@ export default function ReportsPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Tendencia 12 meses */}
         <div className="lg:col-span-2 rounded-lg border bg-card p-4">
-          <p className="mb-3 text-sm font-semibold">Facturado vs Cobrado — últimos 12 meses</p>
+          <p className="mb-3 text-sm font-semibold">Recibos emitidos vs Cobrado — últimos 12 meses</p>
           {trend.isLoading ? <ChartSkeleton /> : (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={trend.data} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
@@ -253,7 +253,7 @@ export default function ReportsPage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
               <PeriodKpi label="Gastos" value={`$${periodRpt.data?.totalExpenses ?? "0.00"}`} color="red" />
               <PeriodKpi label="Ingresos extra" value={`$${periodRpt.data?.totalIncome ?? "0.00"}`} color="violet" />
-              <PeriodKpi label="Facturado" value={`$${periodRpt.data?.totalInvoiced ?? "0.00"}`} color="blue" />
+              <PeriodKpi label="Recibos emitidos" value={`$${periodRpt.data?.totalInvoiced ?? "0.00"}`} color="slate" />
               <PeriodKpi label="Cobrado" value={`$${periodRpt.data?.totalCollected ?? "0.00"}`} color="green" />
               <PeriodKpi
                 label="Balance neto"
@@ -270,7 +270,7 @@ export default function ReportsPage() {
                   <Tooltip formatter={(v) => `$${Number(v).toFixed(2)}`} />
                   <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
                   <Bar dataKey="expenses"  name="Gastos"   fill={C.red}    radius={[3,3,0,0]} />
-                  <Bar dataKey="invoiced"  name="Facturado" fill={C.blue}  radius={[3,3,0,0]} />
+                  <Bar dataKey="invoiced"  name="Recibos emitidos" fill={C.blue}  radius={[3,3,0,0]} />
                   <Bar dataKey="collected" name="Cobrado"  fill={C.green}  radius={[3,3,0,0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -282,37 +282,59 @@ export default function ReportsPage() {
       {/* ── Top deudores ────────────────────────────────────── */}
       <div className="rounded-lg border bg-card">
         <div className="border-b px-4 py-3">
-          <p className="font-semibold text-sm">Top deudores</p>
-          <p className="text-xs text-muted-foreground">Unidades con mayor saldo pendiente acumulado</p>
+          <p className="font-semibold text-sm">Top deudores con propietario registrado</p>
+          <p className="text-xs text-muted-foreground">Unidades con mayor saldo pendiente acumulado · solo muestra unidades con propietario registrado</p>
         </div>
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40 text-left">
-            <tr>
-              <th className="px-4 py-2">#</th>
-              <th className="px-4 py-2">Unidad</th>
-              <th className="px-4 py-2">Propietario</th>
-              <th className="px-4 py-2 text-right">Pendiente USD</th>
-              <th className="px-4 py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {debtors.isLoading ? (
-              <tr><td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">Cargando...</td></tr>
-            ) : debtors.data?.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-6 text-center text-green-600 font-medium">✓ Sin deudores pendientes</td></tr>
-            ) : debtors.data?.map((d, i) => (
-              <tr key={d.unitId} className="border-t hover:bg-muted/30">
-                <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
-                <td className="px-4 py-2 font-medium">{d.unitCode}</td>
-                <td className="px-4 py-2 text-muted-foreground">{d.ownerName}</td>
-                <td className="px-4 py-2 text-right font-semibold text-red-600">${d.pendingUsd}</td>
-                <td className="px-4 py-2">
-                  <DebtBar pending={Number(d.pendingUsd)} max={Number(debtors.data?.[0]?.pendingUsd ?? 1)} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {(() => {
+          const withOwner  = debtors.data?.filter(d => d.ownerName !== "Sin propietario") ?? [];
+          const noOwner    = debtors.data?.filter(d => d.ownerName === "Sin propietario") ?? [];
+          const noOwnerTotal = noOwner.reduce((s, d) => s + Number(d.pendingUsd), 0);
+          const maxPending = Number(withOwner[0]?.pendingUsd ?? 1);
+          return (
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-left">
+                <tr>
+                  <th className="px-4 py-2">#</th>
+                  <th className="px-4 py-2">Unidad</th>
+                  <th className="px-4 py-2">Propietario</th>
+                  <th className="px-4 py-2 text-right">Pendiente USD</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {debtors.isLoading ? (
+                  <tr><td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">Cargando...</td></tr>
+                ) : withOwner.length === 0 && noOwner.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-6 text-center text-green-600 font-medium">✓ Sin deudores pendientes</td></tr>
+                ) : withOwner.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-6 text-center text-muted-foreground text-xs">
+                    Ningún deudor tiene propietario registrado aún. Importa los propietarios para ver el detalle.
+                  </td></tr>
+                ) : (
+                  withOwner.map((d, i) => (
+                    <tr key={d.unitId} className="border-t hover:bg-muted/30">
+                      <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
+                      <td className="px-4 py-2 font-medium">{d.unitCode}</td>
+                      <td className="px-4 py-2 text-muted-foreground">{d.ownerName}</td>
+                      <td className="px-4 py-2 text-right font-semibold text-red-600">${d.pendingUsd}</td>
+                      <td className="px-4 py-2">
+                        <DebtBar pending={Number(d.pendingUsd)} max={maxPending} />
+                      </td>
+                    </tr>
+                  ))
+                )}
+                {noOwner.length > 0 && (
+                  <tr className="border-t bg-muted/20">
+                    <td colSpan={5} className="px-4 py-2 text-xs text-muted-foreground">
+                      ⚠ Además, <span className="font-semibold text-foreground">{noOwner.length} unidades sin propietario registrado</span> tienen
+                      {" "}<span className="font-semibold text-red-600">${noOwnerTotal.toFixed(2)}</span> en deuda pendiente. Importa los propietarios para hacer seguimiento.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          );
+        })()}
       </div>
     </div>
   );
@@ -324,11 +346,11 @@ function KpiCard({ label, value, sub, color, loading }: {
   label: string; value: string; sub: string; color: string; loading: boolean;
 }) {
   const colors: Record<string, string> = {
-    blue: "border-blue-200 bg-blue-50 text-blue-700",
+    blue:  "border-blue-200 bg-blue-50 text-blue-700",
     green: "border-green-200 bg-green-50 text-green-700",
-    red: "border-red-200 bg-red-50 text-red-700",
+    red:   "border-red-200 bg-red-50 text-red-700",
     amber: "border-amber-200 bg-amber-50 text-amber-700",
-    slate: "border-slate-200 bg-slate-50 text-slate-700",
+    slate: "border-slate-200 bg-slate-50 text-slate-600",
   };
   return (
     <div className={`rounded-lg border p-4 ${colors[color] ?? colors.slate}`}>

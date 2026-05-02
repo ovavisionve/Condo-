@@ -141,18 +141,19 @@ model Community {
   updatedAt       DateTime     @updatedAt
   deletedAt       DateTime?
 
-  units               Unit[]
-  memberships         Membership[]
-  expenses            Expense[]
-  incomes             Income[]
-  workOrders          WorkOrder[]
-  visitors            Visitor[]
-  accessLogs          AccessLog[]
-  violations          Violation[]
-  boardMembers        BoardMember[]
-  assemblies          Assembly[]
-  communityDocuments  CommunityDocument[]
-  monthCloses         MonthClose[]
+  units                    Unit[]
+  memberships              Membership[]
+  expenses                 Expense[]
+  incomes                  Income[]
+  workOrders               WorkOrder[]
+  visitors                 Visitor[]
+  accessLogs               AccessLog[]
+  violations               Violation[]
+  boardMembers             BoardMember[]
+  assemblies               Assembly[]
+  communityDocuments       CommunityDocument[]
+  monthCloses              MonthClose[]
+  recurringExpenseTemplates RecurringExpenseTemplate[]
 
   @@index([organizationId, active])
 }
@@ -189,15 +190,16 @@ model Unit {
   updatedAt      DateTime     @updatedAt
   deletedAt      DateTime?
 
-  ownerships     Ownership[]
-  tenancies      Tenancy[]
-  invoices       Invoice[]
-  payments       Payment[]
-  workOrders     WorkOrder[]
-  visitors       Visitor[]
-  accessLogs     AccessLog[]
-  violations     Violation[]
-  assemblyVotes  AssemblyVote[]
+  ownerships        Ownership[]
+  tenancies         Tenancy[]
+  invoices          Invoice[]
+  payments          Payment[]
+  workOrders        WorkOrder[]
+  visitors          Visitor[]
+  accessLogs        AccessLog[]
+  violations        Violation[]
+  assemblyVotes     AssemblyVote[]
+  individualExpenses Expense[]   @relation("ExpenseTargetUnit")
 
   @@unique([communityId, code])
   @@index([organizationId])
@@ -514,6 +516,12 @@ model Expense {
   invoiceNumber   String?
   receiptDate     DateTime?
   notes           String?
+  // Alcance por torre: null=general (todas las unidades), "A"=Torre A, "B"=Torre B, etc.
+  towerScope      String?
+  // Cargo individual a una unidad específica (p.ej. reparación exclusiva del apto)
+  isIndividual    Boolean         @default(false)
+  targetUnitId    String?         // solo si isIndividual=true
+  targetUnit      Unit?           @relation("ExpenseTargetUnit", fields: [targetUnitId], references: [id], onDelete: SetNull)
   // Estado
   invoicedAt      DateTime? // si null, todavía no se ha prorrateado
   voidedAt        DateTime?
@@ -527,6 +535,7 @@ model Expense {
   @@index([organizationId])
   @@index([communityId, periodYear, periodMonth])
   @@index([communityId, invoicedAt])
+  @@index([targetUnitId])
 }
 
 enum InvoiceStatus {
@@ -748,6 +757,7 @@ model Income {
   communityId     String
   community       Community      @relation(fields: [communityId], references: [id], onDelete: Cascade)
   category        IncomeCategory
+  customCategory  String?        // etiqueta libre cuando category = OTHER
   description     String
   periodYear      Int
   periodMonth     Int
@@ -757,6 +767,9 @@ model Income {
   exchangeSource  ExchangeSource
   currencyPrimary Currency
   reference       String?
+  /// Si true, este ingreso reduce el total de gastos antes del prorrateo mensual
+  /// (aparece en el recibo como descuento). Si false, es solo contable.
+  affectsInvoice  Boolean        @default(false)
   notes           String?
   voidedAt        DateTime?
   voidReason      String?
@@ -766,6 +779,29 @@ model Income {
 
   @@index([organizationId])
   @@index([communityId, periodYear, periodMonth])
+}
+
+/// Plantilla de gasto recurrente/fijo. Sirve para pre-cargar gastos mes a mes
+/// sin tener que re-ingresar proveedor, descripción y monto cada vez.
+model RecurringExpenseTemplate {
+  id              String          @id @default(cuid())
+  organizationId  String
+  communityId     String
+  community       Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  category        ExpenseCategory
+  customCategory  String?
+  description     String
+  supplierName    String?
+  /// Monto de referencia en USD (se usa como base al aplicar la plantilla)
+  amountUsd       Decimal         @db.Decimal(18, 2)
+  towerScope      String?         // null=general, "A","B"=torre específica
+  notes           String?
+  active          Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([communityId, active])
+  @@index([organizationId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
