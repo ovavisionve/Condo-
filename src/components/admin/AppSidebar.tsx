@@ -171,6 +171,8 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
                 <NavItem href="/org/settings" label="Configuración" icon="⚙️" />
               </>
             )}
+            <SectionLabel>Soporte</SectionLabel>
+            <NavItem href="/org/help" label="Guía de ayuda" icon="🎓" />
           </>
         )}
       </nav>

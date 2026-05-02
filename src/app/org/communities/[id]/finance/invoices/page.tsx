@@ -133,17 +133,38 @@ export default function InvoicesPage() {
       {error && <p className="rounded border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">{error}</p>}
       {success && <p className="rounded border border-green-300 bg-green-50 p-2 text-sm text-green-800">{success}</p>}
 
-      {/* Wizard de emisión */}
-      {showWizard && preview.data && (
-        <IssueWizard
-          preview={preview.data}
-          year={year}
-          month={month}
-          onClose={() => setShowWizard(false)}
-          onConfirmDraft={() => { setShowWizard(false); void onIssue(true); }}
-          onConfirmNow={() => { setShowWizard(false); void onIssue(false); }}
-          isPending={issue.isPending}
-        />
+      {/* Wizard de emisión — se muestra siempre que showWizard sea true */}
+      {showWizard && (
+        preview.isLoading ? (
+          /* Overlay de carga mientras se obtiene el preview */
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="rounded-xl bg-white px-8 py-6 shadow-2xl text-center space-y-3">
+              <div className="text-3xl animate-pulse">📄</div>
+              <p className="font-medium">Cargando datos del período…</p>
+              <p className="text-sm text-muted-foreground">Consultando gastos y unidades</p>
+            </div>
+          </div>
+        ) : preview.data ? (
+          <IssueWizard
+            preview={preview.data}
+            year={year}
+            month={month}
+            onClose={() => setShowWizard(false)}
+            onConfirmDraft={() => { setShowWizard(false); void onIssue(true); }}
+            onConfirmNow={() => { setShowWizard(false); void onIssue(false); }}
+            isPending={issue.isPending}
+          />
+        ) : (
+          /* Error al cargar el preview */
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="rounded-xl bg-white px-8 py-6 shadow-2xl text-center space-y-3 max-w-sm">
+              <div className="text-3xl">⚠️</div>
+              <p className="font-medium">No se pudo cargar el preview</p>
+              <p className="text-sm text-muted-foreground">{preview.error?.message ?? "Intenta de nuevo"}</p>
+              <Button variant="outline" onClick={() => setShowWizard(false)}>Cerrar</Button>
+            </div>
+          </div>
+        )
       )}
 
       {/* Panel de progreso de envío masivo */}
