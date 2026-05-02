@@ -23,8 +23,10 @@ export async function GET(_req: Request) {
         CONSTRAINT "MonthClose_closedById_fkey"
           FOREIGN KEY ("closedById") REFERENCES "User"("id"),
         UNIQUE ("communityId", "year", "month")
-      );
-      CREATE INDEX IF NOT EXISTS "MonthClose_communityId_idx" ON "MonthClose"("communityId");
+      )
+    `);
+    await db.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "MonthClose_communityId_idx" ON "MonthClose"("communityId")
     `);
     return NextResponse.json({ ok: true, message: "MonthClose table created" });
   } catch (err) {
