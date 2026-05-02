@@ -357,6 +357,14 @@ pnpm prisma migrate reset
   - **BCV:** scraper directo bcv.org.ve como fuente primaria; setManualRate actualiza también entrada BCV del día
   - **Exchange.ts:** fetchBcvScrape primero, pydolarve segundo, dolarapi tercero; open.er-api.com eliminado
   - Commits: `5eab7ca` (16 features), `8551957` (migración ejecutada y cerrada)
+- [x] **Sesión conciliación + exports (Sonnet):** features 2-4, 7, 8, 10 del cliente — migración v4 aplicada
+  - **Feature 2:** Botón "🏭 Registrar como gasto" en filas sin conciliar → dialogo pre-rellenado (comisiones bancarias, retenciones)
+  - **Feature 3:** Workflow pagos no identificados — botón "📦 Aparcar", tab "No identificados" con lista pendientes/asignados, botón "Asignar" crea Payment y marca el entry como procesado. Schema: nuevo modelo `UnidentifiedPayment` (migración v4 ejecutada en Supabase)
+  - **Feature 4:** Badge de tipo de match por fila conciliada (Ref exacta / Ref parcial / Por monto) + leyenda visual. Antes solo había ✅/⚠️
+  - **Feature 7:** Toggle "También registrar como ingreso" en dialogo de pago — `alsoCreateIncome` llama `registerIncome` con misma referencia. Útil para depósito que es simultáneamente pago de cuota + ingreso extra
+  - **Feature 8:** Exportación por módulo (Gastos / Ingresos / Pagos) con rango personalizable desde/hasta. Router: `reports.expensesExport`, `reports.paymentsExport`, `reports.incomeExport`
+  - **Feature 10:** `reports.firstRecords` devuelve primer período de cada módulo; selectores de año en Reportes parten desde el primer dato en BD; botón "⏮ Desde inicio" auto-rellena rango
+  - Commits: `285b23c` (features 2-4, 7), `4ef9211` (features 8, 10)
 
 ---
 
