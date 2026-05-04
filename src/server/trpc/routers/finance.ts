@@ -2260,4 +2260,71 @@ export const financeRouter = router({
         return { created };
       }),
   }),
+
+  inpc: router({
+    list: orgProcedure
+      .input(z.object({ organizationId: z.string(), limit: z.number().default(24) }))
+      .query(async ({ ctx, input }) => {
+        return ctx.db.inpcRate.findMany({
+          orderBy: [{ year: "desc" }, { month: "desc" }],
+          take: input.limit,
+        });
+      }),
+
+    set: orgProcedure
+      .input(z.object({
+        organizationId: z.string(),
+        year: z.number().int().min(2000).max(2030),
+        month: z.number().int().min(1).max(12),
+        indexValue: z.number().positive(),
+        source: z.string().default("MANUAL"),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        return ctx.db.inpcRate.upsert({
+          where: { year_month: { year: input.year, month: input.month } },
+          create: {
+            year: input.year,
+            month: input.month,
+            indexValue: input.indexValue,
+            source: input.source,
+            notes: input.notes,
+          },
+          update: {
+            indexValue: input.indexValue,
+            source: input.source,
+            notes: input.notes,
+          },
+        });
+      }),
+
+    // Calcula factor de indexación entre dos períodos
+    // Factor = (índice_final / índice_inicial) - 1 → % de aumento
+    calcFactor: orgProcedure
+      .input(z.object({
+        organizationId: z.string(),
+        fromYear: z.number().int(),
+        fromMonth: z.number().int(),
+        toYear: z.number().int(),
+        toMonth: z.number().int(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const [from, to] = await Promise.all([
+          ctx.db.inpcRate.findUnique({
+            where: { year_month: { year: input.fromYear, month: input.fromMonth } },
+          }),
+          ctx.db.inpcRate.findUnique({
+            where: { year_month: { year: input.toYear, month: input.toMonth } },
+          }),
+        ]);
+        if (!from || !to) return null;
+        const factor = Number(to.indexValue) / Number(from.indexValue);
+        return {
+          factor,
+          percentageIncrease: ((factor - 1) * 100).toFixed(2),
+          fromIndex: Number(from.indexValue),
+          toIndex: Number(to.indexValue),
+        };
+      }),
+  }),
 });

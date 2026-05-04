@@ -58,6 +58,32 @@ export default function ReportsPage() {
   const paymentsExportQ = trpc.reports.paymentsExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
   const incomeExportQ   = trpc.reports.incomeExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
 
+  const downloadMorososCsv = async () => {
+    const { data } = await debtors.refetch();
+    if (!data || data.length === 0) { alert("Sin deudores para exportar"); return; }
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const filename = `morosos-${now.getFullYear()}-${pad(now.getMonth() + 1)}.csv`;
+    const header = ["Unidad","Propietario","Email","Teléfono","Facturas pendientes","Monto total USD","Meses en mora"];
+    const rows = data
+      .filter(d => Number(d.pendingUsd) > 0)
+      .map(d => [
+        d.unitCode,
+        d.ownerName ?? "",
+        (d as Record<string,unknown>).ownerEmail as string ?? "",
+        (d as Record<string,unknown>).ownerPhone as string ?? "",
+        (d as Record<string,unknown>).invoiceCount as number ?? "",
+        Number(d.pendingUsd).toFixed(2),
+        (d as Record<string,unknown>).overdueMonths as number ?? "",
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
+    const csv = [header.join(","), ...rows].join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const onExportExcel = async () => {
     const { data } = await exportQ.refetch();
     if (!data || data.length === 0) return;
@@ -158,6 +184,9 @@ export default function ReportsPage() {
           </select>
           <Button variant="outline" onClick={onExportExcel} disabled={exportQ.isFetching}>
             {exportQ.isFetching ? "Generando..." : "↓ Recibos Excel"}
+          </Button>
+          <Button variant="outline" onClick={() => void downloadMorososCsv()} disabled={debtors.isFetching}>
+            {debtors.isFetching ? "Generando..." : "📋 Expediente morosos"}
           </Button>
         </div>
       </div>

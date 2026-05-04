@@ -918,6 +918,7 @@ export type CcInvoicePdfData = {
   paidUsd: string;
   paidBss: string;
   notes?: string | null;
+  paymentInstructions?: string | null;
 };
 
 // Reutilizamos la paleta monocromática
@@ -1133,7 +1134,15 @@ function CcInvoiceDoc({ data }: { data: CcInvoicePdfData }) {
           `Tasa BCV aplicada: ${Number(data.exchangeRate).toFixed(4)} Bs/$ al momento de emisión   —   El monto en USD es fijo; el equivalente en Bs puede variar.`),
       ),
 
-      // ── Notas ───────────────────────────────────────────
+      // ── Instrucciones de pago CC ────────────────────────
+      !isPaid && data.paymentInstructions && React.createElement(View, { style: cc.notesBox },
+        React.createElement(Text, { style: cc.notesTitle }, "¿CÓMO PAGAR?"),
+        React.createElement(Text, { style: cc.notesText }, data.paymentInstructions),
+        React.createElement(Text, { style: { ...cc.notesText, fontFamily: "Helvetica-Bold", marginTop: 4 } },
+          `Incluya el número de factura ${data.invoiceNumber} en el concepto del pago.`),
+      ),
+
+      // ── Notas de la factura ─────────────────────────────
       data.notes && React.createElement(View, { style: cc.notesBox },
         React.createElement(Text, { style: cc.notesTitle }, "Observaciones:"),
         React.createElement(Text, { style: cc.notesText }, data.notes),

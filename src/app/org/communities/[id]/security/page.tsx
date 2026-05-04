@@ -7,6 +7,7 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -99,6 +100,9 @@ export default function SecurityPage() {
       {/* ── Visitantes ────────────────────────────────────── */}
       {tab === "visitors" && (
         <div className="space-y-3">
+          {/* Verificador de QR */}
+          <VerificarQr organizationId={organizationId} communityId={communityId} />
+
           {showNewVisitor && (
             <NewVisitorForm
               organizationId={organizationId}
@@ -476,6 +480,108 @@ function ViolationForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+function VerificarQr({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const [code, setCode] = useState("");
+  const [queryCode, setQueryCode] = useState<string | null>(null);
+  const checkIn = trpc.security.visitors.checkIn.useMutation({
+    onSuccess: () => { setQueryCode(null); setCode(""); },
+  });
+
+  const result = trpc.security.verifyAccessCode.useQuery(
+    { organizationId, communityId, accessCode: queryCode ?? "" },
+    { enabled: !!queryCode },
+  );
+
+  const onVerify = (e: React.FormEvent) => {
+    e.preventDefault();
+    setQueryCode(code.trim());
+  };
+
+  const onRegisterEntry = (visitorId: string) => {
+    checkIn.mutate({ organizationId, communityId, visitorId });
+  };
+
+  return (
+    <Card className="border-blue-200 bg-blue-50">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm text-blue-800">🔍 Verificar código QR</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <form onSubmit={onVerify} className="flex items-end gap-2">
+          <div className="flex-1">
+            <Label className="text-xs text-blue-700">Código escaneado o ingresado manualmente</Label>
+            <Input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Pega o escribe el código del visitante"
+              className="font-mono text-sm"
+              required
+            />
+          </div>
+          <Button type="submit" size="sm" disabled={!code.trim()}>
+            Verificar
+          </Button>
+          {queryCode && (
+            <Button type="button" size="sm" variant="ghost" onClick={() => { setQueryCode(null); setCode(""); }}>
+              ✕
+            </Button>
+          )}
+        </form>
+
+        {result.isLoading && <p className="text-sm text-blue-600">Verificando...</p>}
+
+        {result.data && !result.isLoading && (
+          <div className={`rounded-lg border p-4 space-y-2 ${result.data.found && result.data.valid ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"}`}>
+            {!result.data.found && (
+              <p className="text-sm font-semibold text-red-700">❌ Código no encontrado. El visitante no está registrado.</p>
+            )}
+            {result.data.found && !result.data.valid && (
+              <>
+                <p className="text-sm font-semibold text-red-700">⚠️ Código inválido o vencido</p>
+                {result.data.visitor && (
+                  <div className="text-xs text-red-600 space-y-0.5">
+                    <p>Visitante: <strong>{result.data.visitor.firstName} {result.data.visitor.lastName}</strong></p>
+                    <p>Estado: <strong>{VISITOR_STATUS_LABEL[result.data.visitor.status] ?? result.data.visitor.status}</strong></p>
+                    <p>Válido: {new Date(result.data.visitor.validFrom).toLocaleDateString("es-VE")} → {new Date(result.data.visitor.validUntil).toLocaleDateString("es-VE")}</p>
+                    <p>Unidad: <strong>{result.data.visitor.unitCode}</strong></p>
+                  </div>
+                )}
+              </>
+            )}
+            {result.data.found && result.data.valid && result.data.visitor && (
+              <>
+                <p className="text-sm font-semibold text-green-700">✅ Visitante autorizado</p>
+                <div className="text-xs text-green-800 space-y-0.5">
+                  <p>Nombre: <strong>{result.data.visitor.firstName} {result.data.visitor.lastName}</strong></p>
+                  <p>Unidad: <strong>{result.data.visitor.unitCode}</strong></p>
+                  {result.data.visitor.purpose && <p>Motivo: {result.data.visitor.purpose}</p>}
+                  <p>Válido hasta: {new Date(result.data.visitor.validUntil).toLocaleDateString("es-VE")}</p>
+                  {result.data.visitor.checkInAt && (
+                    <p className="text-amber-700">⚠️ Ya registró ingreso: {new Date(result.data.visitor.checkInAt).toLocaleString("es-VE")}</p>
+                  )}
+                </div>
+                {result.data.visitor.status === "PENDING" && (
+                  <Button
+                    size="sm"
+                    className="bg-green-600 hover:bg-green-700 mt-2"
+                    onClick={() => onRegisterEntry(result.data!.visitor!.id)}
+                    disabled={checkIn.isPending}
+                  >
+                    {checkIn.isPending ? "Registrando..." : "✓ Registrar ingreso"}
+                  </Button>
+                )}
+                {checkIn.isSuccess && (
+                  <p className="text-xs text-green-700 font-medium">✓ Ingreso registrado correctamente.</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

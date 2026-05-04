@@ -1357,4 +1357,30 @@ export const portalRouter = router({
           : 0,
       };
     }),
+
+  // ─── Visitantes de la unidad (con código QR) ──────────────────────────────
+  myVisitors: publicProcedure
+    .input(z.object({
+      unitId: z.string(),
+      token: z.string().optional(),
+    }))
+    .query(async ({ input }) => {
+      const visitors = await db.visitor.findMany({
+        where: { unitId: input.unitId },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          status: true,
+          validFrom: true,
+          validUntil: true,
+          purpose: true,
+          accessCode: true,
+          unit: { select: { code: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
+      return visitors;
+    }),
 });

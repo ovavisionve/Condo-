@@ -51,6 +51,9 @@ export default function FacturasPage() {
     localId: "", type: "CANON", description: "Canon de arrendamiento",
     amountUsd: "", exchangeRate: "", notes: "", dueDaysAfterIssue: "5",
   });
+  const [showBulkDialog, setShowBulkDialog] = useState(false);
+  const [bulkDueDays, setBulkDueDays] = useState("5");
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   const exchangeQ = trpc.finance.exchange.current.useQuery({ organizationId: selectedOrgId });
   const rateToday = exchangeQ.data?.vesPerUsd ? Number(exchangeQ.data.vesPerUsd) : 1; // tmp ?? 1;
@@ -62,7 +65,10 @@ export default function FacturasPage() {
   const bulkMut = trpc.comercial.invoices.bulkIssueCanon.useMutation({
     onSuccess: (res) => {
       void invoicesQ.refetch();
-      alert(`✅ Canon masivo emitido: ${res.issued} facturas nuevas, ${res.skipped} ya existían, ${res.errors} errores.`);
+      setShowBulkDialog(false);
+      const emailMsg = res.emailsSent > 0 ? ` · ${res.emailsSent} emails enviados` : "";
+      setBulkResult(`✅ ${res.issued} emitidas, ${res.skipped} ya existían, ${res.errors} errores${emailMsg}.`);
+      setTimeout(() => setBulkResult(null), 6000);
     },
   });
 
@@ -118,13 +124,10 @@ export default function FacturasPage() {
           <h1 className="text-2xl font-semibold">🧾 Facturas / Canon</h1>
           <p className="text-muted-foreground text-sm">{invoices.length} facturas · Pendiente: <span className="font-medium text-orange-600">${fmt(totalPending)}</span> · Cobrado: <span className="font-medium text-green-600">${fmt(totalPaid)}</span></p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {bulkResult && <span className="text-sm text-green-700 font-medium">{bulkResult}</span>}
           <Button variant="outline" disabled={bulkMut.isPending || !mallId}
-            onClick={() => {
-              if (confirm(`¿Emitir canon de ${new Date(periodYear, periodMonth-1).toLocaleDateString("es-VE",{month:"long",year:"numeric"})} a TODOS los locales con canon fijo activos?`)) {
-                void bulkMut.mutateAsync({ organizationId: selectedOrgId, mallId, periodYear, periodMonth, exchangeRate: rateToday, dueDaysAfterIssue: 5 });
-              }
-            }}>
+            onClick={() => setShowBulkDialog(true)}>
             {bulkMut.isPending ? "Emitiendo..." : "⚡ Canon masivo"}
           </Button>
           <Button onClick={() => setShowNew(true)} className="bg-blue-600 hover:bg-blue-700">+ Emitir factura</Button>
@@ -288,6 +291,46 @@ export default function FacturasPage() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Dialog: Canon masivo */}
+      {showBulkDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border bg-card shadow-xl p-6 space-y-4">
+            <h2 className="font-semibold text-lg">⚡ Emitir canon masivo</h2>
+            <p className="text-sm text-muted-foreground">
+              Se emitirá el canon de <strong>{new Date(periodYear, periodMonth-1).toLocaleDateString("es-VE",{month:"long",year:"numeric"})}</strong> a todos los locales con canon fijo activos. Los arrendatarios con email configurado recibirán la factura automáticamente.
+            </p>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Tasa BCV aplicada (Bs/$)</Label>
+                <p className="text-sm font-medium">{rateToday.toFixed(4)}</p>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Días para vencimiento desde hoy</Label>
+                <Input type="number" min={1} max={90} value={bulkDueDays}
+                  onChange={(e) => setBulkDueDays(e.target.value)} />
+                <p className="text-xs text-muted-foreground">Por defecto: 5 días</p>
+              </div>
+            </div>
+            <div className="flex justify-between pt-2">
+              <Button variant="outline" onClick={() => setShowBulkDialog(false)}>Cancelar</Button>
+              <Button
+                disabled={bulkMut.isPending}
+                className="bg-blue-600 hover:bg-blue-700"
+                onClick={() => void bulkMut.mutateAsync({
+                  organizationId: selectedOrgId,
+                  mallId,
+                  periodYear,
+                  periodMonth,
+                  exchangeRate: rateToday,
+                  dueDaysAfterIssue: parseInt(bulkDueDays) || 5,
+                })}>
+                {bulkMut.isPending ? "Emitiendo..." : "✓ Confirmar emisión"}
+              </Button>
+            </div>
           </div>
         </div>
       )}

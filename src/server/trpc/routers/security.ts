@@ -380,4 +380,39 @@ export const securityRouter = router({
         });
       }),
   }),
+
+  // ─── Verificar código QR de visitante ─────────────────────────
+  verifyAccessCode: orgProcedure
+    .input(z.object({
+      organizationId: z.string(),
+      communityId: z.string(),
+      accessCode: z.string(),
+    }))
+    .query(async ({ ctx, input }) => {
+      const visitor = await ctx.db.visitor.findFirst({
+        where: {
+          communityId: input.communityId,
+          accessCode: input.accessCode,
+        },
+        include: {
+          unit: { select: { code: true } },
+        },
+      });
+      if (!visitor) return { found: false, valid: false, visitor: null };
+      const now = new Date();
+      const valid = visitor.status !== "DENIED" &&
+                    now >= new Date(visitor.validFrom) &&
+                    now <= new Date(visitor.validUntil);
+      return { found: true, valid, visitor: {
+        id: visitor.id,
+        firstName: visitor.firstName,
+        lastName: visitor.lastName,
+        purpose: visitor.purpose,
+        unitCode: visitor.unit.code,
+        validFrom: visitor.validFrom.toISOString(),
+        validUntil: visitor.validUntil.toISOString(),
+        status: visitor.status,
+        checkInAt: visitor.checkInAt?.toISOString() ?? null,
+      }};
+    }),
 });

@@ -131,7 +131,7 @@ export default function VentasPage() {
                   <th className="text-left px-4 py-3">Local</th>
                   <th className="text-left px-4 py-3">Canon type</th>
                   <th className="text-right px-4 py-3">Ventas declaradas (USD)</th>
-                  <th className="text-right px-4 py-3 hidden sm:table-cell">% / Canon estimado</th>
+                  <th className="text-right px-4 py-3 hidden sm:table-cell">Canon calculado</th>
                   <th className="text-left px-4 py-3">Estado</th>
                   <th className="px-4 py-3"></th>
                 </tr>
@@ -139,21 +139,59 @@ export default function VentasPage() {
               <tbody className="divide-y">
                 {variableLocales.map((local) => {
                   const decl = periodDeclarations.find((d) => d.localId === local.id);
-                  const estimatedCanon = decl && local.salesPct
-                    ? Number(decl.salesAmountUsd) * (Number(local.salesPct) / 100)
-                    : null;
+                  const salesUsd = decl ? Number(decl.salesAmountUsd) : 0;
+                  const pct = Number(local.salesPct ?? 0);
+                  const canonFijo = Number(local.canonUsd ?? 0);
+                  const isCAV = local.canonType === "VARIABLE_SALES";
+                  const isCAM = local.canonType === "MIXED";
+
+                  // Cálculo frontend: sin llamada al endpoint mutation
+                  let calculatedCanon: number | null = null;
+                  let canonLabel = "";
+                  if (decl) {
+                    if (isCAV) {
+                      calculatedCanon = salesUsd * (pct / 100);
+                      canonLabel = `${pct.toFixed(2)}% ventas`;
+                    } else if (isCAM) {
+                      const variable = salesUsd * (pct / 100);
+                      calculatedCanon = Math.max(canonFijo, variable);
+                      canonLabel = `máx($${fmt(canonFijo)}, var)`;
+                    }
+                  }
+
                   return (
                     <tr key={local.id} className="hover:bg-accent/30">
                       <td className="px-4 py-3 font-medium">{local.code}{local.name ? ` — ${local.name}` : ""}</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">
-                        {local.canonType === "VARIABLE_SALES" ? `${Number(local.salesPct).toFixed(2)}% ventas`
-                          : `$${Number(local.canonUsd).toFixed(2)} + ${Number(local.salesPct).toFixed(2)}%`}
+                      <td className="px-4 py-3 text-xs">
+                        {isCAV ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 text-xs font-medium">
+                            CAV · {pct.toFixed(2)}%
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 text-purple-700 px-2 py-0.5 text-xs font-medium">
+                            CAM · ${fmt(canonFijo)} + {pct.toFixed(2)}%
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {decl ? <span className="font-medium">${fmt(Number(decl.salesAmountUsd))}</span> : <span className="text-muted-foreground text-xs italic">Pendiente</span>}
+                        {decl
+                          ? <span className="font-medium">${fmt(salesUsd)}</span>
+                          : <span className="text-muted-foreground text-xs italic">Pendiente</span>
+                        }
                       </td>
-                      <td className="px-4 py-3 text-right hidden sm:table-cell text-xs">
-                        {estimatedCanon ? <span className="font-medium text-blue-700">${fmt(estimatedCanon)}</span> : "—"}
+                      <td className="px-4 py-3 text-right hidden sm:table-cell">
+                        {calculatedCanon !== null ? (
+                          isCAV ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 text-xs font-semibold">
+                              ${fmt(calculatedCanon)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 text-purple-700 px-2 py-0.5 text-xs font-semibold"
+                              title={canonLabel}>
+                              ${fmt(calculatedCanon)} ({canonLabel})
+                            </span>
+                          )
+                        ) : "—"}
                       </td>
                       <td className="px-4 py-3">
                         {decl ? (

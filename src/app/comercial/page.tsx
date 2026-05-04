@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 
 const fmt = (n: number) =>
   new Intl.NumberFormat("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
@@ -41,6 +43,23 @@ export default function ComercialDashboard() {
     { enabled: !!mainMall },
   );
   const m = metricsQ.data;
+
+  // Métricas avanzadas del mall (Feature 2)
+  const mallMetricsQ = trpc.comercial.malls.metrics.useQuery(
+    { organizationId: selectedOrgId, mallId: mainMall?.id ?? "" },
+    { enabled: !!mainMall },
+  );
+  const mm = mallMetricsQ.data;
+
+  // Contratos por vencer (Feature 1)
+  const expiringQ = trpc.comercial.tenancies.expiring.useQuery(
+    { organizationId: selectedOrgId, mallId: mainMall?.id ?? "", daysAhead: 90 },
+    { enabled: !!mainMall },
+  );
+  const expiring = expiringQ.data ?? [];
+  const exp30 = expiring.filter((t) => t.bucket === "30");
+  const exp60 = expiring.filter((t) => t.bucket === "60");
+  const exp90 = expiring.filter((t) => t.bucket === "90");
 
   const now = new Date();
   const createMallMut = trpc.comercial.malls.create.useMutation({
@@ -191,6 +210,131 @@ export default function ComercialDashboard() {
             </div>
           </section>
         </>
+      )}
+
+      {/* Feature 2: Métricas avanzadas del mall */}
+      {mainMall && mm && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">📈 Métricas del mall</h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {/* Ocupación con barra de progreso */}
+            <Card className="lg:col-span-2">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-xs uppercase tracking-wide">🏪 Ocupación</CardDescription>
+                <CardTitle className="text-2xl font-bold text-blue-600">
+                  {mm.occupiedLocals}/{mm.totalLocals} locales
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 space-y-1">
+                <Progress value={mm.occupancyRate} className="h-2" />
+                <p className="text-xs text-muted-foreground">{mm.occupancyRate}% ocupado · {mm.vacantLocals} vacante{mm.vacantLocals !== 1 ? "s" : ""}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription className="text-xs uppercase tracking-wide">📐 Renta/m²</CardDescription>
+                <CardTitle className="text-2xl font-bold">${mm.rentPerM2}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-xs text-muted-foreground">USD/m² · {mm.totalAreaM2} m² totales</CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription className="text-xs uppercase tracking-wide">💰 Deuda pendiente</CardDescription>
+                <CardTitle className={`text-2xl font-bold ${Number(mm.pendingDebtUsd) > 0 ? "text-red-600" : "text-green-600"}`}>
+                  ${fmt(Number(mm.pendingDebtUsd))}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-xs text-muted-foreground">Total por cobrar</CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription className="text-xs uppercase tracking-wide">📊 Ventas del mes</CardDescription>
+                <CardTitle className="text-2xl font-bold text-green-600">${fmt(Number(mm.monthlySalesUsd))}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-xs text-muted-foreground">
+                Declaraciones {now.toLocaleDateString("es-VE", { month: "long" })}
+              </CardContent>
+            </Card>
+          </div>
+        </section>
+      )}
+
+      {/* Feature 1: Alertas de vencimiento de contratos */}
+      {mainMall && expiring.length > 0 && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">⚠️ Contratos por vencer</h2>
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Contratos próximos a vencer</CardTitle>
+                <div className="flex gap-2">
+                  {exp30.length > 0 && (
+                    <Badge variant="destructive" className="text-xs">
+                      {exp30.length} vencen en 30d
+                    </Badge>
+                  )}
+                  {exp60.length > 0 && (
+                    <Badge className="text-xs bg-yellow-500 hover:bg-yellow-500 text-white">
+                      {exp60.length} en 60d
+                    </Badge>
+                  )}
+                  {exp90.length > 0 && (
+                    <Badge className="text-xs bg-green-600 hover:bg-green-600 text-white">
+                      {exp90.length} en 90d
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-2">
+              {expiring.slice(0, 5).map((t) => (
+                <div key={t.id} className="flex items-center justify-between text-sm py-1 border-b last:border-0">
+                  <div>
+                    <span className="font-medium">{t.localCode}</span>
+                    {t.localName !== t.localCode && <span className="text-muted-foreground"> — {t.localName}</span>}
+                    <span className="ml-2 text-xs text-muted-foreground">{t.tenantName}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(t.endDate).toLocaleDateString("es-VE")}
+                    </span>
+                    <Badge
+                      variant={t.bucket === "30" ? "destructive" : "outline"}
+                      className={`text-xs ${t.bucket === "60" ? "border-yellow-500 text-yellow-700" : t.bucket === "90" ? "border-green-500 text-green-700" : ""}`}
+                    >
+                      {t.daysLeft}d
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+              {expiring.length > 5 && (
+                <p className="text-xs text-muted-foreground pt-1">
+                  y {expiring.length - 5} contratos más...
+                </p>
+              )}
+              <div className="pt-2">
+                <Link href="/comercial/arrendatarios" className="text-xs text-blue-600 hover:underline">
+                  Ver todos los arrendatarios →
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
+      {/* Sin contratos por vencer (y hay mall) — mostrar mensaje positivo */}
+      {mainMall && !expiringQ.isLoading && expiring.length === 0 && (
+        <section>
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">⚠️ Contratos por vencer</h2>
+          <Card>
+            <CardContent className="py-4 text-center text-sm text-muted-foreground">
+              No hay contratos próximos a vencer en los próximos 90 días.
+            </CardContent>
+          </Card>
+        </section>
       )}
 
       {/* Acciones rápidas */}

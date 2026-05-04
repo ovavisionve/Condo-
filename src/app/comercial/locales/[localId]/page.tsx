@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const fmt = (n: number) => new Intl.NumberFormat("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+const MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const CANON_LABEL: Record<string, string> = { FIXED: "Canon fijo", VARIABLE_SALES: "% ventas", MIXED: "Mixto" };
 const LOCAL_TYPE_LABEL: Record<string, string> = {
@@ -32,7 +33,8 @@ const METHOD_LABEL: Record<string, string> = {
 export default function LocalDetailPage({ params }: { params: Promise<{ localId: string }> }) {
   const { localId } = use(params);
   const { selectedOrgId } = useComercial();
-  const [tab, setTab] = useState<"facturas" | "pagos" | "ventas" | "contratos">("facturas");
+  const [tab, setTab] = useState<"facturas" | "pagos" | "ventas" | "contratos" | "estado">("facturas");
+  const [stmtView, setStmtView] = useState<"statement" | "debt-breakdown" | "accounting">("statement");
   const [showTerminate, setShowTerminate] = useState(false);
   const [terminateDate, setTerminateDate] = useState(new Date().toISOString().split("T")[0]!);
 
@@ -65,6 +67,42 @@ export default function LocalDetailPage({ params }: { params: Promise<{ localId:
   }
 
   const activeTenancy = local.tenancies.find((t) => !t.endDate);
+
+  // ── Estado de cuenta: filas contables ──────────────────────────────────────
+  type AccountingRow = { date: Date; label: string; debe: number; haber: number; saldo: number; type: "invoice" | "payment" };
+  const accountingRows: AccountingRow[] = (() => {
+    const rows: Omit<AccountingRow, "saldo">[] = [];
+    for (const inv of local.invoices) {
+      if (inv.status === "VOIDED") continue;
+      rows.push({ date: new Date(inv.issuedAt), label: `Factura ${inv.invoiceNumber} — ${MESES_ES[inv.periodMonth - 1]} ${inv.periodYear}`, debe: Number(inv.totalUsd), haber: 0, type: "invoice" });
+    }
+    for (const p of local.payments) {
+      rows.push({ date: new Date(p.paidAt), label: `Pago — ${METHOD_LABEL[p.method] ?? p.method}${p.reference ? ` · ${p.reference}` : ""}`, debe: 0, haber: Number(p.amountUsd), type: "payment" });
+    }
+    rows.sort((a, b) => a.date.getTime() - b.date.getTime());
+    let saldo = 0;
+    return rows.map((r) => { saldo += r.debe - r.haber; return { ...r, saldo }; });
+  })();
+
+  // ── Deuda por mes ──────────────────────────────────────────────────────────
+  type DebtMonth = { period: string; totalUsd: number; paidUsd: number; pendingUsd: number; dueDate: Date; daysOverdue: number; status: string };
+  const today = new Date();
+  const debtByMonth: DebtMonth[] = local.invoices
+    .filter((i) => ["ISSUED","PARTIAL","OVERDUE"].includes(i.status))
+    .map((i) => {
+      const due = new Date(i.dueDate);
+      const daysOverdue = Math.max(0, Math.floor((today.getTime() - due.getTime()) / 86400000));
+      return {
+        period: `${MESES_ES[i.periodMonth - 1]} ${i.periodYear}`,
+        totalUsd: Number(i.totalUsd),
+        paidUsd: Number(i.paidUsd),
+        pendingUsd: Number(i.totalUsd) - Number(i.paidUsd),
+        dueDate: due,
+        daysOverdue,
+        status: i.status,
+      };
+    })
+    .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
   const pendingDebt = local.invoices
     .filter((i) => ["ISSUED", "PARTIAL", "OVERDUE"].includes(i.status))
     .reduce((s, i) => s + Number(i.totalUsd) - Number(i.paidUsd), 0);
@@ -169,7 +207,7 @@ export default function LocalDetailPage({ params }: { params: Promise<{ localId:
       {/* Tabs */}
       <div className="border-b">
         <div className="flex gap-0">
-          {(["facturas", "pagos", "ventas", "contratos"] as const).map((t) => (
+          {(["facturas", "pagos", "ventas", "contratos", "estado"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                 tab === t ? "border-blue-600 text-blue-700" : "border-transparent text-muted-foreground hover:text-foreground"
@@ -177,7 +215,8 @@ export default function LocalDetailPage({ params }: { params: Promise<{ localId:
               {t === "facturas" ? `🧾 Facturas (${local.invoices.length})` :
                t === "pagos" ? `💰 Pagos (${local.payments.length})` :
                t === "ventas" ? `📊 Ventas (${local.salesDeclarations.length})` :
-               `🤝 Contratos (${local.tenancies.length})`}
+               t === "contratos" ? `🤝 Contratos (${local.tenancies.length})` :
+               "📊 Estado de cuenta"}
             </button>
           ))}
         </div>
@@ -337,6 +376,232 @@ export default function LocalDetailPage({ params }: { params: Promise<{ localId:
                   </CardContent>
                 </Card>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab: Estado de cuenta */}
+      {tab === "estado" && (
+        <div className="space-y-4">
+          {/* KPIs */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Card>
+              <CardContent className="pt-4">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Saldo deudor</p>
+                <p className={`text-2xl font-bold mt-1 ${pendingDebt > 0 ? "text-red-600" : "text-green-600"}`}>
+                  ${fmt(pendingDebt)}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {pendingDebt > 0 ? "Deuda pendiente" : "Al día ✅"}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Equivalente en Bs</p>
+                <p className="text-2xl font-bold mt-1">
+                  {fmt(pendingDebt * rateToday)} Bs
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">Tasa BCV: {fmt(rateToday)}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">Meses con deuda</p>
+                <p className={`text-2xl font-bold mt-1 ${debtByMonth.length > 0 ? "text-orange-600" : "text-green-600"}`}>
+                  {debtByMonth.length}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">facturas pendientes</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Selector de vista */}
+          <div className="flex rounded-lg border p-0.5 bg-muted/30 w-fit gap-0.5">
+            {(["statement","debt-breakdown","accounting"] as const).map((v) => (
+              <button key={v} onClick={() => setStmtView(v)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  stmtView === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}>
+                {v === "statement" ? "📋 Estado clásico" : v === "debt-breakdown" ? "📅 Deuda por mes" : "📒 Libro contable"}
+              </button>
+            ))}
+          </div>
+
+          {/* Vista: Estado clásico */}
+          {stmtView === "statement" && (
+            <div className="space-y-3">
+              {local.invoices.filter(i => i.status !== "VOIDED").length === 0 ? (
+                <p className="text-muted-foreground text-sm py-4">No hay facturas registradas.</p>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-xs text-muted-foreground uppercase tracking-wide">
+                      <tr>
+                        <th className="text-left px-4 py-3">N° Factura</th>
+                        <th className="text-left px-4 py-3">Período</th>
+                        <th className="text-left px-4 py-3">Estado</th>
+                        <th className="text-right px-4 py-3">Total</th>
+                        <th className="text-right px-4 py-3">Abonado</th>
+                        <th className="text-right px-4 py-3">Pendiente</th>
+                        <th className="text-right px-4 py-3 hidden md:table-cell">Vence</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {local.invoices.filter(i => i.status !== "VOIDED").map((inv) => {
+                        const pending = Number(inv.totalUsd) - Number(inv.paidUsd);
+                        const isOverdue = new Date(inv.dueDate) < today && inv.status !== "PAID";
+                        return (
+                          <tr key={inv.id} className={isOverdue ? "bg-red-50/50" : "hover:bg-accent/20"}>
+                            <td className="px-4 py-2.5 font-mono text-xs font-medium">{inv.invoiceNumber}</td>
+                            <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                              {MESES_ES[inv.periodMonth - 1]} {inv.periodYear}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[inv.status] ?? ""}`}>
+                                {STATUS_LABEL[inv.status] ?? inv.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-right">${fmt(Number(inv.totalUsd))}</td>
+                            <td className="px-4 py-2.5 text-right text-green-700">
+                              {Number(inv.paidUsd) > 0 ? `$${fmt(Number(inv.paidUsd))}` : "—"}
+                            </td>
+                            <td className={`px-4 py-2.5 text-right font-semibold ${pending > 0 ? (isOverdue ? "text-red-700" : "text-orange-600") : "text-green-700"}`}>
+                              {pending > 0 ? `$${fmt(pending)}` : "—"}
+                            </td>
+                            <td className={`px-4 py-2.5 text-right text-xs hidden md:table-cell ${isOverdue ? "text-red-700 font-medium" : "text-muted-foreground"}`}>
+                              {new Date(inv.dueDate).toLocaleDateString("es-VE")}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="bg-muted/30 border-t text-xs font-semibold">
+                      <tr>
+                        <td colSpan={3} className="px-4 py-2.5">Total</td>
+                        <td className="px-4 py-2.5 text-right">${fmt(local.invoices.filter(i => i.status !== "VOIDED").reduce((s, i) => s + Number(i.totalUsd), 0))}</td>
+                        <td className="px-4 py-2.5 text-right text-green-700">${fmt(local.invoices.filter(i => i.status !== "VOIDED").reduce((s, i) => s + Number(i.paidUsd), 0))}</td>
+                        <td className={`px-4 py-2.5 text-right ${pendingDebt > 0 ? "text-red-700" : "text-green-700"}`}>${fmt(pendingDebt)}</td>
+                        <td className="hidden md:table-cell" />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Vista: Deuda por mes */}
+          {stmtView === "debt-breakdown" && (
+            <div>
+              {debtByMonth.length === 0 ? (
+                <div className="rounded-xl border border-green-200 bg-green-50 p-6 text-center">
+                  <p className="text-2xl mb-2">✅</p>
+                  <p className="font-semibold text-green-800">Este local no tiene deuda pendiente</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-xs text-muted-foreground uppercase tracking-wide">
+                      <tr>
+                        <th className="text-left px-4 py-3">Período</th>
+                        <th className="text-left px-4 py-3">Estado</th>
+                        <th className="text-right px-4 py-3">Canon</th>
+                        <th className="text-right px-4 py-3">Abonado</th>
+                        <th className="text-right px-4 py-3">Pendiente</th>
+                        <th className="text-right px-4 py-3">Días mora</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {debtByMonth.map((dm, idx) => (
+                        <tr key={idx} className={dm.daysOverdue > 0 ? "bg-red-50/40" : ""}>
+                          <td className="px-4 py-3 font-medium">{dm.period}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[dm.status] ?? ""}`}>
+                              {STATUS_LABEL[dm.status] ?? dm.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">${fmt(dm.totalUsd)}</td>
+                          <td className="px-4 py-3 text-right text-green-700">
+                            {dm.paidUsd > 0 ? `$${fmt(dm.paidUsd)}` : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-right font-semibold text-red-700">${fmt(dm.pendingUsd)}</td>
+                          <td className={`px-4 py-3 text-right font-bold text-sm ${dm.daysOverdue > 30 ? "text-red-700" : dm.daysOverdue > 0 ? "text-orange-600" : "text-muted-foreground"}`}>
+                            {dm.daysOverdue > 0 ? dm.daysOverdue : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-muted/30 border-t text-xs font-semibold">
+                      <tr>
+                        <td colSpan={4} className="px-4 py-2.5">Total pendiente</td>
+                        <td className="px-4 py-2.5 text-right text-red-700">${fmt(debtByMonth.reduce((s, d) => s + d.pendingUsd, 0))}</td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Vista: Libro contable Debe/Haber */}
+          {stmtView === "accounting" && (
+            <div>
+              {accountingRows.length === 0 ? (
+                <p className="text-muted-foreground text-sm py-4">No hay movimientos registrados.</p>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-800 text-white text-xs uppercase tracking-wide">
+                      <tr>
+                        <th className="text-left px-4 py-3">Fecha</th>
+                        <th className="text-left px-4 py-3">Descripción</th>
+                        <th className="text-right px-4 py-3">Debe (cargo)</th>
+                        <th className="text-right px-4 py-3">Haber (abono)</th>
+                        <th className="text-right px-4 py-3">Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {accountingRows.map((row, idx) => (
+                        <tr key={idx} className={row.type === "payment" ? "bg-green-50/40" : "hover:bg-accent/20"}>
+                          <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                            {row.date.toLocaleDateString("es-VE")}
+                          </td>
+                          <td className="px-4 py-2.5 text-xs">{row.label}</td>
+                          <td className="px-4 py-2.5 text-right font-medium text-red-700">
+                            {row.debe > 0 ? `$${fmt(row.debe)}` : ""}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-medium text-green-700">
+                            {row.haber > 0 ? `$${fmt(row.haber)}` : ""}
+                          </td>
+                          <td className={`px-4 py-2.5 text-right font-bold ${row.saldo > 0 ? "text-red-700" : row.saldo < 0 ? "text-green-700" : "text-muted-foreground"}`}>
+                            {row.saldo !== 0 ? `$${fmt(Math.abs(row.saldo))} ${row.saldo > 0 ? "D" : "H"}` : "$0.00"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-slate-100 border-t">
+                      <tr className="font-semibold text-sm">
+                        <td colSpan={2} className="px-4 py-3">Totales</td>
+                        <td className="px-4 py-3 text-right text-red-700">
+                          ${fmt(accountingRows.reduce((s, r) => s + r.debe, 0))}
+                        </td>
+                        <td className="px-4 py-3 text-right text-green-700">
+                          ${fmt(accountingRows.reduce((s, r) => s + r.haber, 0))}
+                        </td>
+                        <td className={`px-4 py-3 text-right font-bold ${pendingDebt > 0 ? "text-red-700" : "text-green-700"}`}>
+                          {accountingRows.length > 0 ? `$${fmt(Math.abs(accountingRows[accountingRows.length - 1]!.saldo))} ${pendingDebt > 0 ? "D" : "H"}` : "—"}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                  <p className="text-xs text-muted-foreground px-4 py-2 bg-muted/20 border-t">
+                    D = Deudor (saldo a favor del CC) · H = Acreedor (saldo a favor del arrendatario)
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

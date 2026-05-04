@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import QRCode from "react-qr-code";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   AreaChart, Area, PieChart, Pie, Cell, Legend,
@@ -412,6 +413,8 @@ const TABS = [
   { key: "aviso",      label: "Aviso de cobro" },
   { key: "notificar",  label: "Notificar pago" },
   { key: "deuda",      label: "Deuda general" },
+  { key: "reservas",   label: "🏊 Reservas" },
+  { key: "seguridad",  label: "🔐 Visitantes" },
 ] as const;
 type TabKey = typeof TABS[number]["key"];
 
@@ -1128,6 +1131,288 @@ function DeudaGeneralTab({ communityId, token, unit }: { communityId: string; to
   );
 }
 
+// ─── RESERVAS TAB ─────────────────────────────────────────────────────────────
+function ReservasTab({ communityId }: { communityId: string }) {
+  const [form, setForm] = useState({
+    area: "",
+    fecha: "",
+    horaInicio: "",
+    horaFin: "",
+    invitados: "",
+    proposito: "",
+  });
+  const [sent, setSent] = useState(false);
+
+  const buildWhatsAppText = () => {
+    const lines = [
+      "📋 *Solicitud de Reserva de Área Común*",
+      "",
+      `🏊 Área: ${form.area}`,
+      `📅 Fecha: ${form.fecha}`,
+      `🕐 Horario: ${form.horaInicio} – ${form.horaFin}`,
+      `👥 Invitados: ${form.invitados || "0"}`,
+      `📝 Propósito: ${form.proposito}`,
+    ];
+    return encodeURIComponent(lines.join("\n"));
+  };
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = buildWhatsAppText();
+    window.open(`https://wa.me/?text=${text}`, "_blank");
+    setSent(true);
+  };
+
+  if (sent) return (
+    <div className="rounded-xl border bg-green-50 border-green-200 px-6 py-10 text-center space-y-3">
+      <p className="text-4xl">✅</p>
+      <p className="text-xl font-semibold text-green-800">¡Solicitud enviada por WhatsApp!</p>
+      <p className="text-sm text-green-700">La Junta de Condominio revisará tu solicitud y te confirmará la reserva.</p>
+      <button onClick={() => setSent(false)} className="mt-4 text-sm underline text-green-800">
+        Hacer otra solicitud
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">Reservas de Áreas Comunes</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-muted-foreground mt-1">
+          Solicita el uso de las instalaciones del condominio.
+        </p>
+      </div>
+
+      {/* Banner informativo */}
+      <div className="rounded-xl border bg-blue-50 border-blue-200 px-5 py-4 text-sm text-blue-800">
+        <p className="font-semibold mb-1">ℹ️ ¿Cómo funciona?</p>
+        <ul className="list-disc pl-5 space-y-1 text-xs">
+          <li>Completa el formulario con los datos de tu solicitud.</li>
+          <li>Al enviar, se abrirá WhatsApp con el mensaje pre-rellenado para la administración.</li>
+          <li>La Junta revisará tu solicitud y te confirmará disponibilidad.</li>
+          <li>Las reservas están sujetas a las normas del condominio y disponibilidad.</li>
+        </ul>
+      </div>
+
+      {/* Formulario */}
+      <div className="rounded-xl border bg-white shadow-sm p-6 max-w-lg">
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <Label>Área que deseas reservar *</Label>
+            <Input
+              required
+              placeholder="Ej: Piscina, Salón social, Cancha deportiva..."
+              value={form.area}
+              onChange={(e) => setForm(f => ({ ...f, area: e.target.value }))}
+            />
+          </div>
+          <div>
+            <Label>Fecha *</Label>
+            <Input
+              type="date"
+              required
+              min={new Date().toISOString().split("T")[0]}
+              value={form.fecha}
+              onChange={(e) => setForm(f => ({ ...f, fecha: e.target.value }))}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Hora inicio *</Label>
+              <Input
+                type="time"
+                required
+                value={form.horaInicio}
+                onChange={(e) => setForm(f => ({ ...f, horaInicio: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Hora fin *</Label>
+              <Input
+                type="time"
+                required
+                value={form.horaFin}
+                onChange={(e) => setForm(f => ({ ...f, horaFin: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div>
+            <Label>Número de invitados</Label>
+            <Input
+              type="number"
+              min={0}
+              placeholder="0"
+              value={form.invitados}
+              onChange={(e) => setForm(f => ({ ...f, invitados: e.target.value }))}
+            />
+          </div>
+          <div>
+            <Label>Propósito / motivo de la reserva *</Label>
+            <textarea
+              required
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              rows={2}
+              placeholder="Ej: Reunión familiar, Cumpleaños, Actividad deportiva..."
+              value={form.proposito}
+              onChange={(e) => setForm(f => ({ ...f, proposito: e.target.value }))}
+            />
+          </div>
+          <Button
+            type="submit"
+            className="w-full bg-[#25D366] hover:bg-[#20b858] text-white py-3 text-base font-semibold"
+          >
+            📲 Enviar solicitud por WhatsApp
+          </Button>
+        </form>
+      </div>
+
+      <p className="text-xs text-muted-foreground text-center">
+        Tu solicitud se enviará como mensaje de WhatsApp a la administración del condominio.
+        No olvides esperar la confirmación antes de utilizar el área.
+      </p>
+    </div>
+  );
+}
+
+// ─── QR MODAL ────────────────────────────────────────────────────────────────
+function QrModal({ accessCode, visitorName, onClose }: { accessCode: string; visitorName: string; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6 space-y-4 text-center">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-[#1e3a5f]">Código QR de acceso</h3>
+          <button onClick={onClose} className="rounded border px-2 py-0.5 text-sm hover:bg-muted">✕</button>
+        </div>
+        <p className="text-sm text-muted-foreground">Visitante: <span className="font-medium text-[#1e3a5f]">{visitorName}</span></p>
+        <div className="flex justify-center p-4 bg-white border rounded-xl">
+          <QRCode value={accessCode} size={200} />
+        </div>
+        <div className="rounded-lg bg-slate-50 border px-4 py-3">
+          <p className="text-xs text-muted-foreground mb-1">Código alfanumérico (para ingreso manual):</p>
+          <p className="font-mono text-sm font-bold text-[#1e3a5f] break-all">{accessCode}</p>
+        </div>
+        <p className="text-sm text-[#1e7a5f] font-medium">📋 Muestra este código al guardia al llegar</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── SEGURIDAD TAB ────────────────────────────────────────────────────────────
+type VisitorPortalItem = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  status: string;
+  validFrom: string | Date;
+  validUntil: string | Date;
+  purpose: string | null;
+  accessCode: string | null;
+  unit: { code: string };
+};
+
+const VISITOR_STATUS_LABEL_PORTAL: Record<string, string> = {
+  PENDING:     "Pendiente",
+  CHECKED_IN:  "Adentro",
+  CHECKED_OUT: "Salió",
+  DENIED:      "Denegado",
+  EXPIRED:     "Vencido",
+};
+const VISITOR_STATUS_COLOR_PORTAL: Record<string, string> = {
+  PENDING:     "bg-amber-100 text-amber-800",
+  CHECKED_IN:  "bg-green-100 text-green-800",
+  CHECKED_OUT: "bg-slate-100 text-slate-700",
+  DENIED:      "bg-red-100 text-red-700",
+  EXPIRED:     "bg-zinc-100 text-zinc-600",
+};
+
+function SeguridadTab({ unit, token }: { unit: UnitData; token?: string }) {
+  const [qrVisitor, setQrVisitor] = useState<{ accessCode: string; name: string } | null>(null);
+
+  const { data: visitors, isLoading } = trpc.portal.myVisitors.useQuery({
+    unitId: unit.unitId,
+    token,
+  });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">Mis Visitantes Pre-autorizados</h2>
+        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+        <p className="text-sm text-muted-foreground mt-1">
+          Visitantes que autorizaste para acceder al condominio. Muéstrale el código QR al guardia al llegar.
+        </p>
+      </div>
+
+      {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando visitantes...</div>}
+
+      {!isLoading && (!visitors || visitors.length === 0) && (
+        <div className="rounded-xl border bg-white px-6 py-10 text-center text-muted-foreground">
+          Sin visitantes pre-autorizados registrados.<br />
+          <span className="text-xs">Contacta a la Junta de Condominio para pre-autorizar un visitante.</span>
+        </div>
+      )}
+
+      {visitors && visitors.length > 0 && (
+        <div className="overflow-auto rounded-lg border bg-white">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[#1e3a5f] text-white text-left">
+                <th className="px-4 py-2 font-semibold">Visitante</th>
+                <th className="px-4 py-2 font-semibold">Válido</th>
+                <th className="px-4 py-2 font-semibold">Motivo</th>
+                <th className="px-4 py-2 font-semibold">Estado</th>
+                <th className="px-4 py-2 font-semibold text-center">QR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(visitors as VisitorPortalItem[]).map((v, i) => (
+                <tr key={v.id} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
+                  <td className="px-4 py-2 font-medium">{v.firstName} {v.lastName}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    {new Date(v.validFrom).toLocaleDateString("es-VE")}
+                    {" → "}
+                    {new Date(v.validUntil).toLocaleDateString("es-VE")}
+                  </td>
+                  <td className="px-4 py-2 text-muted-foreground">{v.purpose ?? "—"}</td>
+                  <td className="px-4 py-2">
+                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${VISITOR_STATUS_COLOR_PORTAL[v.status] ?? "bg-gray-100"}`}>
+                      {VISITOR_STATUS_LABEL_PORTAL[v.status] ?? v.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    {(v.status === "PENDING" || v.status === "CHECKED_IN") && v.accessCode ? (
+                      <button
+                        onClick={() => setQrVisitor({ accessCode: v.accessCode!, name: `${v.firstName} ${v.lastName}` })}
+                        className="rounded border border-[#1e7a5f] text-[#1e7a5f] hover:bg-[#e8f5f0] px-2 py-1 text-xs font-medium transition-colors"
+                      >
+                        📱 Ver QR
+                      </button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {qrVisitor && (
+        <QrModal
+          accessCode={qrVisitor.accessCode}
+          visitorName={qrVisitor.name}
+          onClose={() => setQrVisitor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── DASHBOARD PRINCIPAL ──────────────────────────────────────────────────────
 function ResidentDashboard({ data, token }: { data: PortalData; token?: string }) {
   const [tab, setTab] = useState<TabKey>("principal");
@@ -1184,6 +1469,8 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
         {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
         {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} />}
         {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} unit={unit} />}
+        {tab === "reservas"   && <ReservasTab communityId={unit.communityId} />}
+        {tab === "seguridad"  && <SeguridadTab unit={unit} token={token} />}
       </div>
 
       {/* Footer */}

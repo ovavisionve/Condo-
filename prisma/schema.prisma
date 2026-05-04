@@ -87,6 +87,8 @@ model Organization {
   communityDocuments  CommunityDocument[]
   // Centro Comercial
   ccMalls             CcMall[]
+  commonAreas         CommonArea[]
+  reservations        Reservation[]
 
   @@index([active, deletedAt])
 }
@@ -166,6 +168,8 @@ model Community {
   communityDocuments       CommunityDocument[]
   monthCloses              MonthClose[]
   recurringExpenseTemplates RecurringExpenseTemplate[]
+  commonAreas   CommonArea[]
+  reservations  Reservation[]
 
   @@index([organizationId, active])
 }
@@ -213,6 +217,7 @@ model Unit {
   assemblyVotes     AssemblyVote[]
   individualExpenses       Expense[]              @relation("ExpenseTargetUnit")
   unidentifiedPayments    UnidentifiedPayment[]  @relation("UnidentifiedToUnit")
+  reservations            Reservation[]
 
   @@unique([communityId, code])
   @@index([organizationId])
@@ -296,6 +301,8 @@ model User {
   assembliesCreated     Assembly[]          @relation("AssemblyCreator")
   documentsUploaded     CommunityDocument[] @relation("DocumentUploader")
   monthCloses           MonthClose[]        @relation("MonthCloseUser")
+  reservationsRequested Reservation[]       @relation("ReservationRequester")
+  reservationsApproved  Reservation[]       @relation("ReservationApprover")
 
   @@index([active])
 }
@@ -1809,4 +1816,101 @@ model CcMonthClose {
 
   @@unique([mallId, year, month])
   @@index([mallId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESERVAS DE ÁREAS COMUNES
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ReservationStatus {
+  PENDING    // esperando aprobación
+  APPROVED   // confirmada
+  CANCELLED  // cancelada
+  COMPLETED  // uso completado
+}
+
+/// Área común del edificio (piscina, salón de fiestas, cancha, gimnasio, etc.)
+model CommonArea {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId     String
+  community       Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  name            String               // "Piscina", "Salón de Fiestas", "Cancha"
+  description     String?
+  capacity        Int?                 // personas máximas
+  requiresApproval Boolean @default(true)
+  rules           String?              // reglas de uso (texto libre)
+  openTime        String   @default("08:00")  // hora apertura "HH:mm"
+  closeTime       String   @default("22:00")  // hora cierre
+  slotDurationMin Int      @default(120)      // duración mínima de reserva en minutos
+  maxAdvanceDays  Int      @default(30)       // días de anticipación máxima
+  maxSimultaneous Int      @default(1)        // reservas simultáneas permitidas
+  costUsd         Decimal? @db.Decimal(18,2)  // costo por reserva (null = gratis)
+  active          Boolean  @default(true)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  reservations    Reservation[]
+
+  @@index([communityId, active])
+  @@index([organizationId])
+}
+
+/// Solicitud/reserva de un área común por parte de una unidad.
+model Reservation {
+  id              String   @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId     String
+  community       Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  areaId          String
+  area            CommonArea @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  unitId          String
+  unit            Unit @relation(fields: [unitId], references: [id])
+  requestedById   String?  // userId del residente
+  requestedBy     User?    @relation("ReservationRequester", fields: [requestedById], references: [id])
+
+  date            DateTime @db.Date  // fecha de la reserva
+  startTime       String             // "10:00"
+  endTime         String             // "14:00"
+  guestCount      Int?
+  purpose         String?            // motivo/evento
+  notes           String?
+
+  status          ReservationStatus @default(PENDING)
+  approvedById    String?
+  approvedBy      User?   @relation("ReservationApprover", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  cancelledAt     DateTime?
+  cancelReason    String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([communityId, date])
+  @@index([areaId, date])
+  @@index([unitId])
+  @@index([communityId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TASAS INPC (ÍNDICE NACIONAL DE PRECIOS AL CONSUMIDOR)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Registro histórico del INPC venezolano para indexación de deudas.
+/// Fuente: BCV / INE. Se carga manualmente o via API.
+model InpcRate {
+  id          String   @id @default(cuid())
+  year        Int
+  month       Int      // 1–12
+  indexValue  Decimal  @db.Decimal(18, 6)  // valor del índice ese mes
+  source      String   @default("MANUAL")  // MANUAL | BCV | INE
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([year, month])
+  @@index([year, month])
 }

@@ -356,6 +356,9 @@ export default function FinanceDashboard() {
         </CardContent>
       </Card>
 
+      {/* ── Índice INPC ───────────────────────────────────────────── */}
+      <InpcSection organizationId={organizationId} />
+
       {/* Modal de cierre */}
       {showCloseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
@@ -588,6 +591,291 @@ function PaymentChannelsCard({ organizationId, communityId }: { organizationId: 
         )}
       </CardContent>
     </Card>
+  );
+}
+
+const MONTHS_ES_FINANCE = [
+  "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
+];
+
+function InpcSection({ organizationId }: { organizationId: string }) {
+  const [open, setOpen] = useState(false);
+  const utils = trpc.useUtils();
+
+  // Tabla INPC
+  const list = trpc.finance.inpc.list.useQuery({ organizationId, limit: 36 });
+
+  // Form nuevo registro
+  const now = new Date();
+  const [form, setForm] = useState({
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    indexValue: "",
+    source: "BCV",
+    notes: "",
+  });
+  const [formErr, setFormErr] = useState<string | null>(null);
+  const [formOk, setFormOk] = useState(false);
+  const setMut = trpc.finance.inpc.set.useMutation({
+    onSuccess: () => {
+      setFormOk(true);
+      setForm(f => ({ ...f, indexValue: "", notes: "" }));
+      void utils.finance.inpc.list.invalidate();
+      setTimeout(() => setFormOk(false), 3000);
+    },
+    onError: (e) => setFormErr(e.message),
+  });
+
+  const onSubmitForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormErr(null);
+    setFormOk(false);
+    await setMut.mutateAsync({
+      organizationId,
+      year: form.year,
+      month: form.month,
+      indexValue: parseFloat(form.indexValue),
+      source: form.source || "BCV",
+      notes: form.notes || undefined,
+    });
+  };
+
+  // Calculadora
+  const [calcFrom, setCalcFrom] = useState({ year: now.getFullYear() - 1, month: now.getMonth() + 1 });
+  const [calcTo,   setCalcTo]   = useState({ year: now.getFullYear(),     month: now.getMonth() + 1 });
+  const [runCalc,  setRunCalc]  = useState(false);
+  const calcResult = trpc.finance.inpc.calcFactor.useQuery(
+    {
+      organizationId,
+      fromYear:  calcFrom.year,
+      fromMonth: calcFrom.month,
+      toYear:    calcTo.year,
+      toMonth:   calcTo.month,
+    },
+    { enabled: runCalc },
+  );
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+      className="group rounded-xl border bg-white shadow-sm"
+    >
+      <summary className="flex cursor-pointer items-center justify-between px-5 py-4 select-none list-none">
+        <div>
+          <span className="text-base font-semibold">📈 Índice INPC</span>
+          <span className="ml-2 text-sm text-muted-foreground">Corrección monetaria de deudas vencidas</span>
+        </div>
+        <span className="text-muted-foreground text-sm">{open ? "▲ Ocultar" : "▼ Expandir"}</span>
+      </summary>
+
+      <div className="px-5 pb-6 space-y-6 border-t pt-4">
+
+        {/* Nota explicativa */}
+        <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
+          <p className="font-semibold mb-1">ℹ️ ¿Para qué sirve el INPC?</p>
+          <p>El INPC se usa para corregir monetariamente deudas vencidas según sentencias del TSJ venezolano. Cargue los valores mensuales publicados por el BCV/INE.</p>
+        </div>
+
+        {/* Tabla de tasas */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Tasas INPC cargadas</h3>
+          <div className="overflow-auto rounded-lg border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-left">
+                <tr>
+                  <th className="px-3 py-2">Año</th>
+                  <th className="px-3 py-2">Mes</th>
+                  <th className="px-3 py-2 text-right">Valor del índice</th>
+                  <th className="px-3 py-2">Fuente</th>
+                  <th className="px-3 py-2">Notas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.isLoading ? (
+                  <tr><td colSpan={5} className="px-3 py-4 text-center text-muted-foreground">Cargando...</td></tr>
+                ) : list.data?.length === 0 ? (
+                  <tr><td colSpan={5} className="px-3 py-4 text-center text-muted-foreground">Sin tasas cargadas aún</td></tr>
+                ) : list.data?.map((r, i) => (
+                  <tr key={`${r.year}-${r.month}`} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
+                    <td className="px-3 py-2">{r.year}</td>
+                    <td className="px-3 py-2">{MONTHS_ES_FINANCE[(r.month - 1)] ?? r.month}</td>
+                    <td className="px-3 py-2 text-right font-mono">{Number(r.indexValue).toLocaleString("es-VE", { minimumFractionDigits: 6, maximumFractionDigits: 6 })}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{r.source}</td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">{r.notes ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Formulario agregar tasa */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Agregar / actualizar tasa mensual</h3>
+          <form onSubmit={onSubmitForm} className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end max-w-3xl">
+            <div>
+              <Label className="text-xs">Año</Label>
+              <input
+                type="number"
+                min={2000}
+                max={2035}
+                value={form.year}
+                onChange={(e) => setForm(f => ({ ...f, year: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                required
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Mes</Label>
+              <select
+                value={form.month}
+                onChange={(e) => setForm(f => ({ ...f, month: Number(e.target.value) }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                required
+              >
+                {MONTHS_ES_FINANCE.map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Valor del índice</Label>
+              <input
+                type="number"
+                step="0.000001"
+                min="0.000001"
+                placeholder="Ej: 1234567.890123"
+                value={form.indexValue}
+                onChange={(e) => setForm(f => ({ ...f, indexValue: e.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                required
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Fuente</Label>
+              <input
+                type="text"
+                placeholder="BCV"
+                value={form.source}
+                onChange={(e) => setForm(f => ({ ...f, source: e.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Notas (opcional)</Label>
+              <input
+                type="text"
+                placeholder="Fuente o referencia"
+                value={form.notes}
+                onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </div>
+            <div className="md:col-span-5 flex gap-2 items-center">
+              <Button type="submit" size="sm" disabled={setMut.isPending}>
+                {setMut.isPending ? "Guardando..." : "💾 Guardar tasa"}
+              </Button>
+              {formOk && <span className="text-sm text-green-600 font-medium">✓ Tasa guardada</span>}
+              {formErr && <span className="text-sm text-destructive">{formErr}</span>}
+            </div>
+          </form>
+        </div>
+
+        {/* Calculadora de factor */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Calculadora de factor de indexación</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end max-w-2xl">
+            <div>
+              <Label className="text-xs">Desde — Año</Label>
+              <input
+                type="number"
+                min={2000}
+                max={2035}
+                value={calcFrom.year}
+                onChange={(e) => { setCalcFrom(f => ({ ...f, year: Number(e.target.value) })); setRunCalc(false); }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Desde — Mes</Label>
+              <select
+                value={calcFrom.month}
+                onChange={(e) => { setCalcFrom(f => ({ ...f, month: Number(e.target.value) })); setRunCalc(false); }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {MONTHS_ES_FINANCE.map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Hasta — Año</Label>
+              <input
+                type="number"
+                min={2000}
+                max={2035}
+                value={calcTo.year}
+                onChange={(e) => { setCalcTo(f => ({ ...f, year: Number(e.target.value) })); setRunCalc(false); }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Hasta — Mes</Label>
+              <select
+                value={calcTo.month}
+                onChange={(e) => { setCalcTo(f => ({ ...f, month: Number(e.target.value) })); setRunCalc(false); }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {MONTHS_ES_FINANCE.map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-4">
+              <Button size="sm" onClick={() => setRunCalc(true)} disabled={calcResult.isLoading}>
+                {calcResult.isLoading ? "Calculando..." : "🧮 Calcular factor"}
+              </Button>
+            </div>
+          </div>
+
+          {runCalc && calcResult.data === null && !calcResult.isLoading && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              ⚠️ No se encontraron tasas INPC para uno o ambos períodos seleccionados. Cargue primero los valores mensuales.
+            </div>
+          )}
+          {runCalc && calcResult.data && (
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 max-w-2xl">
+              <div className="rounded-lg border bg-white p-3 text-center">
+                <p className="text-xs text-muted-foreground">Índice inicial</p>
+                <p className="text-base font-bold text-[#1e3a5f]">
+                  {Number(calcResult.data.fromIndex).toLocaleString("es-VE", { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="rounded-lg border bg-white p-3 text-center">
+                <p className="text-xs text-muted-foreground">Índice final</p>
+                <p className="text-base font-bold text-[#1e3a5f]">
+                  {Number(calcResult.data.toIndex).toLocaleString("es-VE", { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="rounded-lg border bg-[#1e7a5f]/10 p-3 text-center">
+                <p className="text-xs text-muted-foreground">Factor multiplicador</p>
+                <p className="text-xl font-bold text-[#1e7a5f]">
+                  {Number(calcResult.data.factor).toFixed(6)}
+                </p>
+              </div>
+              <div className="rounded-lg border bg-amber-50 p-3 text-center">
+                <p className="text-xs text-muted-foreground">% de aumento</p>
+                <p className="text-xl font-bold text-amber-700">
+                  {calcResult.data.percentageIncrease}%
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }
 

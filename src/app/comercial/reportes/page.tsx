@@ -5,6 +5,8 @@ import { trpc } from "@/lib/trpc/client";
 import { useComercial } from "../ComercialContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -21,6 +23,12 @@ export default function ReportesPage() {
 
   const [exportYear, setExportYear] = useState(new Date().getFullYear());
   const [exportMonth, setExportMonth] = useState(new Date().getMonth() + 1);
+  const [closeYear, setCloseYear] = useState(new Date().getFullYear());
+  const [closeMonth, setCloseMonth] = useState(new Date().getMonth() + 1);
+  const [closeNotes, setCloseNotes] = useState("");
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
+  const MESES_CC = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
   const trendQ = trpc.comercial.reports.financialTrend.useQuery(
     { organizationId: selectedOrgId, mallId, months: 12 },
@@ -46,6 +54,17 @@ export default function ReportesPage() {
     { organizationId: selectedOrgId, mallId },
     { enabled: false },
   );
+
+  const monthClosesQ = trpc.comercial.monthClose.list.useQuery(
+    { organizationId: selectedOrgId, mallId },
+    { enabled: !!mallId },
+  );
+  const closeMut = trpc.comercial.monthClose.close.useMutation({
+    onSuccess: () => { void monthClosesQ.refetch(); setShowCloseConfirm(false); setCloseNotes(""); },
+  });
+  const reopenMut = trpc.comercial.monthClose.reopen.useMutation({
+    onSuccess: () => void monthClosesQ.refetch(),
+  });
 
   const s = summaryQ.data;
   const trend = trendQ.data ?? [];
@@ -167,7 +186,7 @@ export default function ReportesPage() {
                   <Legend />
                   <Bar dataKey="paymentsUsd" name="Cobros USD" fill="#22c55e" radius={[3,3,0,0]} />
                   <Bar dataKey="expensesUsd" name="Gastos USD" fill="#f97316" radius={[3,3,0,0]} />
-                  <Bar dataKey="incomesUsd" name="Ingresos extra" fill="#60a5fa" radius={[3,3,0,0]} />
+                  <Bar dataKey="incomesUsd" name="Recaudación extra" fill="#60a5fa" radius={[3,3,0,0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -261,6 +280,123 @@ export default function ReportesPage() {
           </div>
         )}
       </section>
+
+      {/* Cierre de mes */}
+      <section>
+        <h2 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">🗓️ Cierre de mes</h2>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {/* Form de cierre */}
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Cerrar período</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <div className="space-y-1 flex-1">
+                  <Label className="text-xs">Año</Label>
+                  <select value={closeYear} onChange={(e) => setCloseYear(parseInt(e.target.value))}
+                    className="w-full rounded-md border bg-background px-2 py-1 text-sm">
+                    {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1 flex-1">
+                  <Label className="text-xs">Mes</Label>
+                  <select value={closeMonth} onChange={(e) => setCloseMonth(parseInt(e.target.value))}
+                    className="w-full rounded-md border bg-background px-2 py-1 text-sm">
+                    {MESES_CC.map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Notas opcionales</Label>
+                <Input placeholder="Observaciones del cierre..." value={closeNotes} onChange={(e) => setCloseNotes(e.target.value)} />
+              </div>
+              <Button className="w-full" disabled={!mallId || closeMut.isPending}
+                onClick={() => setShowCloseConfirm(true)}>
+                🗓️ Cerrar {MESES_CC[closeMonth - 1]} {closeYear}
+              </Button>
+              {closeMut.isError && (
+                <p className="text-xs text-red-600">{closeMut.error.message}</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Historial de cierres */}
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Historial de cierres</CardTitle></CardHeader>
+            <CardContent>
+              {monthClosesQ.data?.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">No hay cierres registrados.</p>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {monthClosesQ.data?.map((c) => {
+                    const sum = c.summary as { totalInvoicedUsd?: number; totalCollectedUsd?: number; totalExpensesUsd?: number; collectionPct?: number; paidCount?: number; pendingCount?: number };
+                    return (
+                      <div key={c.id} className="border rounded-lg p-3 text-xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <p className="font-semibold text-sm">{MESES_CC[c.month - 1]} {c.year}</p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-muted-foreground">{new Date(c.closedAt).toLocaleDateString("es-VE")}</span>
+                            <Button size="sm" variant="ghost" className="h-6 px-1 text-xs text-red-500 hover:text-red-700"
+                              onClick={() => { if (confirm("¿Reabrir este cierre?")) void reopenMut.mutateAsync({ organizationId: selectedOrgId, closeId: c.id }); }}>
+                              Reabrir
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 pt-1">
+                          <div>
+                            <p className="text-muted-foreground">Facturado</p>
+                            <p className="font-medium">${fmt(sum.totalInvoicedUsd ?? 0)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Cobrado</p>
+                            <p className="font-medium text-green-700">${fmt(sum.totalCollectedUsd ?? 0)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">% cobro</p>
+                            <p className={`font-medium ${(sum.collectionPct ?? 0) >= 80 ? "text-green-700" : "text-orange-600"}`}>
+                              {(sum.collectionPct ?? 0).toFixed(1)}%
+                            </p>
+                          </div>
+                        </div>
+                        {sum.pendingCount !== undefined && sum.pendingCount > 0 && (
+                          <p className="text-orange-600">{sum.pendingCount} factura(s) pendiente(s) al cerrar</p>
+                        )}
+                        {c.notes && <p className="text-muted-foreground italic">{c.notes}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      {/* Dialog confirmación de cierre */}
+      {showCloseConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border bg-card shadow-xl p-6 space-y-4">
+            <h2 className="font-semibold text-lg">⚠️ Confirmar cierre de mes</h2>
+            <p className="text-sm text-muted-foreground">
+              Se registrará el cierre de <strong>{MESES_CC[closeMonth - 1]} {closeYear}</strong> con un snapshot de facturación y cobros.
+              Esta operación no congela los datos, solo registra el estado actual.
+            </p>
+            <div className="flex justify-between pt-2">
+              <Button variant="outline" onClick={() => setShowCloseConfirm(false)}>Cancelar</Button>
+              <Button
+                disabled={closeMut.isPending}
+                onClick={() => void closeMut.mutateAsync({
+                  organizationId: selectedOrgId,
+                  mallId,
+                  year: closeYear,
+                  month: closeMonth,
+                  notes: closeNotes || undefined,
+                })}>
+                {closeMut.isPending ? "Guardando..." : "Confirmar cierre"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Exportaciones */}
       <section>

@@ -6,7 +6,7 @@ import { useComercial } from "../ComercialContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
 export default function ConfiguracionPage() {
   const { selectedOrgId } = useComercial();
@@ -20,6 +20,46 @@ export default function ConfiguracionPage() {
   });
   const [saved, setSaved] = useState(false);
 
+  // ── Tasa BCV ────────────────────────────────────────────────────────────────
+  const exchangeQ = trpc.finance.exchange.current.useQuery({ organizationId: selectedOrgId });
+  const recentQ = trpc.finance.exchange.recent.useQuery({ organizationId: selectedOrgId, limit: 7 });
+  const refreshBcvMut = trpc.finance.exchange.refreshBcv.useMutation();
+  const setManualMut = trpc.finance.exchange.setManual.useMutation();
+  const utils = trpc.useUtils();
+
+  const [manualRate, setManualRate] = useState("");
+  const [bcvMsg, setBcvMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [manualMsg, setManualMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+
+  const onRefreshBcv = async () => {
+    setBcvMsg(null);
+    try {
+      const r = await refreshBcvMut.mutateAsync({ organizationId: selectedOrgId });
+      setBcvMsg({ type: "ok", text: `✓ Tasa actualizada: ${Number(r.vesPerUsd).toFixed(4)} VES/USD` });
+      void utils.finance.exchange.current.invalidate();
+      void utils.finance.exchange.recent.invalidate();
+    } catch (e: unknown) {
+      setBcvMsg({ type: "err", text: e instanceof Error ? e.message : "Error al conectar con el BCV" });
+    }
+  };
+
+  const onSetManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setManualMsg(null);
+    const val = parseFloat(manualRate);
+    if (!val || val <= 0) return;
+    try {
+      await setManualMut.mutateAsync({ organizationId: selectedOrgId, vesPerUsd: val });
+      setManualMsg({ type: "ok", text: `✓ Tasa corregida: ${val.toFixed(4)} VES/USD` });
+      setManualRate("");
+      void utils.finance.exchange.current.invalidate();
+      void utils.finance.exchange.recent.invalidate();
+    } catch (e: unknown) {
+      setManualMsg({ type: "err", text: e instanceof Error ? e.message : "Error al guardar" });
+    }
+  };
+
+  // ── Mall form ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (mall) {
       setForm({
@@ -78,6 +118,8 @@ export default function ConfiguracionPage() {
     );
   }
 
+  const rateData = exchangeQ.data;
+
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
@@ -85,6 +127,104 @@ export default function ConfiguracionPage() {
         <p className="text-muted-foreground text-sm">Datos del centro comercial · {mall.name}</p>
       </div>
 
+      {/* ── Tasa BCV ────────────────────────────────────────── */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">💱 Tasa BCV</h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {/* Card: tasa actual + refresh */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Tasa actual</CardDescription>
+              <CardTitle className="text-2xl">
+                {rateData ? `${Number(rateData.vesPerUsd).toFixed(4)}` : "—"}{" "}
+                <span className="text-base font-normal text-muted-foreground">VES/USD</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {rateData && (
+                <p className="text-xs text-muted-foreground">
+                  {rateData.source} · {new Date(rateData.date).toLocaleDateString("es-VE")}
+                </p>
+              )}
+              <Button size="sm" variant="outline" className="w-full"
+                onClick={() => void onRefreshBcv()}
+                disabled={refreshBcvMut.isPending}>
+                {refreshBcvMut.isPending ? "Consultando BCV..." : "🔄 Actualizar desde BCV"}
+              </Button>
+              {bcvMsg && (
+                <p className={`text-xs font-medium ${bcvMsg.type === "ok" ? "text-green-600" : "text-red-600"}`}>
+                  {bcvMsg.text}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Card: tasa manual */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Corregir tasa del día</CardTitle>
+              <CardDescription>
+                Si el BCV no responde o la tasa automática está incorrecta, ingrésala manualmente.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={(e) => void onSetManual(e)} className="space-y-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">VES por 1 USD</Label>
+                  <Input
+                    type="number" step="0.0001" min="1"
+                    placeholder="ej. 89.50"
+                    value={manualRate}
+                    onChange={(e) => setManualRate(e.target.value)}
+                    required
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={setManualMut.isPending}>
+                  {setManualMut.isPending ? "Guardando..." : "✓ Aplicar tasa"}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Fuente oficial:{" "}
+                  <a href="https://www.bcv.org.ve" target="_blank" rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline">
+                    bcv.org.ve
+                  </a>
+                </p>
+                {manualMsg && (
+                  <p className={`text-xs font-medium ${manualMsg.type === "ok" ? "text-green-600" : "text-red-600"}`}>
+                    {manualMsg.text}
+                  </p>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Historial reciente */}
+        {recentQ.data && recentQ.data.length > 0 && (
+          <div className="mt-2 rounded-lg border overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/50 text-muted-foreground uppercase tracking-wide">
+                <tr>
+                  <th className="text-left px-3 py-2">Fecha</th>
+                  <th className="text-right px-3 py-2">Tasa VES/USD</th>
+                  <th className="text-left px-3 py-2">Fuente</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {recentQ.data.map((r, i) => (
+                  <tr key={i} className={i === 0 ? "bg-blue-50/50 font-medium" : "hover:bg-accent/20"}>
+                    <td className="px-3 py-2">{new Date(r.date).toLocaleDateString("es-VE")}</td>
+                    <td className="px-3 py-2 text-right font-mono">{Number(r.vesPerUsd).toFixed(4)}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{r.source}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Datos del mall ───────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">🏬 Información del mall</CardTitle>
@@ -133,8 +273,15 @@ export default function ConfiguracionPage() {
                 <Input type="number" value={form.floorsCount} onChange={(e) => setForm({ ...form, floorsCount: e.target.value })} placeholder="3" />
               </div>
               <div className="col-span-2 space-y-1">
-                <Label>Notas internas</Label>
-                <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Observaciones administrativas..." />
+                <Label>Instrucciones de pago (aparece en facturas PDF)</Label>
+                <textarea
+                  rows={4}
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  placeholder={`Ej:\nBanco de Venezuela — Cuenta Corriente N° 0102-1234-56-0000000001 — J-12345678-9\nZelle: admin@mall.com\nPago Móvil: 0412-0000000 · J-12345678-9 · BDV`}
+                  className="w-full rounded-md border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <p className="text-xs text-muted-foreground">Este texto se muestra en la sección "¿Cómo pagar?" de cada factura PDF.</p>
               </div>
             </div>
 
@@ -148,7 +295,7 @@ export default function ConfiguracionPage() {
         </CardContent>
       </Card>
 
-      {/* Info de solo lectura */}
+      {/* ── Info de solo lectura ─────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">📋 Información de la cuenta</CardTitle>
