@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { href: "/comercial/ventas", label: "📊 Declaración de Ventas" },
   { href: "/comercial/reportes", label: "📈 Reportes" },
   { href: "/comercial/marketing", label: "🎯 Marketing" },
+  { href: "/comercial/conciliacion", label: "🏦 Conciliación" },
   { href: "/comercial/importar", label: "📥 Importar datos" },
   { href: "/comercial/configuracion", label: "⚙️ Configuración" },
 ];
