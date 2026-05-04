@@ -4,7 +4,7 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { router, orgProcedure } from "@/server/trpc/init";
+import { router, orgProcedure, publicProcedure } from "@/server/trpc/init";
 
 const orgIdInput = z.object({ organizationId: z.string() });
 
@@ -1082,6 +1082,107 @@ export const comercialRouter = router({
         collectedThisMonthUsd: Number(recentPayments._sum.amountUsd ?? 0),
       };
     }),
+
+  // ── Portal del arrendatario (público) ────────────────────────────────────
+  portal: router({
+    /** Genera un enlace firmado para que el arrendatario acceda al portal. Requiere auth admin. */
+    generateLink: orgProcedure
+      .input(orgIdInput.extend({ tenancyId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const tenancy = await ctx.db.ccTenancy.findFirstOrThrow({
+          where: { id: input.tenancyId, organizationId: input.organizationId },
+          include: { local: { select: { mallId: true } } },
+        });
+
+        const { generateCcPortalToken } = await import("@/lib/cc-portal-token");
+
+        const token = generateCcPortalToken({
+          tenancyId: tenancy.id,
+          localId: tenancy.localId,
+          mallId: tenancy.local.mallId,
+          organizationId: input.organizationId,
+        }, 180); // 180 días
+
+        const baseUrl = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+        return { url: `${baseUrl}/portal-cc?token=${token}`, token };
+      }),
+
+    /** Consulta pública — valida el token y devuelve el portal del arrendatario. */
+    getByToken: publicProcedure
+      .input(z.object({ token: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const { verifyCcPortalToken } = await import("@/lib/cc-portal-token");
+
+        let payload;
+        try {
+          payload = verifyCcPortalToken(input.token);
+        } catch {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Enlace inválido o expirado" });
+        }
+
+        const [tenancy, local, mall, invoices, payments] = await Promise.all([
+          ctx.db.ccTenancy.findUniqueOrThrow({ where: { id: payload.tenancyId } }),
+          ctx.db.ccLocal.findUniqueOrThrow({ where: { id: payload.localId } }),
+          ctx.db.ccMall.findUniqueOrThrow({ where: { id: payload.mallId }, select: { name: true, address: true, phone: true, email: true } }),
+          ctx.db.ccInvoice.findMany({
+            where: { localId: payload.localId, status: { not: "DRAFT" } },
+            include: { items: true },
+            orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }],
+            take: 36,
+          }),
+          ctx.db.ccPayment.findMany({
+            where: { localId: payload.localId, voidedAt: null },
+            include: { allocations: { include: { invoice: { select: { invoiceNumber: true } } } } },
+            orderBy: { paidAt: "desc" },
+            take: 36,
+          }),
+        ]);
+
+        const pendingInvoices = invoices.filter((i) => ["ISSUED", "PARTIAL", "OVERDUE"].includes(i.status));
+        const totalPendingUsd = pendingInvoices.reduce((s, i) => s + Number(i.totalUsd) - Number(i.paidUsd), 0);
+
+        return {
+          tenancy: {
+            id: tenancy.id,
+            tenantName: tenancy.tenantName,
+            tenantRif: tenancy.tenantRif,
+            startDate: tenancy.startDate,
+            endDate: tenancy.endDate,
+          },
+          local: {
+            code: local.code,
+            name: local.name,
+            floor: local.floor,
+          },
+          mall,
+          invoices: invoices.map((inv) => ({
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            periodYear: inv.periodYear,
+            periodMonth: inv.periodMonth,
+            type: inv.type,
+            status: inv.status,
+            totalUsd: inv.totalUsd.toString(),
+            paidUsd: inv.paidUsd.toString(),
+            dueDate: inv.dueDate,
+            issuedAt: inv.issuedAt,
+            items: inv.items.map((it) => ({ description: it.description, amountUsd: it.amountUsd.toString() })),
+          })),
+          payments: payments.map((p) => ({
+            id: p.id,
+            paidAt: p.paidAt,
+            amountUsd: p.amountUsd.toString(),
+            method: p.method,
+            reference: p.reference,
+            invoiceNumbers: p.allocations.map((a) => a.invoice?.invoiceNumber ?? "").filter(Boolean),
+          })),
+          summary: {
+            totalPendingUsd,
+            pendingCount: pendingInvoices.length,
+          },
+        };
+      }),
+  }),
 
   // ── Importación masiva ────────────────────────────────────────────────────
   imports: router({

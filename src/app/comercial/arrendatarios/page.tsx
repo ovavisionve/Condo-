@@ -36,12 +36,22 @@ export default function ArrendatariosPage() {
     startDate: new Date().toISOString().split("T")[0]!, depositUsd: "", notes: "",
   });
 
+  const [portalLink, setPortalLink] = useState<{ url: string; tenantName: string } | null>(null);
+
   const createMut = trpc.comercial.tenancies.create.useMutation({
     onSuccess: () => { void localesQ.refetch(); setShowNew(false); setSelectedLocalId(""); },
   });
 
   const terminateMut = trpc.comercial.tenancies.terminate.useMutation({
     onSuccess: () => { void localesQ.refetch(); setTerminatingId(null); },
+  });
+
+  const linkMut = trpc.comercial.portal.generateLink.useMutation({
+    onSuccess: (r, vars) => {
+      const tenant = locales.flatMap((l) => l.tenancies ?? []).find((t) => t.id === vars.tenancyId);
+      setPortalLink({ url: r.url, tenantName: tenant?.tenantName ?? "Arrendatario" });
+    },
+    onError: (e) => alert(`❌ ${e.message}`),
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -129,11 +139,18 @@ export default function ArrendatariosPage() {
                         {t.depositUsd ? `$${fmt(Number(t.depositUsd))}` : "—"}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex gap-1 justify-end">
+                        <div className="flex gap-1 justify-end flex-wrap">
                           <Link href={`/comercial/locales/${local.id}`}
                             className="inline-flex items-center rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent">
                             Ver →
                           </Link>
+                          <button
+                            onClick={() => void linkMut.mutateAsync({ organizationId: selectedOrgId, tenancyId: t.id })}
+                            disabled={linkMut.isPending}
+                            className="inline-flex items-center rounded-md border border-blue-200 text-blue-700 bg-blue-50 px-2.5 py-1 text-xs font-medium hover:bg-blue-100 disabled:opacity-50"
+                            title="Generar enlace del portal para el arrendatario">
+                            🔗 Portal
+                          </button>
                           <button
                             onClick={() => setTerminatingId({ tenancyId: t.id, tenantName: t.tenantName, localCode: local.code })}
                             className="inline-flex items-center rounded-md border border-red-200 text-red-600 bg-red-50 px-2.5 py-1 text-xs font-medium hover:bg-red-100">
@@ -244,6 +261,37 @@ export default function ArrendatariosPage() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal enlace del portal */}
+      {portalLink && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-xl border bg-card shadow-xl p-6 space-y-4">
+            <h2 className="font-semibold text-lg">🔗 Enlace del portal del arrendatario</h2>
+            <p className="text-sm text-muted-foreground">
+              Comparte este enlace con <strong>{portalLink.tenantName}</strong>. El enlace es válido por <strong>180 días</strong> y permite ver facturas y pagos sin necesidad de crear una cuenta.
+            </p>
+            <div className="space-y-2">
+              <div className="rounded-lg bg-muted p-3 font-mono text-xs break-all select-all">
+                {portalLink.url}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1"
+                  onClick={() => void navigator.clipboard.writeText(portalLink.url).then(() => alert("✅ Copiado al portapapeles"))}>
+                  📋 Copiar enlace
+                </Button>
+                <Button variant="outline"
+                  onClick={() => window.open(portalLink.url, "_blank")}>
+                  👁️ Ver portal
+                </Button>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={() => setPortalLink(null)}>Cerrar</Button>
+            </div>
           </div>
         </div>
       )}
