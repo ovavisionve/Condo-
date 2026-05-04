@@ -726,8 +726,28 @@ function HistoryTab({ organizationId, communityId }: { organizationId: string; c
 
 // ─── Pagos Reportados por Residentes ──────────────────────────────────────────
 
+const METHOD_BANCO_MAP: Record<string, string> = {
+  "Zelle":            "ZELLE",
+  "Zelle ":           "ZELLE",
+  "Pago Móvil":       "PAGO_MOVIL",
+  "Pago Movil":       "PAGO_MOVIL",
+  "Transferencia USD":"TRANSFER_USD",
+  "Transferencia Bs": "TRANSFER_BSS",
+  "Efectivo USD":     "CASH_USD",
+  "Efectivo Bs":      "CASH_BSS",
+  "Crypto":           "CRYPTO",
+};
+function guessMethod(banco: string): string {
+  for (const [key, val] of Object.entries(METHOD_BANCO_MAP)) {
+    if (banco.toLowerCase().includes(key.toLowerCase())) return val;
+  }
+  return "TRANSFER_USD";
+}
+
 function PagosReportadosTab({ organizationId, communityId }: { organizationId: string; communityId: string }) {
   const reportsQ = trpc.notifications.listPaymentReports.useQuery({ organizationId, communityId });
+  const recordPayment = trpc.finance.payments.record.useMutation();
+  const utils = trpc.useUtils();
 
   type Report = {
     id: string; unitCode: string; personName: string; banco: string;
@@ -737,7 +757,13 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
     unitId: string; communityId: string; personId: string; communityName: string; createdAt: string;
   };
 
-  const reports = (reportsQ.data ?? []).filter((r): r is Report => r !== null);
+  const reports = (reportsQ.data ?? []) as Report[];
+
+  // Dialog state
+  const [confirmReport, setConfirmReport] = useState<Report | null>(null);
+  const [confirmMethod, setConfirmMethod] = useState("TRANSFER_USD");
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [registered, setRegistered] = useState<Set<string>>(new Set());
 
   return (
     <div className="space-y-4">
@@ -773,14 +799,16 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
                 <th className="px-3 py-2 font-semibold text-right">Monto</th>
                 <th className="px-3 py-2 font-semibold">Fecha pago</th>
                 <th className="px-3 py-2 font-semibold">Notas</th>
+                <th className="px-3 py-2 font-semibold">Acción</th>
               </tr>
             </thead>
             <tbody>
               {reports.map((r, i) => {
                 const isAnticipo = r.tipoPago === "ANTICIPO";
                 const isCuota   = r.tipoPago === "CUOTA_ESPECIFICA";
+                const isRegistered = registered.has(r.id);
                 return (
-                  <tr key={r.id} className={`border-t hover:bg-muted/20 ${i % 2 === 0 ? "" : "bg-slate-50/50"}`}>
+                  <tr key={r.id} className={`border-t hover:bg-muted/20 ${i % 2 === 0 ? "" : "bg-slate-50/50"} ${isRegistered ? "opacity-50" : ""}`}>
                     <td className="px-3 py-2 text-muted-foreground text-xs">
                       {new Date(r.notifiedAt).toLocaleString("es-VE", { dateStyle: "short", timeStyle: "short" })}
                     </td>
@@ -808,6 +836,22 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
                     <td className="px-3 py-2 text-xs text-muted-foreground max-w-[160px] truncate" title={r.notas ?? ""}>
                       {r.notas ?? "—"}
                     </td>
+                    <td className="px-3 py-2">
+                      {isRegistered ? (
+                        <span className="text-xs text-green-700 font-medium">✓ Registrado</span>
+                      ) : (
+                        <button
+                          className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 whitespace-nowrap"
+                          onClick={() => {
+                            setConfirmReport(r);
+                            setConfirmMethod(guessMethod(r.banco));
+                            setConfirmError(null);
+                          }}
+                        >
+                          ✅ Registrar pago
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -815,10 +859,80 @@ function PagosReportadosTab({ organizationId, communityId }: { organizationId: s
           </table>
           <p className="px-4 py-2 text-xs text-muted-foreground border-t bg-muted/20">
             Total: {reports.length} pago{reports.length !== 1 ? "s" : ""} reportado{reports.length !== 1 ? "s" : ""}.
-            {" "}Para registrar: ve a <strong>Finanzas → Pagos → Registrar pago</strong>.
-            {" "}Los <strong>💰 Anticipos</strong> se registran sin asignar a factura — el saldo queda como crédito y se descuenta de la deuda del residente automáticamente.
-            {" "}Los <strong>📄 Cuota específica</strong> se asignan a la factura indicada.
+            {" "}Haz clic en <strong>✅ Registrar pago</strong> para confirmar y registrar en el sistema.
+            {" "}Los <strong>💰 Anticipos</strong> quedan como crédito disponible para el residente.
           </p>
+        </div>
+      )}
+
+      {/* Diálogo de confirmación de registro */}
+      {confirmReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl space-y-4">
+            <h3 className="text-lg font-semibold">✅ Confirmar registro de pago</h3>
+            <div className="rounded-lg border bg-slate-50 p-3 text-sm space-y-1">
+              <div><span className="font-medium">Unidad:</span> {confirmReport.unitCode} — {confirmReport.personName}</div>
+              <div><span className="font-medium">Monto:</span> {confirmReport.moneda === "USD" ? "$" : "Bs. "}{confirmReport.monto.toFixed(2)} {confirmReport.moneda}</div>
+              <div><span className="font-medium">Referencia:</span> {confirmReport.referencia}</div>
+              <div><span className="font-medium">Banco:</span> {confirmReport.banco}</div>
+              <div><span className="font-medium">Fecha pago:</span> {new Date(confirmReport.fechaPago).toLocaleDateString("es-VE")}</div>
+              {confirmReport.tipoPago === "ANTICIPO" && (
+                <p className="mt-2 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
+                  💰 Se registrará como <strong>anticipo</strong> — quedará como crédito disponible para el residente, sin asignar a ninguna factura.
+                </p>
+              )}
+            </div>
+            <div>
+              <Label className="text-xs">Método de pago</Label>
+              <select
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={confirmMethod}
+                onChange={(e) => setConfirmMethod(e.target.value)}
+              >
+                <option value="TRANSFER_USD">Transferencia USD</option>
+                <option value="TRANSFER_BSS">Transferencia Bs</option>
+                <option value="ZELLE">Zelle</option>
+                <option value="PAGO_MOVIL">Pago Móvil</option>
+                <option value="CASH_USD">Efectivo USD</option>
+                <option value="CASH_BSS">Efectivo Bs</option>
+                <option value="CRYPTO">Crypto</option>
+                <option value="CHECK">Cheque</option>
+                <option value="OTHER">Otro</option>
+              </select>
+            </div>
+            {confirmError && <p className="text-sm text-destructive">{confirmError}</p>}
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setConfirmReport(null)}>Cancelar</Button>
+              <Button
+                disabled={recordPayment.isPending}
+                className="bg-green-600 hover:bg-green-700"
+                onClick={async () => {
+                  setConfirmError(null);
+                  try {
+                    await recordPayment.mutateAsync({
+                      organizationId,
+                      communityId,
+                      unitId: confirmReport.unitId,
+                      amount: confirmReport.monto,
+                      currencyPrimary: confirmReport.moneda as "USD" | "VES",
+                      method: confirmMethod as "TRANSFER_USD" | "TRANSFER_BSS" | "ZELLE" | "PAGO_MOVIL" | "CASH_USD" | "CASH_BSS" | "CRYPTO" | "CHECK" | "OTHER",
+                      reference: confirmReport.referencia,
+                      paidAt: new Date(confirmReport.fechaPago),
+                      notes: `Pago notificado por residente${confirmReport.notas ? ` — ${confirmReport.notas}` : ""}`,
+                      allocations: [],
+                    });
+                    setRegistered((prev) => new Set([...prev, confirmReport.id]));
+                    setConfirmReport(null);
+                    void utils.finance.payments.list.invalidate();
+                  } catch (err) {
+                    setConfirmError(err instanceof Error ? err.message : "Error al registrar el pago");
+                  }
+                }}
+              >
+                {recordPayment.isPending ? "Registrando..." : "Confirmar y registrar"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

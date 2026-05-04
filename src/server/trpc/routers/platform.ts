@@ -13,7 +13,10 @@ export const platformRouter = router({
   // ─── Plans ─────────────────────────────────────────────────────────
   plans: router({
     list: platformProcedure.query(({ ctx }) =>
-      ctx.db.plan.findMany({ orderBy: { priceUsd: "asc" } }),
+      ctx.db.plan.findMany({
+        orderBy: { priceUsd: "asc" },
+        include: { _count: { select: { subscriptions: true } } },
+      }),
     ),
     create: platformProcedure
       .input(
@@ -46,26 +49,92 @@ export const platformRouter = router({
       ),
   }),
 
+  // ─── Métricas de plataforma ────────────────────────────────────────
+  metrics: platformProcedure.query(async ({ ctx }) => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+    const [
+      activeCount,
+      trialCount,
+      pastDueCount,
+      suspendedCount,
+      canceledCount,
+      newThisMonth,
+      expiringSoon,
+      activeSubs,
+      totalUnitsResult,
+    ] = await Promise.all([
+      ctx.db.subscription.count({ where: { status: "ACTIVE" } }),
+      ctx.db.subscription.count({ where: { status: "TRIAL" } }),
+      ctx.db.subscription.count({ where: { status: "PAST_DUE" } }),
+      ctx.db.subscription.count({ where: { status: "SUSPENDED" } }),
+      ctx.db.subscription.count({ where: { status: "CANCELLED" } }),
+      ctx.db.organization.count({ where: { createdAt: { gte: startOfMonth }, deletedAt: null } }),
+      ctx.db.subscription.count({
+        where: {
+          status: "TRIAL",
+          trialEndsAt: { gte: now, lte: in14Days },
+        },
+      }),
+      ctx.db.subscription.findMany({
+        where: { status: { in: ["ACTIVE", "TRIAL"] } },
+        include: { plan: { select: { priceUsd: true } } },
+      }),
+      ctx.db.unit.aggregate({ _count: { _all: true }, where: { deletedAt: null } }),
+    ]);
+
+    const mrr = activeSubs.reduce(
+      (sum, s) => sum + Number(s.plan.priceUsd),
+      0,
+    );
+
+    return {
+      byStatus: { active: activeCount, trial: trialCount, pastDue: pastDueCount, suspended: suspendedCount, canceled: canceledCount },
+      newThisMonth,
+      expiringSoon,
+      mrr,
+      arr: mrr * 12,
+      totalUnits: totalUnitsResult._count._all,
+      totalOrgs: activeCount + trialCount + pastDueCount + suspendedCount,
+    };
+  }),
+
   // ─── Organizations ─────────────────────────────────────────────────
   organizations: router({
     list: platformProcedure
       .input(
         z
-          .object({ search: z.string().optional(), includeInactive: z.boolean().default(false) })
+          .object({
+            search: z.string().optional(),
+            status: z.enum(["ALL", "ACTIVE", "TRIAL", "PAST_DUE", "SUSPENDED", "CANCELLED"]).default("ALL"),
+            planId: z.string().optional(),
+            includeInactive: z.boolean().default(false),
+          })
           .default({}),
       )
       .query(({ ctx, input }) =>
         ctx.db.organization.findMany({
           where: {
             deletedAt: null,
-            ...(input.includeInactive ? {} : { active: true }),
+            ...(input.includeInactive ? {} : {}),
             ...(input.search
               ? {
                   OR: [
                     { name: { contains: input.search, mode: "insensitive" } },
                     { slug: { contains: input.search, mode: "insensitive" } },
                     { rif: { contains: input.search, mode: "insensitive" } },
+                    { email: { contains: input.search, mode: "insensitive" } },
                   ],
+                }
+              : {}),
+            ...((input.status !== "ALL" || input.planId)
+              ? {
+                  subscription: {
+                    ...(input.status !== "ALL" ? { status: input.status as "ACTIVE" | "TRIAL" | "PAST_DUE" | "SUSPENDED" | "CANCELLED" } : {}),
+                    ...(input.planId ? { planId: input.planId } : {}),
+                  },
                 }
               : {}),
           },
@@ -76,14 +145,55 @@ export const platformRouter = router({
           orderBy: { createdAt: "desc" },
         }),
       ),
+
     byId: platformProcedure
       .input(z.object({ id: z.string() }))
-      .query(({ ctx, input }) =>
-        ctx.db.organization.findUniqueOrThrow({
+      .query(async ({ ctx, input }) => {
+        const org = await ctx.db.organization.findUniqueOrThrow({
           where: { id: input.id },
-          include: { subscription: { include: { plan: true } }, communities: true },
-        }),
-      ),
+          include: {
+            subscription: { include: { plan: true } },
+            communities: {
+              where: { deletedAt: null },
+              include: { _count: { select: { units: true } } },
+              orderBy: { name: "asc" },
+            },
+          },
+        });
+
+        // Estadísticas financieras globales de la org
+        const [unitsCount, invoicedAgg, paidAgg, membersCount] = await Promise.all([
+          ctx.db.unit.count({ where: { organizationId: input.id, deletedAt: null } }),
+          ctx.db.invoice.aggregate({
+            where: { organizationId: input.id, status: { not: "VOIDED" } },
+            _sum: { totalUsd: true },
+          }),
+          ctx.db.payment.aggregate({
+            where: { organizationId: input.id, voidedAt: null },
+            _sum: { amountUsd: true },
+          }),
+          ctx.db.membership.count({
+            where: { organizationId: input.id, active: true, revokedAt: null },
+          }),
+        ]);
+
+        const communities = org.communities.map((c) => ({
+          ...c,
+          totalUnits: c._count.units,
+        }));
+
+        return {
+          ...org,
+          communities,
+          stats: {
+            unitsCount,
+            totalInvoicedUsd: Number(invoicedAgg._sum.totalUsd ?? 0),
+            totalPaidUsd: Number(paidAgg._sum.amountUsd ?? 0),
+            membersCount,
+          },
+        };
+      }),
+
     create: platformProcedure
       .input(
         z.object({
@@ -95,10 +205,9 @@ export const platformRouter = router({
           phone: z.string().optional(),
           address: z.string().optional(),
           city: z.string().optional(),
-          // Suscripción inicial
+          type: z.enum(["RESIDENTIAL", "COMMERCIAL"]).default("RESIDENTIAL"),
           planId: z.string(),
           trialDays: z.number().int().min(0).default(30),
-          // Admin inicial de la organización
           adminEmail: z.string().email(),
           adminName: z.string().min(2),
           adminPassword: z.string().min(8),
@@ -128,6 +237,7 @@ export const platformRouter = router({
               phone: input.phone,
               address: input.address,
               city: input.city,
+              type: input.type,
             },
           });
           await tx.subscription.create({
@@ -169,6 +279,7 @@ export const platformRouter = router({
           return org;
         });
       }),
+
     update: platformProcedure
       .input(
         z.object({
@@ -199,6 +310,7 @@ export const platformRouter = router({
         });
         return after;
       }),
+
     softDelete: platformProcedure
       .input(z.object({ id: z.string() }))
       .mutation(({ ctx, input }) =>
@@ -207,6 +319,62 @@ export const platformRouter = router({
           data: { active: false, deletedAt: new Date() },
         }),
       ),
+
+    /** Gestión de suscripción: cambiar plan, cambiar estado, extender trial */
+    updateSubscription: platformProcedure
+      .input(
+        z.object({
+          organizationId: z.string(),
+          planId: z.string().optional(),
+          status: z.enum(["ACTIVE", "TRIAL", "PAST_DUE", "SUSPENDED", "CANCELLED"]).optional(),
+          extendTrialDays: z.number().int().min(1).max(365).optional(),
+          notes: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const sub = await ctx.db.subscription.findFirstOrThrow({
+          where: { organizationId: input.organizationId },
+        });
+
+        const updates: Record<string, unknown> = {};
+        if (input.planId) updates.planId = input.planId;
+        if (input.status) updates.status = input.status;
+        if (input.notes !== undefined) updates.notes = input.notes;
+        if (input.extendTrialDays) {
+          const base = sub.trialEndsAt && sub.trialEndsAt > new Date()
+            ? sub.trialEndsAt
+            : new Date();
+          const newEnd = new Date(base.getTime() + input.extendTrialDays * 24 * 60 * 60 * 1000);
+          updates.trialEndsAt = newEnd;
+          updates.currentPeriodEnd = newEnd;
+          updates.status = "TRIAL";
+        }
+        if (input.status === "ACTIVE") {
+          const periodEnd = new Date();
+          periodEnd.setMonth(periodEnd.getMonth() + 1);
+          updates.currentPeriodStart = new Date();
+          updates.currentPeriodEnd = periodEnd;
+        }
+
+        const updated = await ctx.db.subscription.update({
+          where: { id: sub.id },
+          data: updates,
+          include: { plan: true },
+        });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Subscription",
+            entityId: sub.id,
+            after: updates as object,
+          },
+        });
+
+        return updated;
+      }),
 
     // ─── Admins de la organización ──────────────────────────────
     listAdmins: platformProcedure
@@ -234,7 +402,6 @@ export const platformRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const email = input.email.toLowerCase();
-        // Si ya existe el usuario, solo crea la membresía
         let user = await ctx.db.user.findUnique({ where: { email } });
         if (!user) {
           const hash = await bcrypt.hash(input.password, 12);
@@ -242,7 +409,6 @@ export const platformRouter = router({
             data: { email, name: input.name, passwordHash: hash, emailVerified: new Date(), active: true },
           });
         }
-        // Verificar que no tenga ya membresía activa en esta org
         const existing = await ctx.db.membership.findFirst({
           where: { userId: user.id, organizationId: input.organizationId, active: true, revokedAt: null },
         });
@@ -293,5 +459,17 @@ export const platformRouter = router({
         });
         return { ok: true };
       }),
+
+    /** Últimas acciones de auditoría de la organización */
+    auditLog: platformProcedure
+      .input(z.object({ organizationId: z.string(), take: z.number().default(20) }))
+      .query(({ ctx, input }) =>
+        ctx.db.auditLog.findMany({
+          where: { organizationId: input.organizationId },
+          orderBy: { createdAt: "desc" },
+          take: input.take,
+          include: { actor: { select: { name: true, email: true } } },
+        }),
+      ),
   }),
 });

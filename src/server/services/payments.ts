@@ -40,16 +40,18 @@ export async function recordPayment(input: RecordPaymentInput) {
     rate.vesPerUsd,
   );
 
-  // Validar que las allocations sumen el monto total (en moneda primaria, antes de redondeo).
+  // Validar que las allocations no excedan el monto total.
+  // Si sum < total → el sobrante queda como anticipo (crédito para la unidad). OK.
+  // Si sum > total → error, no se puede asignar más de lo recibido.
   if (input.allocations && input.allocations.length > 0) {
     const sumAlloc = input.allocations.reduce(
       (acc, a) => acc.plus(a.amount),
       new Decimal(0),
     );
-    if (!sumAlloc.eq(input.amount)) {
+    if (sumAlloc.gt(new Decimal(input.amount))) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `Asignaciones (${sumAlloc.toString()}) no cuadran con monto total (${new Decimal(input.amount).toString()})`,
+        message: `Las asignaciones (${sumAlloc.toFixed(2)}) superan el monto recibido (${new Decimal(input.amount).toFixed(2)}). Reduce los montos asignados.`,
       });
     }
   }

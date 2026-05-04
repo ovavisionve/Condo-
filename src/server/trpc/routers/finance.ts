@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { router, orgProcedure } from "@/server/trpc/init";
 import { Decimal } from "decimal.js";
 import {
@@ -216,6 +217,134 @@ export const financeRouter = router({
       .mutation(async ({ ctx, input }) =>
         registerExpense({ ...input, createdById: ctx.user.id }),
       ),
+
+    /** Emite un cargo directo (EXTRA_FEE) para un gasto individual ya registrado
+     *  pero cuyo período tiene facturas emitidas (no se puede re-emitir el mes). */
+    issueDirectCharge: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          expenseId: z.string(),
+          dueDate: z.coerce.date().transform((d) =>
+            new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0)),
+          ),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, expenseId, dueDate } = input;
+
+        // 1. Validar el gasto
+        const expense = await ctx.db.expense.findFirstOrThrow({
+          where: { id: expenseId, organizationId, communityId },
+        });
+        if (!expense.isIndividual || !expense.targetUnitId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "El gasto no es individual" });
+        }
+        if (expense.invoicedAt) {
+          throw new TRPCError({ code: "CONFLICT", message: "El gasto ya está facturado" });
+        }
+        if (expense.voidedAt) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "El gasto está anulado" });
+        }
+
+        // 2. Datos de la unidad y comunidad
+        const [unit, community] = await Promise.all([
+          ctx.db.unit.findFirstOrThrow({
+            where: { id: expense.targetUnitId, communityId, organizationId, deletedAt: null },
+          }),
+          ctx.db.community.findFirstOrThrow({
+            where: { id: communityId, organizationId, deletedAt: null },
+            select: { primaryCurrency: true },
+          }),
+        ]);
+
+        // 3. Tasa actual
+        const rate = await (await import("@/server/services/exchange")).getCurrentRate("BCV");
+        const usd = new Decimal(expense.amountUsd.toString());
+        const bss = new Decimal(expense.amountBss.toString());
+
+        const now = new Date();
+        const invoiceNumber = `IND-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${unit.code}-${Date.now().toString(36).toUpperCase()}`;
+
+        const label = expense.customCategory?.trim()
+          ? expense.customCategory.trim()
+          : (expense.description ?? "Cargo individual");
+
+        // 4. Crear la factura EXTRA_FEE y marcar el gasto como facturado
+        const inv = await ctx.db.$transaction(async (tx) => {
+          const created = await tx.invoice.create({
+            data: {
+              organizationId,
+              communityId,
+              unitId: unit.id,
+              invoiceNumber,
+              type: "EXTRA_FEE",
+              periodYear: expense.periodYear,
+              periodMonth: expense.periodMonth,
+              issuedAt: now,
+              dueDate,
+              totalBss: bss.toFixed(2),
+              totalUsd: usd.toFixed(2),
+              exchangeRate: rate.vesPerUsd.toFixed(8),
+              exchangeSource: rate.source,
+              currencyPrimary: community.primaryCurrency,
+              status: "ISSUED",
+              items: {
+                create: [{
+                  expenseId: expense.id,
+                  description: label,
+                  amountBss: bss.toFixed(2),
+                  amountUsd: usd.toFixed(2),
+                  aliquot: "100.000000",
+                }],
+              },
+            },
+          });
+          // Marcar el gasto como facturado
+          await tx.expense.update({
+            where: { id: expenseId },
+            data: { invoicedAt: now },
+          });
+          await tx.auditLog.create({
+            data: {
+              organizationId,
+              actorId: ctx.user.id,
+              action: "EXTRA_FEE_APPLIED",
+              entityType: "Invoice",
+              entityId: created.id,
+              after: { expenseId, unitId: unit.id, label, amountUsd: usd.toFixed(2) },
+            },
+          });
+          return created;
+        });
+
+        // 5. Notificar al propietario (fire-and-forget)
+        void (async () => {
+          try {
+            const { notifyPerson } = await import("@/server/services/notifications");
+            const ownership = await ctx.db.ownership.findFirst({
+              where: { unitId: unit.id, endDate: null },
+              select: { personId: true },
+            });
+            if (!ownership) return;
+            await notifyPerson({
+              organizationId,
+              communityId,
+              unitId: unit.id,
+              personId: ownership.personId,
+              event: "INVOICE_ISSUED",
+              vars: {
+                invoiceNumber: inv.invoiceNumber,
+                totalUsd: usd.toFixed(2),
+                totalBss: bss.toFixed(2),
+                dueDate: dueDate.toLocaleDateString("es-VE"),
+              },
+            });
+          } catch { /* notif opcional */ }
+        })();
+
+        return inv;
+      }),
   }),
 
   // ─── Facturas ──────────────────────────────────────────────────
@@ -959,6 +1088,101 @@ export const financeRouter = router({
 
         return payment;
       }),
+
+    /**
+     * Aprueba un pago reportado por un residente desde el portal.
+     * Auto-asigna el monto a las facturas ISSUED/PARTIAL de la unidad
+     * ordenadas por fecha de vencimiento (las más antiguas primero).
+     * Si sobra monto tras cubrir todas las facturas, queda como anticipo.
+     */
+    approve: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          unitId: z.string(),
+          notificationId: z.string(), // ID de la Notification a marcar como verificada
+          amount: z.coerce.number().positive(),
+          currencyPrimary: z.enum(["USD", "VES"]),
+          method: z.string(),
+          reference: z.string().optional(),
+          paidAt: z.coerce.date(),
+          notes: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        // Buscar facturas pendientes de la unidad en orden de vencimiento (más antigua primero)
+        const pendingInvoices = await ctx.db.invoice.findMany({
+          where: {
+            organizationId: input.organizationId,
+            unitId: input.unitId,
+            status: { in: ["ISSUED", "PARTIAL"] },
+          },
+          orderBy: { dueDate: "asc" },
+          select: {
+            id: true,
+            totalUsd: true,
+            totalBss: true,
+            paidUsd: true,
+            paidBss: true,
+            currencyPrimary: true,
+          },
+        });
+
+        // Construir allocations automáticas
+        const { Decimal } = await import("decimal.js");
+        let remaining = new Decimal(input.amount);
+        const allocations: { invoiceId: string; amount: Decimal.Value }[] = [];
+
+        for (const inv of pendingInvoices) {
+          if (remaining.lte(0)) break;
+
+          // Calcular saldo pendiente de esta factura en moneda primaria del pago
+          const isPrimaryUsd = input.currencyPrimary === "USD";
+          const total = isPrimaryUsd
+            ? new Decimal(inv.totalUsd.toString())
+            : new Decimal(inv.totalBss.toString());
+          const paid = isPrimaryUsd
+            ? new Decimal(inv.paidUsd.toString())
+            : new Decimal(inv.paidBss.toString());
+          const balance = total.minus(paid);
+
+          if (balance.lte(0)) continue;
+
+          const toApply = Decimal.min(remaining, balance);
+          allocations.push({ invoiceId: inv.id, amount: toApply.toFixed(2) });
+          remaining = remaining.minus(toApply);
+        }
+
+        const payment = await recordPayment({
+          organizationId: input.organizationId,
+          communityId: input.communityId,
+          unitId: input.unitId,
+          amount: input.amount,
+          currencyPrimary: input.currencyPrimary as "USD" | "VES",
+          method: input.method as Parameters<typeof recordPayment>[0]["method"],
+          reference: input.reference,
+          paidAt: input.paidAt,
+          notes: input.notes,
+          allocations,
+          createdById: ctx.user.id,
+        });
+
+        // Marcar la notificación como verificada cambiando el prefijo
+        // para que no vuelva a aparecer en listPaymentReports
+        const notif = await ctx.db.notification.findFirst({
+          where: { id: input.notificationId, organizationId: input.organizationId },
+          select: { id: true, body: true },
+        });
+        if (notif?.body.startsWith("PAGO_POR_VERIFICAR:")) {
+          await ctx.db.notification.update({
+            where: { id: notif.id },
+            data: { body: notif.body.replace("PAGO_POR_VERIFICAR:", "PAGO_VERIFICADO:") },
+          });
+        }
+
+        return payment;
+      }),
+
     voidOne: orgProcedure
       .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3) }))
       .mutation(async ({ ctx, input }) =>

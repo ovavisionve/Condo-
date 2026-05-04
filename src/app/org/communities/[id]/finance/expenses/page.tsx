@@ -67,6 +67,15 @@ export default function ExpensesPage() {
 
   const utils = trpc.useUtils();
   const create = trpc.finance.expenses.create.useMutation();
+  const issueDirectCharge = trpc.finance.expenses.issueDirectCharge.useMutation();
+
+  // Dialog "Emitir cargo directo"
+  const [directChargeExpense, setDirectChargeExpense] = useState<{
+    id: string; description: string; customCategory?: string | null; amountUsd: string;
+  } | null>(null);
+  const [directChargeDue, setDirectChargeDue] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() + 5); return d.toISOString().slice(0, 10);
+  });
 
   // Templates
   const templates = trpc.finance.recurringTemplates.list.useQuery({ organizationId, communityId });
@@ -197,6 +206,7 @@ export default function ExpensesPage() {
                   <th className="px-3 py-2 text-right">USD</th>
                   <th className="px-3 py-2 text-right">Bs</th>
                   <th className="px-3 py-2">Estado</th>
+                  <th className="px-3 py-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -230,12 +240,27 @@ export default function ExpensesPage() {
                           : <span className="text-amber-700">Pendiente</span>
                         }
                       </td>
+                      <td className="px-3 py-2">
+                        {exp.isIndividual && exp.targetUnit && !e.invoicedAt && !e.voidedAt && (
+                          <button
+                            className="rounded bg-purple-600 px-2 py-1 text-xs font-medium text-white hover:bg-purple-700 whitespace-nowrap"
+                            onClick={() => setDirectChargeExpense({
+                              id: e.id,
+                              description: e.description,
+                              customCategory: exp.customCategory,
+                              amountUsd: e.amountUsd.toString(),
+                            })}
+                          >
+                            ⚡ Emitir cargo
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {list.data?.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
+                    <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
                       Sin gastos con los filtros seleccionados
                     </td>
                   </tr>
@@ -246,7 +271,7 @@ export default function ExpensesPage() {
                   <tr>
                     <td colSpan={4} className="px-3 py-2 text-sm font-medium text-right">Total</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold">${totalUsd.toFixed(2)}</td>
-                    <td colSpan={2} />
+                    <td colSpan={3} />
                   </tr>
                 </tfoot>
               )}
@@ -282,6 +307,56 @@ export default function ExpensesPage() {
           create={create}
           units={units.data ?? []}
         />
+      )}
+
+      {/* Dialog: Emitir cargo directo para gasto individual */}
+      {directChargeExpense && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl space-y-4">
+            <h3 className="text-lg font-semibold">⚡ Emitir cargo directo</h3>
+            <p className="text-sm text-muted-foreground">
+              Se creará una factura de tipo <strong>Cargo extra</strong> directamente a la unidad,
+              sin necesidad de re-emitir todo el mes.
+            </p>
+            <div className="rounded-lg border bg-purple-50 p-3 text-sm space-y-1">
+              <div><span className="font-medium">Concepto:</span> {categoryLabel(directChargeExpense.description, directChargeExpense.customCategory)}</div>
+              <div><span className="font-medium">Monto:</span> US$ {Number(directChargeExpense.amountUsd).toFixed(2)}</div>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Fecha de vencimiento</label>
+              <input
+                type="date"
+                value={directChargeDue}
+                onChange={(e) => setDirectChargeDue(e.target.value)}
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setDirectChargeExpense(null)}>Cancelar</Button>
+              <Button
+                disabled={issueDirectCharge.isPending}
+                className="bg-purple-600 hover:bg-purple-700"
+                onClick={async () => {
+                  try {
+                    await issueDirectCharge.mutateAsync({
+                      organizationId,
+                      communityId,
+                      expenseId: directChargeExpense.id,
+                      dueDate: new Date(directChargeDue),
+                    });
+                    setDirectChargeExpense(null);
+                    void list.refetch();
+                    alert("✅ Cargo emitido correctamente");
+                  } catch (err) {
+                    alert(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                }}
+              >
+                {issueDirectCharge.isPending ? "Emitiendo..." : "Emitir cargo"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

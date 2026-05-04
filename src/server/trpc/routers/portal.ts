@@ -613,6 +613,156 @@ export const portalRouter = router({
     }),
 
   /**
+   * Devuelve todos los recibos de un mes combinados en un solo aviso.
+   * Agrupa los ítems de todas las facturas del período para mostrar un único documento.
+   */
+  getInvoicesByMonth: publicProcedure
+    .input(z.object({
+      unitId: z.string(),
+      year:   z.number().int(),
+      month:  z.number().int().min(1).max(12),
+      token:  z.string().optional(),
+    }))
+    .query(async ({ ctx, input }) => {
+      // Autenticación
+      let personId: string | null = null;
+      if (input.token) {
+        const record = await ctx.db.portalToken.findUnique({
+          where: { token: input.token },
+          select: { personId: true, expiresAt: true },
+        });
+        if (!record || record.expiresAt < new Date()) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Token inválido o expirado" });
+        }
+        personId = record.personId;
+      } else if (ctx.session?.user?.id) {
+        const person = await ctx.db.person.findFirst({
+          where: { userId: ctx.session.user.id, deletedAt: null },
+          select: { id: true },
+        });
+        personId = person?.id ?? null;
+      }
+      if (!personId) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+        ctx.db.tenancy.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+      ]);
+      const unitIds = new Set([...ownerships.map((o) => o.unitId), ...tenancies.map((t) => t.unitId)]);
+      if (!unitIds.has(input.unitId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Sin acceso a esta unidad" });
+      }
+
+      // Todas las facturas no anuladas del período
+      const invoices = await ctx.db.invoice.findMany({
+        where: {
+          unitId:      input.unitId,
+          periodYear:  input.year,
+          periodMonth: input.month,
+          status:      { not: "VOIDED" },
+        },
+        include: {
+          unit:  { select: { code: true, floor: true, tower: true, aliquot: true } },
+          items: { orderBy: { description: "asc" } },
+        },
+        orderBy: { issuedAt: "asc" },
+      });
+
+      if (invoices.length === 0) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Sin facturas para ese período" });
+      }
+
+      const first = invoices[0]!;
+
+      const [community, ownership, prevDebtAgg] = await Promise.all([
+        ctx.db.community.findFirstOrThrow({
+          where: { id: first.communityId },
+          select: { name: true, address: true, rif: true, phone: true, email: true },
+        }),
+        ctx.db.ownership.findFirst({
+          where: { unitId: input.unitId, endDate: null },
+          include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+        }),
+        ctx.db.invoice.aggregate({
+          where: {
+            unitId: input.unitId,
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+            OR: [
+              { periodYear: { lt: input.year } },
+              { AND: [{ periodYear: input.year }, { periodMonth: { lt: input.month } }] },
+            ],
+          },
+          _sum: { totalUsd: true, paidUsd: true },
+        }),
+      ]);
+
+      // Combinar totales y todos los ítems
+      let totalUsd = 0;
+      let totalBss = 0;
+      let paidUsd  = 0;
+      let paidBss  = 0;
+      const allItems: { invoiceNumber: string; description: string; aliquot: string | null; amountUsd: string; amountBss: string }[] = [];
+      const invoiceNumbers: string[] = [];
+
+      for (const inv of invoices) {
+        totalUsd += Number(inv.totalUsd.toString());
+        totalBss += Number(inv.totalBss.toString());
+        paidUsd  += Number(inv.paidUsd.toString());
+        paidBss  += Number(inv.paidBss.toString());
+        invoiceNumbers.push(inv.invoiceNumber);
+        for (const it of inv.items) {
+          allItems.push({
+            invoiceNumber: inv.invoiceNumber,
+            description:   it.description,
+            aliquot:       it.aliquot?.toString() ?? null,
+            amountUsd:     it.amountUsd.toString(),
+            amountBss:     it.amountBss.toString(),
+          });
+        }
+      }
+
+      const prevDebtUsd = Math.max(
+        0,
+        Number(prevDebtAgg._sum.totalUsd ?? 0) - Number(prevDebtAgg._sum.paidUsd ?? 0),
+      );
+      const thisPendingUsd = Math.max(0, totalUsd - paidUsd);
+
+      return {
+        communityName:    community.name,
+        communityAddress: community.address,
+        communityRif:     community.rif,
+        communityPhone:   community.phone,
+        communityEmail:   community.email,
+        invoiceNumbers,
+        primaryInvoiceId: first.id,
+        periodYear:       first.periodYear,
+        periodMonth:      first.periodMonth,
+        issuedAt:         first.issuedAt,
+        dueDate:          first.dueDate,
+        status:           first.status,
+        unitCode:         first.unit.code,
+        unitFloor:        first.unit.floor,
+        unitTower:        first.unit.tower,
+        aliquot:          first.unit.aliquot.toString(),
+        ownerName: ownership?.person
+          ? `${ownership.person.firstName} ${ownership.person.lastName}`
+          : null,
+        ownerIdNumber: ownership?.person?.idNumber ?? null,
+        exchangeRate:   first.exchangeRate.toString(),
+        exchangeSource: first.exchangeSource,
+        items:          allItems,
+        totalUsd:       totalUsd.toFixed(2),
+        totalBss:       totalBss.toFixed(2),
+        paidUsd:        paidUsd.toFixed(2),
+        paidBss:        paidBss.toFixed(2),
+        prevDebtUsd:    prevDebtUsd.toFixed(2),
+        thisPendingUsd: thisPendingUsd.toFixed(2),
+        totalToPayUsd:  (thisPendingUsd + prevDebtUsd).toFixed(2),
+        totalToPayBss:  ((thisPendingUsd + prevDebtUsd) * Number(first.exchangeRate.toString())).toFixed(2),
+      };
+    }),
+
+  /**
    * Descarga el PDF de un recibo. Valida que el invoice pertenezca al residente.
    */
   downloadInvoicePdf: publicProcedure
@@ -1016,10 +1166,10 @@ export const portalRouter = router({
             include: {
               organization: {
                 include: {
+                  // Buscar ORG_ADMIN primero, luego COMMUNITY_ADMIN como fallback
                   memberships: {
-                    where: { role: "ORG_ADMIN" },
+                    where: { role: { in: ["ORG_ADMIN", "COMMUNITY_ADMIN"] } },
                     include: { user: { select: { email: true, name: true } } },
-                    take: 1,
                   },
                 },
               },
@@ -1030,7 +1180,12 @@ export const portalRouter = router({
 
       const community = unit.community;
       const organization = community.organization;
-      const adminUser = organization.memberships[0]?.user ?? null;
+      // Preferir ORG_ADMIN sobre COMMUNITY_ADMIN; usar community.email como último fallback
+      const orgAdmin = organization.memberships.find((m) => m.role === "ORG_ADMIN");
+      const commAdmin = organization.memberships.find((m) => m.role === "COMMUNITY_ADMIN");
+      const adminUser = orgAdmin?.user ?? commAdmin?.user ?? null;
+      // Dirección de email destino: usuario admin o email configurado en la comunidad
+      const adminEmail = adminUser?.email ?? community.email ?? null;
 
       // Load person info
       const person = await ctx.db.person.findFirstOrThrow({
@@ -1050,10 +1205,10 @@ export const portalRouter = router({
       };
       const tipoPagoStr = TIPO_PAGO_LABELS_EMAIL[input.tipoPago] ?? input.tipoPago;
 
-      // Send email to admin
-      if (adminUser?.email) {
+      // Send email to admin (ORG_ADMIN / COMMUNITY_ADMIN / community.email)
+      if (adminEmail) {
         await sendEmail({
-          to: adminUser.email,
+          to: adminEmail,
           subject: `Notificación de pago — ${community.name} · Unidad ${unit.code}`,
           html: `
             <div style="font-family:sans-serif;max-width:540px;margin:auto">
@@ -1074,6 +1229,31 @@ export const portalRouter = router({
             </div>
           `,
           text: `[${tipoPagoStr}] Pago reportado por ${person.firstName} ${person.lastName}: ${montoStr} via ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.`,
+        });
+      }
+
+      // Confirmación al residente (si tiene email registrado)
+      if (person.email) {
+        await sendEmail({
+          to: person.email,
+          subject: `Notificación enviada — ${community.name}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:540px;margin:auto">
+              <h2 style="color:#1e3a5f">Notificación de pago enviada</h2>
+              <p>Hola <strong>${person.firstName}</strong>, tu notificación de pago fue recibida correctamente por la Junta de Condominio <strong>${community.name}</strong>.</p>
+              <table style="border-collapse:collapse;width:100%;margin:16px 0">
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Banco / Método</td><td style="padding:6px 12px">${input.banco}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Referencia</td><td style="padding:6px 12px">${input.referencia}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Monto</td><td style="padding:6px 12px"><strong>${montoStr}</strong></td></tr>
+                <tr><td style="padding:6px 12px;font-weight:600;background:#f3f4f6">Fecha de pago</td><td style="padding:6px 12px">${fechaStr}</td></tr>
+              </table>
+              <p style="background:#d1fae5;border:1px solid #6ee7b7;border-radius:6px;padding:10px 14px;font-size:13px;color:#065f46">
+                ✅ La Junta verificará tu pago y lo registrará en el sistema. Recibirás una actualización cuando esté procesado.
+              </p>
+              <p style="color:#888;font-size:12px;margin-top:24px">Este correo fue generado automáticamente desde el portal de residentes.</p>
+            </div>
+          `,
+          text: `Tu notificación de pago fue recibida. Referencia: ${input.referencia}, Monto: ${montoStr}, Fecha: ${fechaStr}. La Junta la verificará pronto.`,
         });
       }
 

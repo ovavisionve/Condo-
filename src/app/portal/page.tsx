@@ -46,7 +46,7 @@ type PendingInvoiceItem = {
   id: string; invoiceNumber: string;
   periodYear: number | null; periodMonth: number | null;
   issuedAt: Date; dueDate: Date; typeLabel: string;
-  pendingAmountUsd: string; daysOverdue: number; monthsOverdue: number; status: string;
+  pendingUsd: string; daysOverdue: number; monthsOverdue: number; status: string;
 };
 type PaymentItem = {
   id: string; paidAt: Date; method: string; methodLabel: string;
@@ -209,12 +209,17 @@ function AvisoCobro({ invoiceId, token, onClose }: { invoiceId: string; token?: 
 type InvoiceDetailData = {
   communityName: string; communityAddress: string | null;
   communityRif: string | null; communityPhone: string | null; communityEmail: string | null;
-  invoiceNumber: string; periodYear: number | null; periodMonth: number | null;
+  /** Single invoice (legacy getInvoiceDetail) */
+  invoiceNumber?: string;
+  /** Multi-invoice combined (getInvoicesByMonth) */
+  invoiceNumbers?: string[];
+  primaryInvoiceId?: string;
+  periodYear: number | null; periodMonth: number | null;
   issuedAt: Date; dueDate: Date; status: string;
   unitCode: string; unitFloor: number | null; unitTower: string | null; aliquot: string;
   ownerName: string | null; ownerIdNumber: string | null;
   exchangeRate: string; exchangeSource: string;
-  items: { description: string; aliquot: string | null; amountUsd: string; amountBss: string }[];
+  items: { invoiceNumber?: string; description: string; aliquot: string | null; amountUsd: string; amountBss: string }[];
   totalUsd: string; totalBss: string; paidUsd: string; paidBss: string;
   prevDebtUsd: string; thisPendingUsd: string; totalToPayUsd: string; totalToPayBss: string;
 };
@@ -227,7 +232,12 @@ function AvisoCobroContent({ data }: { data: InvoiceDetailData }) {
         {data.communityRif && <p className="text-xs text-muted-foreground">R.I.F.: {data.communityRif}</p>}
         {data.communityAddress && <p className="text-xs text-muted-foreground">{data.communityAddress}</p>}
       </div>
-      <div className="text-center text-base font-bold text-[#1e3a5f]">Aviso de Cobro Nro. {data.invoiceNumber}</div>
+      {/* Número(s) de aviso */}
+      <div className="text-center text-base font-bold text-[#1e3a5f]">
+        {data.invoiceNumbers && data.invoiceNumbers.length > 1
+          ? `Avisos de Cobro: ${data.invoiceNumbers.join(" · ")}`
+          : `Aviso de Cobro Nro. ${data.invoiceNumbers?.[0] ?? data.invoiceNumber}`}
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
         {/* Izquierda: ítems */}
@@ -255,17 +265,36 @@ function AvisoCobroContent({ data }: { data: InvoiceDetailData }) {
               </tr>
             </thead>
             <tbody>
-              {data.items.map((item, i) => (
-                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                  <td className="px-3 py-1 border-b border-slate-100">{item.description}</td>
-                  <td className="px-3 py-1 border-b border-slate-100 text-right">
-                    {Number(item.amountBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-3 py-1 border-b border-slate-100 text-right text-muted-foreground">
-                    {item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"}
-                  </td>
-                </tr>
-              ))}
+              {(() => {
+                // Si hay múltiples recibos, agrupar con separadores por número de factura
+                const multiInvoice = data.invoiceNumbers && data.invoiceNumbers.length > 1;
+                const rows: React.ReactNode[] = [];
+                let lastInvoiceNum = "";
+                data.items.forEach((item, i) => {
+                  if (multiInvoice && item.invoiceNumber && item.invoiceNumber !== lastInvoiceNum) {
+                    lastInvoiceNum = item.invoiceNumber;
+                    rows.push(
+                      <tr key={`sep-${i}`} className="bg-[#1e3a5f]/5">
+                        <td colSpan={3} className="px-3 py-0.5 text-[10px] font-medium text-[#1e3a5f]/60 italic">
+                          Recibo {item.invoiceNumber}
+                        </td>
+                      </tr>
+                    );
+                  }
+                  rows.push(
+                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                      <td className="px-3 py-1 border-b border-slate-100">{item.description}</td>
+                      <td className="px-3 py-1 border-b border-slate-100 text-right">
+                        {Number(item.amountBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-3 py-1 border-b border-slate-100 text-right text-muted-foreground">
+                        {item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"}
+                      </td>
+                    </tr>
+                  );
+                });
+                return rows;
+              })()}
               {data.items.length === 0 && (
                 <tr><td colSpan={3} className="px-3 py-3 text-center text-muted-foreground italic">Sin ítems registrados</td></tr>
               )}
@@ -478,7 +507,7 @@ function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: s
 // ─── PENDIENTES TAB ───────────────────────────────────────────────────────────
 function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string }) {
   const creditUsd = Number(unit.creditAvailableUsd ?? 0);
-  const grossPendingUsd = unit.pendingInvoices.reduce((acc, inv) => acc + Number(inv.pendingAmountUsd), 0);
+  const grossPendingUsd = unit.pendingInvoices.reduce((acc, inv) => acc + Number(inv.pendingUsd), 0);
   const totalPendingUsd = Number(unit.pendingUsd);
 
   return (
@@ -541,9 +570,9 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
                       : new Date(inv.issuedAt).toLocaleDateString("es-VE")}
                   </td>
                   <td className="px-4 py-2">{inv.typeLabel}</td>
-                  <td className="px-4 py-2 text-right font-medium">{Number(inv.pendingAmountUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-medium">{Number(inv.pendingUsd).toFixed(2)}</td>
                   <td className="px-4 py-2 text-right">{inv.monthsOverdue}</td>
-                  <td className="px-4 py-2 text-right font-semibold">{Number(inv.pendingAmountUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{Number(inv.pendingUsd).toFixed(2)}</td>
                 </tr>
               ))}
               {creditUsd > 0 && (
@@ -717,12 +746,43 @@ function DownloadAvisoButton({ invoiceId, token, invoiceNumber }: { invoiceId: s
 }
 
 function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
+  // Agrupar facturas por mes (año-mes) — sin anuladas
   const invoiceOptions = unit.invoices.filter(inv => inv.status !== "VOIDED");
-  const [selectedId, setSelectedId] = useState(invoiceOptions[0]?.id ?? "");
-  const { data, isLoading } = trpc.portal.getInvoiceDetail.useQuery(
-    { invoiceId: selectedId, token },
-    { enabled: !!selectedId },
+
+  // Meses únicos ordenados de más reciente a más antiguo
+  type MonthKey = { key: string; label: string; year: number; month: number };
+  const monthGroups: MonthKey[] = [];
+  const seen = new Set<string>();
+  for (const inv of invoiceOptions) {
+    if (!inv.periodYear || !inv.periodMonth) continue;
+    const k = `${inv.periodYear}-${String(inv.periodMonth).padStart(2,"0")}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      monthGroups.push({
+        key: k,
+        label: `Mes: ${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear}`,
+        year: inv.periodYear,
+        month: inv.periodMonth,
+      });
+    }
+  }
+
+  const [selectedKey, setSelectedKey] = useState(monthGroups[0]?.key ?? "");
+  const selectedGroup = monthGroups.find(g => g.key === selectedKey);
+
+  // Query combinada: todas las facturas del mes seleccionado en un solo aviso
+  const { data, isLoading } = trpc.portal.getInvoicesByMonth.useQuery(
+    {
+      unitId: unit.unitId,
+      year:   selectedGroup?.year  ?? 0,
+      month:  selectedGroup?.month ?? 0,
+      token,
+    },
+    { enabled: !!selectedGroup },
   );
+
+  // El primaryInvoiceId se usa para la descarga PDF (usamos el recibo principal del mes)
+  const primaryInvoiceId = data?.primaryInvoiceId ?? "";
 
   return (
     <div className="space-y-4">
@@ -731,33 +791,31 @@ function AvisoTab({ unit, token }: { unit: UnitData; token?: string }) {
           <h2 className="text-2xl font-bold">Avisos de cobro</h2>
           <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
         </div>
-        {invoiceOptions.length > 0 && (
+        {monthGroups.length > 0 && (
           <select
             className="rounded-lg border px-3 py-2 text-sm bg-white font-medium"
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
+            value={selectedKey}
+            onChange={(e) => setSelectedKey(e.target.value)}
           >
-            {invoiceOptions.map((inv) => (
-              <option key={inv.id} value={inv.id}>
-                {inv.periodMonth && inv.periodYear
-                  ? `Mes: ${String(inv.periodMonth).padStart(2,"0")}/${inv.periodYear}`
-                  : inv.invoiceNumber}
-              </option>
+            {monthGroups.map((g) => (
+              <option key={g.key} value={g.key}>{g.label}</option>
             ))}
           </select>
         )}
       </div>
 
-      {!selectedId && <p className="py-8 text-center text-muted-foreground">Sin Recibos de Condominio disponibles.</p>}
+      {!selectedGroup && <p className="py-8 text-center text-muted-foreground">Sin Recibos de Condominio disponibles.</p>}
       {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando aviso de cobro…</div>}
       {data && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
           <div className="flex justify-end gap-2 p-3 border-b">
-            <DownloadAvisoButton
-              invoiceId={selectedId}
-              token={token}
-              invoiceNumber={(data as InvoiceDetailData).invoiceNumber}
-            />
+            {primaryInvoiceId && (
+              <DownloadAvisoButton
+                invoiceId={primaryInvoiceId}
+                token={token}
+                invoiceNumber={data.invoiceNumbers.join("+")}
+              />
+            )}
             <button onClick={() => window.print()} className="rounded border px-3 py-1 text-sm hover:bg-muted">🖨️ Imprimir</button>
           </div>
           <div className="p-4">
@@ -950,13 +1008,15 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
 }
 
 // ─── DEUDA GENERAL TAB ────────────────────────────────────────────────────────
-function DeudaGeneralTab({ communityId, token }: { communityId: string; token?: string }) {
+function DeudaGeneralTab({ communityId, token, unit }: { communityId: string; token?: string; unit: UnitData }) {
   const { data, isLoading } = trpc.portal.getDeudaGeneral.useQuery({ communityId, token });
 
   if (isLoading) return <div className="py-12 text-center text-muted-foreground">Cargando deuda general…</div>;
   if (!data) return null;
 
   const totalUsd = Number(data.totalPendingUsd);
+  const myPendingUsd = Number(unit.pendingUsd);
+  const myShare = totalUsd > 0 ? (myPendingUsd / totalUsd) * 100 : 0;
 
   return (
     <div className="space-y-6">
@@ -965,6 +1025,46 @@ function DeudaGeneralTab({ communityId, token }: { communityId: string; token?: 
         <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
         <p className="text-sm text-[#1e7a5f] mt-1">Agrupado por meses.</p>
       </div>
+
+      {/* Card: mi parte en la deuda total del condominio */}
+      {totalUsd > 0 && (
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Tu participación — Unidad {unit.unitCode}
+          </p>
+          <div className="grid grid-cols-3 gap-3 text-center mb-4">
+            <div className="rounded-lg bg-[#1e3a5f]/5 p-3">
+              <p className="text-xs text-muted-foreground mb-1">Deuda total cond.</p>
+              <p className="text-lg font-bold text-[#1e3a5f]">
+                US$ {totalUsd.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="rounded-lg bg-[#1e7a5f]/5 p-3">
+              <p className="text-xs text-muted-foreground mb-1">Tu deuda</p>
+              <p className="text-lg font-bold text-[#1e7a5f]">US$ {myPendingUsd.toFixed(2)}</p>
+            </div>
+            <div className="rounded-lg bg-amber-50 p-3">
+              <p className="text-xs text-muted-foreground mb-1">Tu alícuota efectiva</p>
+              <p className="text-lg font-bold text-amber-700">{myShare.toFixed(4)}%</p>
+            </div>
+          </div>
+          <div>
+            <div className="flex justify-between text-xs text-muted-foreground mb-1">
+              <span>Tu parte del total ({myShare.toFixed(2)}%)</span>
+              <span>US$ {myPendingUsd.toFixed(2)} / US$ {totalUsd.toFixed(2)}</span>
+            </div>
+            <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
+              <div
+                className="h-2.5 rounded-full bg-[#1e7a5f] transition-all"
+                style={{ width: `${Math.min(myShare, 100)}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground mt-1 text-right">
+              El resto de la deuda ({(100 - myShare).toFixed(2)}%) corresponde a las demás unidades
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Pie chart */}
       <div className="rounded-xl border bg-white p-4 shadow-sm">
@@ -1083,7 +1183,7 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
         {tab === "pagos"      && <PagosTab      unit={unit} token={token} />}
         {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
         {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} />}
-        {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} />}
+        {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} unit={unit} />}
       </div>
 
       {/* Footer */}

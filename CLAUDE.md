@@ -365,6 +365,10 @@ pnpm prisma migrate reset
   - **Feature 8:** Exportación por módulo (Gastos / Ingresos / Pagos) con rango personalizable desde/hasta. Router: `reports.expensesExport`, `reports.paymentsExport`, `reports.incomeExport`
   - **Feature 10:** `reports.firstRecords` devuelve primer período de cada módulo; selectores de año en Reportes parten desde el primer dato en BD; botón "⏮ Desde inicio" auto-rellena rango
   - Commits: `285b23c` (features 2-4, 7), `4ef9211` (features 8, 10)
+- [x] **Sesión bugfixes portal + cargo directo (Sonnet):** dos bugs corregidos
+  - **Bug NaN portal (Pendientes tab):** `portal.ts` devuelve campo `pendingUsd` pero `portal/page.tsx` declaraba `pendingAmountUsd` en el tipo → `Number(undefined) = NaN`. Fix: renombrar a `pendingUsd` en el tipo `PendingInvoiceItem` y en los 3 usos (líneas 49, 481, 544, 546).
+  - **Bug gasto individual post-emisión:** `issueMonthlyInvoices` lanza CONFLICT si ya hay facturas en el período → gastos individuales añadidos DESPUÉS quedan atascados como "Pendiente". Fix: nueva mutación `expenses.issueDirectCharge` que crea un `EXTRA_FEE` directamente a la unidad target y marca el gasto como `invoicedAt=now`. En la tabla de gastos aparece botón "⚡ Emitir cargo" solo para gastos `isIndividual=true` que estén pendientes.
+  - Archivos: `src/app/portal/page.tsx`, `src/server/trpc/routers/finance.ts`, `src/app/org/communities/[id]/finance/expenses/page.tsx`
 
 ---
 

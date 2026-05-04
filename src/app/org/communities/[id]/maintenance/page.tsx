@@ -359,6 +359,7 @@ function WorkOrderDetailDialog({
   const deletePayment = trpc.maintenance.workOrders.deletePayment.useMutation();
   const utils = trpc.useUtils();
 
+  const createExpense = trpc.finance.expenses.create.useMutation();
   const [note, setNote] = useState("");
   const [newStatus, setNewStatus] = useState<WOStatus | "">("");
   const [contractorId, setContractorId] = useState<string>("");
@@ -368,6 +369,18 @@ function WorkOrderDetailDialog({
     method: "TRANSFER_USD", reference: "", description: "", paidAt: new Date().toISOString().slice(0, 10), notes: "",
   });
   const [payError, setPayError] = useState<string | null>(null);
+  const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const todayD = new Date();
+  const [expenseForm, setExpenseForm] = useState({
+    year: todayD.getFullYear(),
+    month: todayD.getMonth() + 1,
+    amount: "",
+    currencyPrimary: "USD" as "USD" | "VES",
+    description: "",
+    category: "REPAIRS" as string,
+  });
+  const [expenseError, setExpenseError] = useState<string | null>(null);
+  const [expenseDone, setExpenseDone] = useState(false);
 
   if (wo.isLoading) return null;
   const data = wo.data;
@@ -620,6 +633,131 @@ function WorkOrderDetailDialog({
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Sin pagos registrados</p>
+          )}
+        </div>
+
+        {/* ── Registrar como gasto común ── */}
+        <div className="mb-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-sm font-semibold">📋 Gasto común</h4>
+            {!expenseDone ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const amt = agreed ?? totalPaid;
+                  setExpenseForm((f) => ({
+                    ...f,
+                    amount: amt > 0 ? amt.toFixed(2) : "",
+                    description: data.title,
+                    category: data.category,
+                  }));
+                  setShowExpenseForm(!showExpenseForm);
+                }}
+              >
+                {showExpenseForm ? "Cancelar" : "Registrar como gasto"}
+              </Button>
+            ) : (
+              <span className="text-xs text-green-700 font-medium">✓ Gasto registrado</span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mb-2">
+            Convierte el costo de esta orden en un Gasto Común para que se incluya en los recibos del período.
+          </p>
+
+          {showExpenseForm && !expenseDone && (
+            <div className="rounded-lg border bg-amber-50 p-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Año</Label>
+                  <Input
+                    type="number"
+                    value={expenseForm.year}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, year: Number(e.target.value) }))}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Mes</Label>
+                  <Input
+                    type="number" min={1} max={12}
+                    value={expenseForm.month}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, month: Number(e.target.value) }))}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Monto</Label>
+                  <Input
+                    type="number" step="0.01" min="0.01"
+                    value={expenseForm.amount}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, amount: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Moneda</Label>
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={expenseForm.currencyPrimary}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+                  >
+                    <option value="USD">USD</option>
+                    <option value="VES">VES (Bs)</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs">Categoría</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={expenseForm.category}
+                  onChange={(e) => setExpenseForm((f) => ({ ...f, category: e.target.value }))}
+                >
+                  {EXPENSE_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{EXPENSE_CAT_LABELS[c]}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Descripción</Label>
+                <Input
+                  value={expenseForm.description}
+                  onChange={(e) => setExpenseForm((f) => ({ ...f, description: e.target.value }))}
+                  placeholder="Descripción del gasto..."
+                />
+              </div>
+              {expenseError && <p className="text-xs text-destructive">{expenseError}</p>}
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  disabled={createExpense.isPending || !expenseForm.amount}
+                  onClick={async () => {
+                    setExpenseError(null);
+                    try {
+                      await createExpense.mutateAsync({
+                        organizationId,
+                        communityId: data.communityId,
+                        category: expenseForm.category as (typeof EXPENSE_CATEGORIES)[number],
+                        description: expenseForm.description || data.title,
+                        periodYear: expenseForm.year,
+                        periodMonth: expenseForm.month,
+                        amount: Number(expenseForm.amount),
+                        currencyPrimary: expenseForm.currencyPrimary,
+                        supplierName: data.contractor?.name ?? undefined,
+                        notes: `Orden de mantenimiento: ${data.title}`,
+                      });
+                      setShowExpenseForm(false);
+                      setExpenseDone(true);
+                    } catch (err) {
+                      setExpenseError(err instanceof Error ? err.message : "Error");
+                    }
+                  }}
+                >
+                  {createExpense.isPending ? "Guardando..." : "Crear gasto"}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
 

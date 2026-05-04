@@ -40,6 +40,169 @@ function downloadBase64Pdf(base64: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+const METHODS_PAY = [
+  "CASH_BSS","CASH_USD","TRANSFER_BSS","TRANSFER_USD",
+  "ZELLE","PAGO_MOVIL","CRYPTO","CHECK","OTHER",
+] as const;
+
+function guessMethodFromBanco(banco: string): string {
+  const b = banco.toLowerCase();
+  if (b.includes("zelle")) return "ZELLE";
+  if (b.includes("pago m")) return "PAGO_MOVIL";
+  if (b.includes("usd") || b.includes("dollar")) return "TRANSFER_USD";
+  if (b.includes("bs") || b.includes("bolivar")) return "TRANSFER_BSS";
+  if (b.includes("efectivo")) return "CASH_USD";
+  return "TRANSFER_USD";
+}
+
+// ─── Sección "Por aprobar" ────────────────────────────────────────────────────
+function PorAprobarSection({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const reportsQ = trpc.notifications.listPaymentReports.useQuery({ organizationId, communityId });
+  const approvePayment = trpc.finance.payments.approve.useMutation();
+  const utils = trpc.useUtils();
+
+  type Report = {
+    id: string; unitCode: string; unitId: string; personName: string; banco: string;
+    referencia: string; monto: number; moneda: string; fechaPago: string;
+    tipoPago: string; notas: string | null; notifiedAt: Date; communityId: string;
+  };
+
+  const reports = (reportsQ.data ?? []) as Report[];
+  const [confirmRep, setConfirmRep] = useState<Report | null>(null);
+  const [confirmMethod, setConfirmMethod] = useState("TRANSFER_USD");
+  const [confirmErr, setConfirmErr] = useState<string | null>(null);
+  const [registered, setRegistered] = useState<Set<string>>(new Set());
+
+  const pending = reports.filter(r => !registered.has(r.id));
+  if (pending.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-amber-200">
+        <span className="text-amber-700 font-semibold text-sm">🔔 Pagos reportados por residentes — Por aprobar</span>
+        <span className="ml-auto rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-white">{pending.length}</span>
+      </div>
+      <div className="overflow-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-amber-100/50 text-left text-xs">
+              <th className="px-3 py-2">Notificado</th>
+              <th className="px-3 py-2">Unidad</th>
+              <th className="px-3 py-2">Residente</th>
+              <th className="px-3 py-2">Banco / Ref.</th>
+              <th className="px-3 py-2 text-right">Monto</th>
+              <th className="px-3 py-2">Fecha pago</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {pending.map((r, i) => (
+              <tr key={r.id} className={`border-t border-amber-100 ${i % 2 === 0 ? "" : "bg-amber-50/50"}`}>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {new Date(r.notifiedAt).toLocaleString("es-VE", { dateStyle: "short", timeStyle: "short" })}
+                </td>
+                <td className="px-3 py-2 font-semibold">{r.unitCode}</td>
+                <td className="px-3 py-2 text-sm">{r.personName}</td>
+                <td className="px-3 py-2 text-xs">
+                  <div>{r.banco}</div>
+                  <div className="font-mono text-muted-foreground">{r.referencia}</div>
+                </td>
+                <td className="px-3 py-2 text-right font-semibold">
+                  {r.moneda === "USD" ? "$" : "Bs."}{r.monto.toFixed(2)}
+                </td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {new Date(r.fechaPago).toLocaleDateString("es-VE")}
+                </td>
+                <td className="px-3 py-2">
+                  <button
+                    className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 whitespace-nowrap"
+                    onClick={() => {
+                      setConfirmRep(r);
+                      setConfirmMethod(guessMethodFromBanco(r.banco));
+                      setConfirmErr(null);
+                    }}
+                  >
+                    ✅ Aprobar
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-4 py-2 text-xs text-amber-700 border-t border-amber-200">
+        Verifica en el banco que el depósito exista antes de aprobar. El saldo del residente se actualizará al instante.
+      </p>
+
+      {/* Dialog confirmación */}
+      {confirmRep && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl space-y-4">
+            <h3 className="text-lg font-semibold">✅ Aprobar pago reportado</h3>
+            <div className="rounded-lg border bg-slate-50 p-3 text-sm space-y-1">
+              <div><span className="font-medium">Unidad:</span> {confirmRep.unitCode} — {confirmRep.personName}</div>
+              <div><span className="font-medium">Monto:</span> {confirmRep.moneda === "USD" ? "$" : "Bs."}{confirmRep.monto.toFixed(2)} {confirmRep.moneda}</div>
+              <div><span className="font-medium">Referencia:</span> {confirmRep.referencia}</div>
+              <div><span className="font-medium">Banco:</span> {confirmRep.banco}</div>
+              <div><span className="font-medium">Fecha pago:</span> {new Date(confirmRep.fechaPago).toLocaleDateString("es-VE")}</div>
+              {confirmRep.tipoPago === "ANTICIPO" && (
+                <p className="mt-2 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
+                  💰 Se registrará como <strong>anticipo</strong> — quedará como crédito disponible para el residente.
+                </p>
+              )}
+            </div>
+            <div>
+              <Label className="text-xs">Método de pago</Label>
+              <select
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={confirmMethod}
+                onChange={(e) => setConfirmMethod(e.target.value)}
+              >
+                {METHODS_PAY.map(m => (
+                  <option key={m} value={m}>{METHOD_LABEL[m]}</option>
+                ))}
+              </select>
+            </div>
+            {confirmErr && <p className="text-sm text-destructive">{confirmErr}</p>}
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setConfirmRep(null)}>Cancelar</Button>
+              <Button
+                disabled={approvePayment.isPending}
+                className="bg-green-600 hover:bg-green-700"
+                onClick={async () => {
+                  setConfirmErr(null);
+                  try {
+                    await approvePayment.mutateAsync({
+                      organizationId,
+                      communityId,
+                      unitId: confirmRep.unitId,
+                      notificationId: confirmRep.id,
+                      amount: confirmRep.monto,
+                      currencyPrimary: confirmRep.moneda as "USD" | "VES",
+                      method: confirmMethod as typeof METHODS_PAY[number],
+                      reference: confirmRep.referencia,
+                      paidAt: new Date(confirmRep.fechaPago),
+                      notes: `Pago notificado por residente${confirmRep.notas ? ` — ${confirmRep.notas}` : ""}`,
+                    });
+                    setRegistered(prev => new Set([...prev, confirmRep.id]));
+                    setConfirmRep(null);
+                    void utils.finance.payments.list.invalidate();
+                    void utils.notifications.listPaymentReports.invalidate();
+                  } catch (err) {
+                    setConfirmErr(err instanceof Error ? err.message : "Error");
+                  }
+                }}
+              >
+                {approvePayment.isPending ? "Registrando..." : "Aprobar y registrar"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PaymentsPage() {
   const { id: communityId } = useParams<{ id: string }>();
   const organizationId = useOrgId();
@@ -51,6 +214,9 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-4">
+      {/* Pagos por aprobar — arriba del todo */}
+      <PorAprobarSection organizationId={organizationId} communityId={communityId} />
+
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Pagos recibidos</h2>

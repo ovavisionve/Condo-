@@ -10,33 +10,57 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   if (!session.user.memberships?.some((m) => isPlatform(m.role))) redirect("/");
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <header className="border-b bg-background">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+    <div className="min-h-screen bg-slate-50">
+      {/* Top nav */}
+      <header className="border-b bg-white shadow-sm sticky top-0 z-40">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
-            <Link href="/platform" className="text-lg font-semibold">
-              Condominios <span className="text-muted-foreground text-sm">/ Platform</span>
+            {/* Logo / marca */}
+            <Link href="/platform" className="flex items-center gap-2">
+              <div className="h-7 w-7 rounded-lg bg-primary flex items-center justify-center text-xs font-bold text-primary-foreground">R</div>
+              <span className="font-semibold text-base">ResidIA</span>
+              <span className="text-xs text-muted-foreground border border-muted rounded px-1.5 py-0.5 ml-1">Platform</span>
             </Link>
-            <nav className="flex gap-4 text-sm">
-              <Link href="/platform" className="hover:underline">Resumen</Link>
-              <Link href="/platform/organizations" className="hover:underline">Organizaciones</Link>
-              <Link href="/platform/plans" className="hover:underline">Planes</Link>
+
+            {/* Nav items */}
+            <nav className="hidden md:flex items-center gap-1">
+              {[
+                { href: "/platform", label: "🏠 Resumen" },
+                { href: "/platform/organizations", label: "🏢 Organizaciones" },
+                { href: "/platform/plans", label: "💼 Planes" },
+              ].map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                >
+                  {item.label}
+                </Link>
+              ))}
             </nav>
           </div>
+
           <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{session.user.email}</span>
+            <div className="hidden sm:flex flex-col text-right">
+              <span className="text-xs font-medium">{session.user.name ?? session.user.email}</span>
+              <span className="text-xs text-muted-foreground">Platform Owner</span>
+            </div>
+            <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+              {(session.user.name ?? session.user.email ?? "P").charAt(0).toUpperCase()}
+            </div>
             <form
               action={async () => {
                 "use server";
                 await signOut({ redirectTo: "/login" });
               }}
             >
-              <Button variant="outline" size="sm" type="submit">Salir</Button>
+              <Button variant="outline" size="sm" type="submit" className="text-xs">Salir</Button>
             </form>
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+
+      <main className="mx-auto max-w-7xl px-6 py-8">{children}</main>
     </div>
   );
 }

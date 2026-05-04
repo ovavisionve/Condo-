@@ -291,6 +291,7 @@ export const notificationsRouter = router({
         personId: string; personName: string; banco: string; referencia: string;
         monto: number; moneda: string; fechaPago: string; notas: string | null;
         estado: string; createdAt: string;
+        tipoPago: string; tipoPagoLabel: string; invoiceId: string | null;
       };
 
       return notifications.map((n) => {

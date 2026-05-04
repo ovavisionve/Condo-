@@ -868,3 +868,294 @@ function VoucherDoc({ data }: { data: PaymentVoucherData }) {
 export async function generatePaymentVoucherPdf(data: PaymentVoucherData): Promise<Buffer> {
   return renderToBuffer(VoucherDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
 }
+
+// ─── Factura Centro Comercial ─────────────────────────────────────────────────
+
+const TYPE_LABEL_CC: Record<string, string> = {
+  CANON: "Canon de Arrendamiento",
+  CANON_SALES: "Canon sobre Ventas",
+  ALIQUOT: "Alícuota de Gastos Comunes",
+  EXTRA_FEE: "Cargo Extraordinario",
+  FINE: "Multa",
+  OTHER: "Otro",
+};
+
+const STATUS_LABEL_CC: Record<string, string> = {
+  DRAFT: "BORRADOR", ISSUED: "EMITIDA", PARTIAL: "PAGO PARCIAL",
+  PAID: "CANCELADA", OVERDUE: "VENCIDA", VOIDED: "ANULADA",
+};
+
+export type CcInvoicePdfData = {
+  // Mall
+  mallName: string;
+  mallAddress: string;
+  mallRif?: string | null;
+  mallPhone?: string | null;
+  mallEmail?: string | null;
+  mallCity?: string | null;
+  // Factura
+  invoiceNumber: string;
+  periodYear: number;
+  periodMonth: number;
+  issuedAt: Date;
+  dueDate: Date;
+  status: string;
+  type: string;
+  exchangeRate: string;
+  // Local
+  localCode: string;
+  localName?: string | null;
+  localFloor?: number | null;
+  // Arrendatario
+  tenantName?: string | null;
+  tenantRif?: string | null;
+  tenantPhone?: string | null;
+  tenantEmail?: string | null;
+  // Ítems
+  items: { description: string; amountUsd: string; amountBss: string }[];
+  totalUsd: string;
+  totalBss: string;
+  paidUsd: string;
+  paidBss: string;
+  notes?: string | null;
+};
+
+// Reutilizamos la paleta monocromática
+const cc = StyleSheet.create({
+  page: { fontFamily: "Helvetica", fontSize: 9, padding: "32 38", color: DK, backgroundColor: "#fff" },
+
+  header: { marginBottom: 12, borderBottomWidth: 2, borderBottomColor: BK, paddingBottom: 10 },
+  headerTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  mallName: { fontSize: 14, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 0.3, marginBottom: 3 },
+  mallMeta: { fontSize: 8, color: MID, lineHeight: 1.5 },
+  headerRight: { alignItems: "flex-end" },
+  headerDocLabel: { fontSize: 8, color: MID, textAlign: "right" },
+  headerDocNum: { fontSize: 11, fontFamily: "Helvetica-Bold", color: BK, textAlign: "right", marginTop: 2 },
+  thinLine: { height: 1, backgroundColor: BDR, marginTop: 8 },
+
+  titleBlock: { borderBottomWidth: 1, borderBottomColor: BDR2, paddingBottom: 10, marginBottom: 14 },
+  docTitle: { fontSize: 16, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 2, marginBottom: 3 },
+  docSubtitle: { fontSize: 7.5, color: MID },
+  docMeta: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  docMetaItem: { fontSize: 8, color: DK },
+  docMetaLabel: { color: LT },
+
+  twoCol: { flexDirection: "row", gap: 12, marginBottom: 12 },
+  card: { flex: 1, borderWidth: 1, borderColor: BDR },
+  cardHeader: { backgroundColor: BK, padding: "4 8" },
+  cardHeaderText: { fontSize: 7.5, fontFamily: "Helvetica-Bold", color: "#fff", letterSpacing: 1 },
+  cardBody: { padding: "7 8" },
+  dataRow: { flexDirection: "row", marginBottom: 4 },
+  dataLabel: { width: "42%", color: LT, fontSize: 8 },
+  dataValue: { flex: 1, fontFamily: "Helvetica-Bold", fontSize: 8, color: DK },
+
+  tableSection: { marginBottom: 12 },
+  tableSectionTitle: { fontSize: 8.5, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 1,
+                      borderBottomWidth: 1, borderBottomColor: BK, paddingBottom: 4, marginBottom: 0 },
+  tableHead: { flexDirection: "row", backgroundColor: BK, padding: "5 7" },
+  thDesc: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 7.5 },
+  thUsd: { width: 75, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 7.5, textAlign: "right" },
+  thBss: { width: 90, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 7.5, textAlign: "right" },
+  tableRow: { flexDirection: "row", padding: "5 7", borderBottomWidth: 1, borderBottomColor: BDR2 },
+  tableRowAlt: { flexDirection: "row", padding: "5 7", borderBottomWidth: 1, borderBottomColor: BDR2, backgroundColor: ROW },
+  tdDesc: { flex: 1, color: DK, fontSize: 8 },
+  tdUsd: { width: 75, textAlign: "right", fontFamily: "Helvetica-Bold", fontSize: 8 },
+  tdBss: { width: 90, textAlign: "right", color: MID, fontSize: 8 },
+
+  totalsBox: { marginBottom: 12, borderWidth: 1, borderColor: BDR },
+  totalLineRow: { flexDirection: "row", padding: "5 8", borderBottomWidth: 1, borderBottomColor: BDR2 },
+  totalLineLabel: { flex: 1, color: DK, fontSize: 8.5 },
+  totalLineUsd: { width: 75, textAlign: "right", fontSize: 8.5 },
+  totalLineBss: { width: 90, textAlign: "right", color: MID, fontSize: 8.5 },
+  deductionRow: { flexDirection: "row", padding: "5 8", borderBottomWidth: 1, borderBottomColor: BDR2, backgroundColor: ROW },
+  deductionLabel: { flex: 1, color: MID, fontSize: 8.5 },
+  deductionUsd: { width: 75, textAlign: "right", color: MID, fontSize: 8.5 },
+  deductionBss: { width: 90, textAlign: "right", color: MID, fontSize: 8.5 },
+  grandTotalRow: { flexDirection: "row", padding: "8 8", backgroundColor: BK },
+  gtLabel: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  gtUsd: { width: 75, textAlign: "right", color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  gtBss: { width: 90, textAlign: "right", color: "#cccccc", fontFamily: "Helvetica-Bold", fontSize: 9 },
+  cancelledRow: { flexDirection: "row", padding: "8 8", backgroundColor: DK },
+  cancelledLabel: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  cancelledUsd: { width: 75, textAlign: "right", color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  cancelledBss: { width: 90, textAlign: "right", color: "#cccccc", fontFamily: "Helvetica-Bold", fontSize: 9 },
+
+  rateBox: { flexDirection: "row", borderWidth: 1, borderColor: BDR,
+             padding: "4 8", marginBottom: 10, alignItems: "center", backgroundColor: ROW },
+  rateLabel: { color: MID, fontSize: 7.5, flex: 1 },
+
+  notesBox: { borderWidth: 1, borderColor: BDR, padding: "6 8", marginBottom: 10 },
+  notesTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: DK, marginBottom: 3 },
+  notesText: { fontSize: 8, color: MID },
+
+  footer: { position: "absolute", bottom: 24, left: 38, right: 38 },
+  footerLine1: { height: 2, backgroundColor: BK, marginBottom: 3 },
+  footerLine2: { height: 1, backgroundColor: BDR, marginBottom: 5 },
+  footerRow: { flexDirection: "row", justifyContent: "space-between" },
+  footerLeft: { fontSize: 7, color: LT },
+  footerRight: { fontSize: 7, color: LT, textAlign: "right" },
+  footerLegal: { fontSize: 7, color: MID, fontFamily: "Helvetica-Bold", textAlign: "center", marginTop: 4 },
+});
+
+function ccDr(label: string, value: string) {
+  return React.createElement(View, { style: cc.dataRow },
+    React.createElement(Text, { style: cc.dataLabel }, label),
+    React.createElement(Text, { style: cc.dataValue }, value),
+  );
+}
+
+function CcInvoiceDoc({ data }: { data: CcInvoicePdfData }) {
+  const mes = MESES_ES[(data.periodMonth - 1)] ?? "";
+  const periodo = `${mes} ${data.periodYear}`;
+  const pendingUsd = Math.max(0, Number(data.totalUsd) - Number(data.paidUsd));
+  const pendingBss = Math.max(0, Number(data.totalBss) - Number(data.paidBss));
+  const isPaid = pendingUsd < 0.005;
+  const isPartial = !isPaid && Number(data.paidUsd) > 0.005;
+  const statusLabel = STATUS_LABEL_CC[data.status] ?? data.status;
+  const issuedStr = data.issuedAt.toLocaleDateString("es-VE");
+  const dueStr = data.dueDate.toLocaleDateString("es-VE");
+  const genStr = new Date().toLocaleDateString("es-VE");
+
+  const fmtUsd = (v: string | number) => `$${Number(v).toFixed(2)}`;
+  const fmtBss = (v: string | number) =>
+    `Bs ${Number(v).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  return React.createElement(Document, { title: `Factura CC ${data.invoiceNumber}` },
+    React.createElement(Page, { size: "A4", style: cc.page },
+
+      // ── Membrete ────────────────────────────────────────
+      React.createElement(View, { style: cc.header },
+        React.createElement(View, { style: cc.headerTop },
+          React.createElement(View, null,
+            React.createElement(Text, { style: cc.mallName }, data.mallName.toUpperCase()),
+            React.createElement(Text, { style: cc.mallMeta },
+              "CENTRO COMERCIAL" + (data.mallRif ? "   RIF: " + data.mallRif : "")),
+            React.createElement(Text, { style: { ...cc.mallMeta, marginTop: 1 } },
+              [data.mallAddress, data.mallCity, data.mallPhone, data.mallEmail].filter(Boolean).join("   ")),
+          ),
+          React.createElement(View, { style: cc.headerRight },
+            React.createElement(Text, { style: cc.headerDocLabel }, "N° Factura"),
+            React.createElement(Text, { style: cc.headerDocNum }, data.invoiceNumber),
+            React.createElement(Text, { style: { fontSize: 8, color: MID, textAlign: "right", marginTop: 1 } }, issuedStr),
+          ),
+        ),
+        React.createElement(View, { style: cc.thinLine }),
+      ),
+
+      // ── Título ──────────────────────────────────────────
+      React.createElement(View, { style: cc.titleBlock },
+        React.createElement(Text, { style: cc.docTitle }, "FACTURA DE ARRENDAMIENTO"),
+        React.createElement(Text, { style: cc.docSubtitle },
+          `${TYPE_LABEL_CC[data.type] ?? data.type} — Decreto con Rango, Valor y Fuerza de Ley de Regulación del Arrendamiento Inmobiliario para el Uso Comercial`),
+        React.createElement(View, { style: cc.docMeta },
+          React.createElement(Text, { style: cc.docMetaItem },
+            React.createElement(Text, { style: cc.docMetaLabel }, "Período: "), periodo),
+          React.createElement(Text, { style: cc.docMetaItem },
+            React.createElement(Text, { style: cc.docMetaLabel }, "Emisión: "), issuedStr),
+          React.createElement(Text, { style: cc.docMetaItem },
+            React.createElement(Text, { style: cc.docMetaLabel }, "Vence: "), dueStr),
+          React.createElement(Text, { style: cc.docMetaItem },
+            React.createElement(Text, { style: cc.docMetaLabel }, "Estado: "), statusLabel),
+        ),
+      ),
+
+      // ── Dos columnas: local | arrendatario ──────────────
+      React.createElement(View, { style: cc.twoCol },
+        React.createElement(View, { style: cc.card },
+          React.createElement(View, { style: cc.cardHeader },
+            React.createElement(Text, { style: cc.cardHeaderText }, "DATOS DEL LOCAL"),
+          ),
+          React.createElement(View, { style: cc.cardBody },
+            ccDr("Código:", data.localCode),
+            data.localName ? ccDr("Nombre:", data.localName) : null,
+            data.localFloor != null ? ccDr("Piso:", String(data.localFloor)) : null,
+            ccDr("Centro Comercial:", data.mallName),
+          ),
+        ),
+        React.createElement(View, { style: cc.card },
+          React.createElement(View, { style: cc.cardHeader },
+            React.createElement(Text, { style: cc.cardHeaderText }, "ARRENDATARIO"),
+          ),
+          React.createElement(View, { style: cc.cardBody },
+            ccDr("Razón Social:", data.tenantName ?? "—"),
+            data.tenantRif ? ccDr("RIF:", data.tenantRif) : null,
+            data.tenantPhone ? ccDr("Teléfono:", data.tenantPhone) : null,
+            data.tenantEmail ? ccDr("Email:", data.tenantEmail) : null,
+          ),
+        ),
+      ),
+
+      // ── Conceptos ───────────────────────────────────────
+      React.createElement(View, { style: cc.tableSection },
+        React.createElement(Text, { style: cc.tableSectionTitle }, "CONCEPTOS FACTURADOS"),
+        React.createElement(View, { style: cc.tableHead },
+          React.createElement(Text, { style: cc.thDesc }, "Descripción"),
+          React.createElement(Text, { style: cc.thUsd }, "USD"),
+          React.createElement(Text, { style: cc.thBss }, "Bs.S"),
+        ),
+        ...data.items.map((item, i) =>
+          React.createElement(View, { key: i, style: i % 2 === 0 ? cc.tableRow : cc.tableRowAlt },
+            React.createElement(Text, { style: cc.tdDesc }, item.description),
+            React.createElement(Text, { style: cc.tdUsd }, fmtUsd(item.amountUsd)),
+            React.createElement(Text, { style: cc.tdBss }, fmtBss(item.amountBss)),
+          )
+        ),
+      ),
+
+      // ── Totales ─────────────────────────────────────────
+      React.createElement(View, { style: cc.totalsBox },
+        React.createElement(View, { style: cc.totalLineRow },
+          React.createElement(Text, { style: cc.totalLineLabel }, "Total de la factura"),
+          React.createElement(Text, { style: cc.totalLineUsd }, fmtUsd(data.totalUsd)),
+          React.createElement(Text, { style: cc.totalLineBss }, fmtBss(data.totalBss)),
+        ),
+        Number(data.paidUsd) > 0.005 && React.createElement(View, { style: cc.deductionRow },
+          React.createElement(Text, { style: cc.deductionLabel }, "(–) Abonos recibidos"),
+          React.createElement(Text, { style: cc.deductionUsd }, `– ${fmtUsd(data.paidUsd)}`),
+          React.createElement(Text, { style: cc.deductionBss }, `– ${fmtBss(data.paidBss)}`),
+        ),
+        isPaid
+          ? React.createElement(View, { style: cc.cancelledRow },
+              React.createElement(Text, { style: cc.cancelledLabel }, "SALDO TOTAL: CANCELADO"),
+              React.createElement(Text, { style: cc.cancelledUsd }, "$0.00"),
+              React.createElement(Text, { style: cc.cancelledBss }, "Bs 0,00"),
+            )
+          : React.createElement(View, { style: cc.grandTotalRow },
+              React.createElement(Text, { style: cc.gtLabel }, isPartial ? "SALDO PENDIENTE" : "TOTAL A PAGAR"),
+              React.createElement(Text, { style: cc.gtUsd }, fmtUsd(pendingUsd)),
+              React.createElement(Text, { style: cc.gtBss }, fmtBss(pendingBss)),
+            ),
+      ),
+
+      // ── Tasa BCV ────────────────────────────────────────
+      React.createElement(View, { style: cc.rateBox },
+        React.createElement(Text, { style: cc.rateLabel },
+          `Tasa BCV aplicada: ${Number(data.exchangeRate).toFixed(4)} Bs/$ al momento de emisión   —   El monto en USD es fijo; el equivalente en Bs puede variar.`),
+      ),
+
+      // ── Notas ───────────────────────────────────────────
+      data.notes && React.createElement(View, { style: cc.notesBox },
+        React.createElement(Text, { style: cc.notesTitle }, "Observaciones:"),
+        React.createElement(Text, { style: cc.notesText }, data.notes),
+      ),
+
+      // ── Footer ──────────────────────────────────────────
+      React.createElement(View, { style: cc.footer },
+        React.createElement(View, { style: cc.footerLine2 }),
+        React.createElement(View, { style: cc.footerLine1 }),
+        React.createElement(View, { style: cc.footerRow },
+          React.createElement(Text, { style: cc.footerLeft },
+            `Emitida el ${genStr}   ${data.mallName}`),
+          React.createElement(Text, { style: cc.footerRight },
+            "Los montos en Bs.S se calculan con la tasa BCV del período de emisión"),
+        ),
+        React.createElement(Text, { style: cc.footerLegal },
+          "Decreto con Rango, Valor y Fuerza de Ley de Regulacion del Arrendamiento Inmobiliario para el Uso Comercial — Republica Bolivariana de Venezuela"),
+      ),
+    ),
+  );
+}
+
+export async function generateCcInvoicePdf(data: CcInvoicePdfData): Promise<Buffer> {
+  return renderToBuffer(CcInvoiceDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
+}

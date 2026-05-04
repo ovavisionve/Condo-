@@ -20,6 +20,15 @@ datasource db {
 // PLATFORM & SAAS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TIPO DE ORGANIZACIÓN
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum OrganizationType {
+  RESIDENTIAL  // Condominio residencial (sistema original)
+  COMMERCIAL   // Centro Comercial (sistema paralelo Cc*)
+}
+
 /// Catálogo global de planes que ofrece la plataforma a las organizaciones.
 model Plan {
   id              String   @id @default(cuid())
@@ -51,6 +60,7 @@ model Organization {
   city        String?
   country     String   @default("VE")
   logoUrl     String?
+  type        OrganizationType @default(RESIDENTIAL)
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -75,6 +85,8 @@ model Organization {
   boardMembers        BoardMember[]
   assemblies          Assembly[]
   communityDocuments  CommunityDocument[]
+  // Centro Comercial
+  ccMalls             CcMall[]
 
   @@index([active, deletedAt])
 }
@@ -1399,4 +1411,402 @@ model MonthClose {
 
   @@unique([communityId, year, month])
   @@index([communityId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CENTRO COMERCIAL — MÓDULO PARALELO (prefijo Cc*)
+// Completamente separado del sistema residencial.
+// Un Organization con type=COMMERCIAL usa estos modelos en lugar de Community/Unit.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Galería / mall físico que administra la organización.
+/// Equivale a "Community" en el sistema residencial.
+model CcMall {
+  id              String       @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  rif             String?
+  address         String
+  city            String
+  state           String?
+  country         String       @default("VE")
+  phone           String?
+  email           String?
+  website         String?
+  totalLocales    Int          @default(0)
+  floorsCount     Int?
+  openedAt        DateTime?
+  notes           String?
+  active          Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  locales       CcLocal[]
+  expenses      CcExpense[]
+  incomes       CcIncome[]
+  invoices      CcInvoice[]
+  monthCloses   CcMonthClose[]
+
+  @@index([organizationId, active])
+}
+
+enum CcLocalType {
+  LOCAL       // Local comercial estándar
+  ANCORA      // Tienda ancla (supermercado, hipermercado, tienda departamental)
+  FOOD_COURT  // Módulo de comida rápida en patio de comidas
+  RESTAURANT  // Restaurante independiente
+  BANCO       // Entidad bancaria o taquilla
+  CINE        // Sala de cine
+  QUIOSCO     // Módulo o kiosco en área común
+  OFICINA     // Oficina administrativa
+  OTHER
+}
+
+enum CcCanonType {
+  FIXED          // Canon fijo mensual en USD
+  VARIABLE_SALES // Porcentaje de ventas declaradas (Decree 929)
+  MIXED          // Base fija + porcentaje sobre ventas que exceden un mínimo
+}
+
+/// Local o unidad arrendable dentro de un CcMall.
+/// Equivale a "Unit" en el sistema residencial.
+model CcLocal {
+  id             String      @id @default(cuid())
+  organizationId String
+  mallId         String
+  mall           CcMall      @relation(fields: [mallId], references: [id], onDelete: Cascade)
+  code           String      // Código interno: "L-101", "PC-03", "ANCORA-1"
+  type           CcLocalType @default(LOCAL)
+  name           String?     // Nombre del local / razón social (opcional)
+  floor          Int?
+  wing           String?     // Ala o sector: "Norte", "Sur", "Este", "Patio de Comidas"
+  areaM2         Decimal?    @db.Decimal(10, 2)
+  /// Alícuota en gastos comunes (0.0001 a 100). Null = sin alícuota (no paga gastos comunes)
+  aliquot        Decimal?    @db.Decimal(9, 6)
+  /// Tipo de canon pactado con el arrendatario actual
+  canonType      CcCanonType @default(FIXED)
+  /// Canon fijo mensual en USD (usado en FIXED y como base en MIXED)
+  canonUsd       Decimal?    @db.Decimal(18, 2)
+  /// % de ventas para VARIABLE_SALES y MIXED (ej: 5.00 = 5%)
+  salesPct       Decimal?    @db.Decimal(7, 4)
+  notes          String?
+  active         Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  deletedAt      DateTime?
+
+  tenancies          CcTenancy[]
+  invoices           CcInvoice[]
+  payments           CcPayment[]
+  allocations        CcPaymentAllocation[]
+  salesDeclarations  CcSalesDeclaration[]  @relation("LocalSalesDeclarations")
+
+  @@unique([mallId, code])
+  @@index([organizationId])
+  @@index([mallId, active])
+}
+
+/// Contrato de arrendamiento de un local en el centro comercial.
+/// Incluye canonType, monto y fechas del contrato. Histórico completo.
+model CcTenancy {
+  id              String      @id @default(cuid())
+  organizationId  String
+  localId         String
+  local           CcLocal     @relation(fields: [localId], references: [id], onDelete: Cascade)
+  /// RIF del arrendatario (empresa)
+  tenantRif       String?
+  tenantName      String      // razón social del arrendatario
+  tenantEmail     String?
+  tenantPhone     String?
+  tenantContact   String?     // nombre del representante
+  canonType       CcCanonType @default(FIXED)
+  canonUsd        Decimal?    @db.Decimal(18, 2)
+  salesPct        Decimal?    @db.Decimal(7, 4)
+  startDate       DateTime
+  endDate         DateTime?   // null = contrato vigente
+  depositUsd      Decimal?    @db.Decimal(18, 2)
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([localId, endDate])
+  @@index([organizationId])
+}
+
+enum CcExpenseCategory {
+  ELECTRICIDAD       // Electricidad de áreas comunes + planta
+  DIESEL_PLANTA      // Diésel para planta eléctrica
+  AGUA_CISTERNA      // Agua potable / camiones cisterna
+  LIMPIEZA           // Personal y materiales de limpieza
+  SEGURIDAD          // Guardias, circuito CCTV, control de acceso
+  HVAC               // Aire acondicionado central / climatización
+  ASCENSORES         // Mantenimiento de ascensores y escaleras mecánicas
+  MARKETING          // Publicidad y eventos del mall
+  ADMINISTRACION     // Honorarios administradora, útiles de oficina
+  MANTENIMIENTO      // Reparaciones generales en áreas comunes
+  SEGUROS            // Póliza de incendio, HCM personal, etc.
+  NOMINA_STAFF       // Sueldos del personal del mall (directos)
+  IMPUESTOS          // Tasas municipales, bomberos, etc.
+  FONDO_RESERVA      // Apartado para obras mayores / emergencias
+  OTHER
+}
+
+/// Gasto de áreas comunes o servicios del centro comercial en un período.
+model CcExpense {
+  id              String            @id @default(cuid())
+  organizationId  String
+  mallId          String
+  mall            CcMall            @relation(fields: [mallId], references: [id], onDelete: Cascade)
+  category        CcExpenseCategory
+  customCategory  String?
+  description     String
+  periodYear      Int
+  periodMonth     Int               // 1..12
+  amountBss       Decimal           @db.Decimal(18, 2)
+  amountUsd       Decimal           @db.Decimal(18, 2)
+  exchangeRate    Decimal           @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  supplierName    String?
+  invoiceNumber   String?
+  receiptDate     DateTime?
+  notes           String?
+  /// Solo si se quiere facturar directamente al local (cargo individual)
+  isIndividual    Boolean           @default(false)
+  targetLocalId   String?
+  /// Si null: pendiente de prorrateo. Si set: ya incluido en facturas del período.
+  invoicedAt      DateTime?
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  invoiceItems    CcInvoiceItem[]
+
+  @@index([organizationId])
+  @@index([mallId, periodYear, periodMonth])
+  @@index([mallId, invoicedAt])
+}
+
+enum CcIncomeCategory {
+  PUBLICIDAD_INTERNA  // Vallas, pantallas LED dentro del mall
+  ALQUILER_ESPACIO    // Alquiler de áreas comunes para eventos, ferias
+  ESTACIONAMIENTO     // Taquilla de estacionamiento
+  PATROCINIOS         // Sponsors de eventos
+  INTERESES           // Rendimientos financieros
+  PENALIDADES         // Multas o penalidades a locales
+  OTHER
+}
+
+/// Ingresos propios del mall (no provenientes de cánones de locales).
+model CcIncome {
+  id              String           @id @default(cuid())
+  organizationId  String
+  mallId          String
+  mall            CcMall           @relation(fields: [mallId], references: [id], onDelete: Cascade)
+  category        CcIncomeCategory
+  customCategory  String?
+  description     String
+  periodYear      Int
+  periodMonth     Int
+  amountBss       Decimal          @db.Decimal(18, 2)
+  amountUsd       Decimal          @db.Decimal(18, 2)
+  exchangeRate    Decimal          @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  reference       String?
+  /// Si true, este ingreso reduce gastos antes del prorrateo
+  affectsInvoice  Boolean          @default(false)
+  notes           String?
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([organizationId])
+  @@index([mallId, periodYear, periodMonth])
+}
+
+enum CcInvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIAL
+  PAID
+  OVERDUE
+  VOIDED
+}
+
+enum CcInvoiceType {
+  ALIQUOT      // Cuota de gastos comunes prorrateada por alícuota
+  CANON        // Canon de arrendamiento mensual
+  CANON_SALES  // Canon variable sobre declaración de ventas
+  EXTRA_FEE    // Cargo extraordinario
+  FINE         // Multa
+  OTHER
+}
+
+/// Factura mensual emitida a un local del centro comercial.
+model CcInvoice {
+  id              String          @id @default(cuid())
+  organizationId  String
+  mallId          String
+  mall            CcMall          @relation(fields: [mallId], references: [id], onDelete: Cascade)
+  localId         String
+  local           CcLocal         @relation(fields: [localId], references: [id], onDelete: Restrict)
+  invoiceNumber   String          // correlativo: "2026-04-L101"
+  type            CcInvoiceType   @default(ALIQUOT)
+  periodYear      Int
+  periodMonth     Int
+  issuedAt        DateTime
+  dueDate         DateTime
+  totalBss        Decimal         @db.Decimal(18, 2)
+  totalUsd        Decimal         @db.Decimal(18, 2)
+  exchangeRate    Decimal         @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  paidBss         Decimal         @default(0) @db.Decimal(18, 2)
+  paidUsd         Decimal         @default(0) @db.Decimal(18, 2)
+  status          CcInvoiceStatus @default(ISSUED)
+  voidedAt        DateTime?
+  voidReason      String?
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  items       CcInvoiceItem[]
+  allocations CcPaymentAllocation[]
+
+  @@unique([mallId, invoiceNumber])
+  @@index([organizationId])
+  @@index([mallId, periodYear, periodMonth])
+  @@index([localId, status])
+  @@index([status, dueDate])
+}
+
+/// Línea de detalle en una factura de centro comercial.
+model CcInvoiceItem {
+  id          String     @id @default(cuid())
+  invoiceId   String
+  invoice     CcInvoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  expenseId   String?
+  expense     CcExpense? @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+  description String
+  amountBss   Decimal    @db.Decimal(18, 2)
+  amountUsd   Decimal    @db.Decimal(18, 2)
+  aliquot     Decimal?   @db.Decimal(9, 6) // null para cargos directos (canon, multa)
+
+  @@index([invoiceId])
+  @@index([expenseId])
+}
+
+/// Pago realizado por un local al centro comercial.
+model CcPayment {
+  id              String         @id @default(cuid())
+  organizationId  String
+  mallId          String
+  localId         String
+  local           CcLocal        @relation(fields: [localId], references: [id], onDelete: Restrict)
+  amountBss       Decimal        @db.Decimal(18, 2)
+  amountUsd       Decimal        @db.Decimal(18, 2)
+  exchangeRate    Decimal        @db.Decimal(18, 8)
+  exchangeSource  ExchangeSource
+  currencyPrimary Currency
+  method          PaymentMethod  // reutilizamos el enum del sistema residencial
+  reference       String?
+  paidAt          DateTime
+  notes           String?
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime       @default(now())
+  createdById     String?
+
+  allocations CcPaymentAllocation[]
+
+  @@index([organizationId])
+  @@index([mallId, paidAt])
+  @@index([localId, paidAt])
+}
+
+/// Distribución de un CcPayment entre una o más CcInvoices.
+model CcPaymentAllocation {
+  id        String    @id @default(cuid())
+  paymentId String
+  payment   CcPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   CcInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  localId   String
+  local     CcLocal   @relation(fields: [localId], references: [id], onDelete: Restrict)
+  amountBss Decimal   @db.Decimal(18, 2)
+  amountUsd Decimal   @db.Decimal(18, 2)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+}
+
+/// Declaración mensual de ventas del arrendatario (requerida para canon variable).
+/// Base legal: Decreto 929/2014 sobre Centros Comerciales.
+model CcSalesDeclaration {
+  id              String    @id @default(cuid())
+  organizationId  String
+  mallId          String
+  localId         String
+  local           CcLocal   @relation("LocalSalesDeclarations", fields: [localId], references: [id], onDelete: Cascade)
+  periodYear      Int
+  periodMonth     Int
+  salesAmountBss  Decimal   @db.Decimal(18, 2)  // ventas declaradas en Bs
+  salesAmountUsd  Decimal   @db.Decimal(18, 2)  // equivalente en USD
+  exchangeRate    Decimal   @db.Decimal(18, 8)
+  /// Comprobante / soporte de la declaración (SENIAT, estado de cuenta POS)
+  evidenceUrl     String?
+  verified        Boolean   @default(false)      // verificado por la administración
+  verifiedAt      DateTime?
+  verifiedById    String?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([localId, periodYear, periodMonth])
+  @@index([mallId, periodYear, periodMonth])
+  @@index([organizationId])
+}
+
+/// Evento de marketing / activación del centro comercial.
+model CcMarketingEvent {
+  id              String   @id @default(cuid())
+  organizationId  String
+  mallId          String
+  title           String
+  description     String?
+  scheduledAt     DateTime
+  endsAt          DateTime?
+  location        String?  // "Planta baja - Atrio", "Estacionamiento nivel 2", etc.
+  budgetUsd       Decimal? @db.Decimal(18, 2)
+  actualCostUsd   Decimal? @db.Decimal(18, 2)
+  sponsor         String?  // nombre del local o marca patrocinante
+  status          String   @default("PLANNED") // PLANNED | ACTIVE | COMPLETED | CANCELLED
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([mallId, scheduledAt])
+  @@index([organizationId])
+}
+
+/// Cierre contable mensual del centro comercial.
+model CcMonthClose {
+  id             String   @id @default(cuid())
+  organizationId String
+  mallId         String
+  mall           CcMall   @relation(fields: [mallId], references: [id], onDelete: Cascade)
+  year           Int
+  month          Int
+  closedAt       DateTime @default(now())
+  closedById     String
+  summary        Json     @default("{}")
+  notes          String?
+
+  @@unique([mallId, year, month])
+  @@index([mallId])
 }

@@ -1,6 +1,9 @@
 import { Decimal } from "decimal.js";
 import { db } from "@/server/db/client";
 import type { ExchangeSource } from "@prisma/client";
+import axios from "axios";
+import * as https from "https";
+import * as cheerio from "cheerio";
 
 /**
  * Servicio de tasas de cambio.
@@ -190,42 +193,72 @@ async function fetchFromDolarApi(): Promise<Decimal | null> {
 // open.er-api.com removida: no actualiza VES con la frecuencia del BCV oficial.
 
 /**
+ * Agente HTTPS que ignora el certificado SSL mal configurado del BCV.
+ * Igual que en el proyecto comanda (probado en producción).
+ */
+const bcvHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+/**
  * Scraping directo de www.bcv.org.ve — FUENTE PRIMARIA.
- * Misma estrategia probada en el proyecto "comanda".
+ * Usa axios + cheerio (igual que comanda) con SSL bypass para el cert malo del BCV.
  * El BCV usa coma como separador decimal: "490,22510000".
  */
 async function fetchBcvScrape(): Promise<Decimal | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    let html: string;
-    try {
-      const res = await fetch("https://www.bcv.org.ve/", {
-        signal: controller.signal,
-        headers: {
-          // User-Agent idéntico al del proyecto comanda (probado en producción)
-          "User-Agent": "Mozilla/5.0 (compatible; Comanda/1.0; +https://comanda.app)",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "es-VE,es;q=0.9,en;q=0.8",
-          "Cache-Control": "no-cache",
-        },
-        cache: "no-store",
+    const response = await axios.get<string>("https://www.bcv.org.ve/", {
+      timeout: 15_000,
+      httpsAgent: bcvHttpsAgent,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-VE,es;q=0.9,en;q=0.5",
+        Connection: "keep-alive",
+        "Cache-Control": "no-cache",
+      },
+      maxRedirects: 5,
+      responseType: "text",
+    });
+
+    const $ = cheerio.load(response.data);
+    let rateText: string | null = null;
+
+    // 1. Selector principal: div#dolar > strong
+    const dolarSection = $("#dolar");
+    if (dolarSection.length) {
+      dolarSection.find("strong").each((_, el) => {
+        const text = $(el).text().trim();
+        if (/^\d+,\d+$/.test(text)) rateText = text;
       });
-      if (!res.ok) {
-        console.warn("[exchange] BCV respondió con HTTP", res.status);
-        return null;
-      }
-      html = await res.text();
-    } finally {
-      clearTimeout(timeout);
     }
-    const rate = parseBcvHtml(html);
-    if (rate === null) {
+
+    // 2. Fallback: divs centrados / campos tasa-del-dia
+    if (!rateText) {
+      $("div.centrado strong, .views-field-field-tasa-del-dia-usd strong, .field-content strong").each((_, el) => {
+        const text = $(el).text().trim();
+        if (/^\d+,\d+$/.test(text)) rateText = text;
+      });
+    }
+
+    // 3. Última opción: regex sobre el body completo
+    if (!rateText) {
+      const body = $("body").text();
+      const match = body.match(/USD[\s\S]*?(\d{2,3},\d{4})/);
+      if (match?.[1]) rateText = match[1];
+    }
+
+    if (!rateText) {
       console.warn("[exchange] BCV scraping: HTML recibido pero no se pudo extraer tasa");
       return null;
     }
-    console.info("[exchange] ✓ Tasa BCV obtenida por scraping directo:", rate);
-    return new Decimal(rate);
+
+    const value = parseFloat(rateText.replace(",", "."));
+    if (!isFinite(value) || value < 1 || value > 100_000) {
+      console.warn("[exchange] BCV scraping: tasa fuera de rango:", value);
+      return null;
+    }
+
+    console.info("[exchange] ✓ Tasa BCV obtenida por scraping directo:", value);
+    return new Decimal(value);
   } catch (err) {
     console.warn("[exchange] BCV scraping falló:", err instanceof Error ? err.message : err);
     return null;
@@ -234,34 +267,30 @@ async function fetchBcvScrape(): Promise<Decimal | null> {
 
 /** Expuesta para testing — recibe HTML crudo y retorna número o null. */
 export function parseBcvHtml(html: string): number | null {
-  // Patrón 1: bloque div#dolar exacto
-  const blockMatch = html.match(/id=["']dolar["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/);
-  const block = blockMatch
-    ? blockMatch[0]
-    : (() => {
-        const idx = html.indexOf('id="dolar"');
-        return idx >= 0 ? html.slice(idx, idx + 800) : null;
-      })();
+  const $ = cheerio.load(html);
+  let rateText: string | null = null;
 
-  if (block) {
-    const match = block.match(/(\d{2,6}[,.](\d{2,10}))/);
-    if (match) {
-      const value = parseFloat((match[1] ?? "").replace(",", "."));
-      if (isFinite(value) && value >= 1 && value <= 100_000) return value;
-    }
+  const dolarSection = $("#dolar");
+  if (dolarSection.length) {
+    dolarSection.find("strong").each((_, el) => {
+      const text = $(el).text().trim();
+      if (/^\d+,\d+$/.test(text)) rateText = text;
+    });
   }
-
-  // Patrón 2: buscar strong con número grande en contexto "dolar"/"USD" (HTML puede cambiar)
-  const allNums = [...html.matchAll(/<strong[^>]*>(\d{2,6}[,.](\d{5,10}))<\/strong>/g)];
-  for (const m of allNums) {
-    const value = parseFloat((m[1] ?? "").replace(",", "."));
-    if (!isFinite(value) || value < 1 || value > 100_000) continue;
-    const idx = html.indexOf(m[0]);
-    const ctx = html.slice(Math.max(0, idx - 600), idx + 100).toLowerCase();
-    if (ctx.includes("dolar") || ctx.includes("usd") || ctx.includes("divisa")) return value;
+  if (!rateText) {
+    $("div.centrado strong, .views-field-field-tasa-del-dia-usd strong, .field-content strong").each((_, el) => {
+      const text = $(el).text().trim();
+      if (/^\d+,\d+$/.test(text)) rateText = text;
+    });
   }
-
-  return null;
+  if (!rateText) {
+    const body = $("body").text();
+    const match = body.match(/USD[\s\S]*?(\d{2,3},\d{4})/);
+    if (match?.[1]) rateText = match[1];
+  }
+  if (!rateText) return null;
+  const value = parseFloat(rateText.replace(",", "."));
+  return isFinite(value) && value >= 1 && value <= 100_000 ? value : null;
 }
 
 /**
