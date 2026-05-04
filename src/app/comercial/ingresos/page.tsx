@@ -77,10 +77,10 @@ export default function IngresosPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">💵 Ingresos</h1>
-          <p className="text-muted-foreground text-sm">{ingresos.length} ingresos · Total: <span className="font-medium text-green-600">${fmt(totalUsd)}</span></p>
+          <h1 className="text-2xl font-semibold">💵 Recaudación</h1>
+          <p className="text-muted-foreground text-sm">{ingresos.length} recaudaciones · Total: <span className="font-medium text-green-600">${fmt(totalUsd)}</span></p>
         </div>
-        <Button onClick={() => setShowNew(true)} className="bg-blue-600 hover:bg-blue-700">+ Registrar ingreso</Button>
+        <Button onClick={() => setShowNew(true)} className="bg-blue-600 hover:bg-blue-700">+ Registrar recaudación</Button>
       </div>
 
       <div className="flex gap-3 items-center">
@@ -103,7 +103,7 @@ export default function IngresosPage() {
       </div>
 
       {ingresos.length === 0 ? (
-        <Card><CardContent className="py-10 text-center text-muted-foreground">No hay ingresos para este período.</CardContent></Card>
+        <Card><CardContent className="py-10 text-center text-muted-foreground">No hay recaudaciones para este período.</CardContent></Card>
       ) : (
         <div className="rounded-lg border overflow-hidden">
           <table className="w-full text-sm">
@@ -132,7 +132,7 @@ export default function IngresosPage() {
       {showNew && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border bg-card shadow-xl">
-            <div className="border-b px-6 py-4"><h2 className="font-semibold">💵 Registrar ingreso</h2></div>
+            <div className="border-b px-6 py-4"><h2 className="font-semibold">💵 Registrar recaudación</h2></div>
             <form onSubmit={(e) => { void handleSubmit(e); }} className="p-6 space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">

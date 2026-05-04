@@ -13,7 +13,7 @@ const NAV_ITEMS = [
   { href: "/comercial/facturas", label: "🧾 Facturas / Canon" },
   { href: "/comercial/pagos", label: "💰 Pagos" },
   { href: "/comercial/gastos", label: "📋 Gastos" },
-  { href: "/comercial/ingresos", label: "💵 Ingresos" },
+  { href: "/comercial/ingresos", label: "💵 Recaudación" },
   { href: "/comercial/ventas", label: "📊 Declaración de Ventas" },
   { href: "/comercial/reportes", label: "📈 Reportes" },
   { href: "/comercial/marketing", label: "🎯 Marketing" },
