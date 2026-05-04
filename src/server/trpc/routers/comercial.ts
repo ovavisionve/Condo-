@@ -87,6 +87,73 @@ export const comercialRouter = router({
         const { mallId, organizationId: _org, ...data } = input;
         return ctx.db.ccMall.update({ where: { id: mallId }, data });
       }),
+
+    /** Métricas del dashboard para un mall: ocupación, renta/m², deuda y ventas del período actual. */
+    metrics: orgProcedure
+      .input(z.object({ organizationId: z.string(), mallId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const { mallId, organizationId } = input;
+        const today = new Date();
+
+        const [locals, activeContracts, pendingInvoices, salesDeclarations] = await Promise.all([
+          ctx.db.ccLocal.findMany({
+            where: { mallId, organizationId, active: true, deletedAt: null },
+            select: { id: true, areaM2: true, type: true },
+          }),
+          ctx.db.ccTenancy.findMany({
+            where: {
+              local: { mallId, organizationId },
+              startDate: { lte: today },
+              OR: [{ endDate: null }, { endDate: { gte: today } }],
+            },
+            select: { id: true, localId: true, canonUsd: true },
+          }),
+          ctx.db.ccInvoice.findMany({
+            where: { mallId, organizationId, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+            select: { totalUsd: true, paidUsd: true },
+          }),
+          ctx.db.ccSalesDeclaration.findMany({
+            where: {
+              mallId,
+              organizationId,
+              periodYear: today.getFullYear(),
+              periodMonth: today.getMonth() + 1,
+            },
+            select: { salesAmountUsd: true },
+          }),
+        ]);
+
+        const totalLocals = locals.length;
+        const occupiedLocalIds = new Set(activeContracts.map((c) => c.localId));
+        const occupiedLocals = occupiedLocalIds.size;
+        const vacantLocals = totalLocals - occupiedLocals;
+
+        const totalAreaM2 = locals.reduce((s, l) => s + Number(l.areaM2 ?? 0), 0);
+        const totalRentUsd = activeContracts.reduce((s, c) => s + Number(c.canonUsd ?? 0), 0);
+        const rentPerM2 = totalAreaM2 > 0 ? (totalRentUsd / totalAreaM2).toFixed(2) : "0";
+
+        const totalPending = pendingInvoices.reduce(
+          (s, i) => s + Number(i.totalUsd) - Number(i.paidUsd),
+          0,
+        );
+        const totalSales = salesDeclarations.reduce(
+          (s, d) => s + Number(d.salesAmountUsd ?? 0),
+          0,
+        );
+
+        return {
+          totalLocals,
+          occupiedLocals,
+          vacantLocals,
+          vacancyRate: totalLocals > 0 ? Number(((vacantLocals / totalLocals) * 100).toFixed(1)) : 0,
+          occupancyRate: totalLocals > 0 ? Number(((occupiedLocals / totalLocals) * 100).toFixed(1)) : 0,
+          totalAreaM2: totalAreaM2.toFixed(0),
+          totalRentUsd: totalRentUsd.toFixed(2),
+          rentPerM2,
+          pendingDebtUsd: totalPending.toFixed(2),
+          monthlySalesUsd: totalSales.toFixed(2),
+        };
+      }),
   }),
 
   // ── Locales ─────────────────────────────────────────────────────────────
@@ -239,6 +306,51 @@ export const comercialRouter = router({
       .mutation(({ ctx, input }) => {
         const { tenancyId, organizationId: _org, ...data } = input;
         return ctx.db.ccTenancy.update({ where: { id: tenancyId }, data });
+      }),
+
+    /** Contratos próximos a vencer en los próximos N días, agrupados en buckets de 30/60/90 días. */
+    expiring: orgProcedure
+      .input(
+        z.object({
+          organizationId: z.string(),
+          mallId: z.string(),
+          daysAhead: z.number().int().min(1).max(365).default(90),
+        }),
+      )
+      .query(async ({ ctx, input }) => {
+        const today = new Date();
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() + input.daysAhead);
+
+        const tenancies = await ctx.db.ccTenancy.findMany({
+          where: {
+            organizationId: input.organizationId,
+            local: { mallId: input.mallId },
+            endDate: { not: null, lte: cutoff, gte: today },
+          },
+          include: {
+            local: { select: { id: true, code: true, name: true, floor: true, mallId: true } },
+          },
+          orderBy: { endDate: "asc" },
+        });
+
+        const now = new Date();
+        return tenancies.map((t) => {
+          const daysLeft = Math.ceil(
+            (new Date(t.endDate!).getTime() - now.getTime()) / 86_400_000,
+          );
+          return {
+            id: t.id,
+            tenantName: t.tenantName,
+            localCode: t.local.code,
+            localName: t.local.name ?? t.local.code,
+            floorLevel: t.local.floor,
+            endDate: t.endDate!.toISOString(),
+            daysLeft,
+            canonUsd: t.canonUsd?.toString() ?? "0",
+            bucket: daysLeft <= 30 ? "30" : daysLeft <= 60 ? "60" : "90",
+          };
+        });
       }),
   }),
 
@@ -475,9 +587,15 @@ export const comercialRouter = router({
           include: { tenancies: { where: { endDate: null }, take: 1 } },
         });
 
+        // Datos del mall (una sola consulta antes del loop)
+        const mall = await ctx.db.ccMall.findUniqueOrThrow({
+          where: { id: input.mallId },
+          select: { name: true, address: true, phone: true, email: true },
+        });
+
         const now = new Date();
         const dueDate = new Date(now.getTime() + input.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
-        const results = { issued: 0, skipped: 0, errors: 0 };
+        const results = { issued: 0, skipped: 0, errors: 0, emailsSent: 0 };
 
         for (const local of locales) {
           if (!local.canonUsd || Number(local.canonUsd) <= 0) { results.skipped++; continue; }
@@ -499,6 +617,7 @@ export const comercialRouter = router({
             const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
             const amountUsd = Number(local.canonUsd);
             const amountBss = amountUsd * input.exchangeRate;
+            const description = `Canon de arrendamiento — ${new Date(input.periodYear, input.periodMonth - 1).toLocaleDateString("es-VE", { month: "long", year: "numeric" })}`;
 
             await ctx.db.ccInvoice.create({
               data: {
@@ -517,15 +636,44 @@ export const comercialRouter = router({
                 exchangeSource: input.exchangeSource,
                 currencyPrimary: "USD",
                 items: {
-                  create: {
-                    description: `Canon de arrendamiento — ${new Date(input.periodYear, input.periodMonth - 1).toLocaleDateString("es-VE", { month: "long", year: "numeric" })}`,
-                    amountBss,
-                    amountUsd,
-                  },
+                  create: { description, amountBss, amountUsd },
                 },
               },
             });
             results.issued++;
+
+            // Email automático al arrendatario (silencioso: no rompe el batch si falla)
+            const tenancy = local.tenancies[0];
+            if (tenancy?.tenantEmail) {
+              try {
+                const { buildCcInvoiceEmail, sendEmail } = await import("@/server/services/email");
+                const emailData = buildCcInvoiceEmail({
+                  mallName: mall.name,
+                  mallAddress: mall.address ?? undefined,
+                  mallPhone: mall.phone ?? undefined,
+                  mallEmail: mall.email ?? undefined,
+                  tenantName: tenancy.tenantName,
+                  localCode: local.code,
+                  localName: local.name,
+                  invoiceNumber,
+                  periodYear: input.periodYear,
+                  periodMonth: input.periodMonth,
+                  issuedAt: now,
+                  dueDate,
+                  type: "CANON",
+                  items: [{ description, amountUsd: String(amountUsd), amountBss: String(amountBss) }],
+                  totalUsd: String(amountUsd),
+                  totalBss: String(amountBss),
+                  paidUsd: "0",
+                  exchangeRate: String(input.exchangeRate),
+                  status: "ISSUED",
+                });
+                await sendEmail({ to: tenancy.tenantEmail, subject: emailData.subject, html: emailData.html, text: emailData.text });
+                results.emailsSent++;
+              } catch {
+                // Email failure no cancela la emisión
+              }
+            }
           } catch {
             results.errors++;
           }
@@ -558,7 +706,7 @@ export const comercialRouter = router({
         // Datos del mall
         const mall = await ctx.db.ccMall.findUniqueOrThrow({
           where: { id: inv.mallId },
-          select: { name: true, address: true, rif: true, phone: true, email: true, city: true },
+          select: { name: true, address: true, rif: true, phone: true, email: true, city: true, notes: true },
         });
 
         // Arrendatario activo del local al momento de la factura
@@ -605,6 +753,7 @@ export const comercialRouter = router({
           paidUsd: inv.paidUsd.toString(),
           paidBss: inv.paidBss.toString(),
           notes: inv.notes,
+          paymentInstructions: mall.notes,
         });
 
         return {
@@ -860,6 +1009,58 @@ export const comercialRouter = router({
           data: { verified: true, verifiedAt: new Date(), verifiedById: ctx.user.id },
         }),
       ),
+
+    /** Calcula el canon variable (CAV/CAM) a partir de una declaración de ventas. */
+    calculateVariableCanon: orgProcedure
+      .input(
+        z.object({
+          organizationId: z.string(),
+          mallId: z.string(),
+          declarationId: z.string(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const decl = await ctx.db.ccSalesDeclaration.findFirst({
+          where: { id: input.declarationId, organizationId: input.organizationId, mallId: input.mallId },
+          include: { local: true },
+        });
+        if (!decl) throw new TRPCError({ code: "NOT_FOUND", message: "Declaración no encontrada" });
+
+        // Obtener la tenencia activa del local (endDate null o en el futuro)
+        const tenancy = await ctx.db.ccTenancy.findFirst({
+          where: {
+            localId: decl.localId,
+            startDate: { lte: new Date() },
+            OR: [{ endDate: null }, { endDate: { gte: new Date() } }],
+          },
+          orderBy: { startDate: "desc" },
+        });
+        if (!tenancy) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Sin contrato activo para este local" });
+        }
+
+        const totalSalesUsd = Number(decl.salesAmountUsd);
+        const percentOfSales = Number(tenancy.salesPct ?? 0);
+        const canonFijoUsd = Number(tenancy.canonUsd ?? 0);
+        let calculatedCanonUsd = 0;
+
+        if (tenancy.canonType === "VARIABLE_SALES") {
+          calculatedCanonUsd = totalSalesUsd * (percentOfSales / 100);
+        } else if (tenancy.canonType === "MIXED") {
+          const variable = totalSalesUsd * (percentOfSales / 100);
+          calculatedCanonUsd = Math.max(canonFijoUsd, variable);
+        } else {
+          calculatedCanonUsd = canonFijoUsd;
+        }
+
+        return {
+          canonType: tenancy.canonType,
+          totalSalesUsd: decl.salesAmountUsd.toString(),
+          percentOfSales: tenancy.salesPct?.toString() ?? "0",
+          canonFijoUsd: tenancy.canonUsd?.toString() ?? "0",
+          calculatedCanonUsd: calculatedCanonUsd.toFixed(2),
+        };
+      }),
   }),
 
   // ── Reportes ─────────────────────────────────────────────────────────────
@@ -1107,7 +1308,125 @@ export const comercialRouter = router({
         return { url: `${baseUrl}/portal-cc?token=${token}`, token };
       }),
 
-    /** Consulta pública — valida el token y devuelve el portal del arrendatario. */
+    /** Notificación de pago desde el portal — pública (firmada con token) */
+    notifyPayment: publicProcedure
+      .input(z.object({
+        token: z.string(),
+        method: z.string(),
+        amountUsd: z.coerce.number().positive(),
+        reference: z.string().optional(),
+        bankName: z.string().optional(),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { verifyCcPortalToken } = await import("@/lib/cc-portal-token");
+        const payload = verifyCcPortalToken(input.token);
+
+        const [local, tenancy, mall] = await Promise.all([
+          ctx.db.ccLocal.findUniqueOrThrow({ where: { id: payload.localId }, select: { code: true, name: true } }),
+          ctx.db.ccTenancy.findUniqueOrThrow({ where: { id: payload.tenancyId }, select: { tenantName: true, tenantEmail: true } }),
+          ctx.db.ccMall.findUniqueOrThrow({ where: { id: payload.mallId }, select: { name: true, email: true } }),
+        ]);
+
+        // Enviar email al correo del mall (si tiene)
+        const adminEmail = mall.email;
+        if (adminEmail) {
+          const { sendEmail } = await import("@/server/services/email");
+          const localLabel = local.name ? `${local.code} — ${local.name}` : local.code;
+          const html = `
+            <div style="font-family:sans-serif;max-width:600px;margin:auto;padding:24px">
+              <h2 style="color:#1e40af">📢 Notificación de pago recibida</h2>
+              <p><strong>Mall:</strong> ${mall.name}</p>
+              <p><strong>Local:</strong> ${localLabel}</p>
+              <p><strong>Arrendatario:</strong> ${tenancy.tenantName}</p>
+              <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0"/>
+              <p><strong>Método de pago:</strong> ${input.method}</p>
+              <p><strong>Monto USD:</strong> $${input.amountUsd.toFixed(2)}</p>
+              ${input.reference ? `<p><strong>Referencia:</strong> ${input.reference}</p>` : ""}
+              ${input.bankName ? `<p><strong>Banco:</strong> ${input.bankName}</p>` : ""}
+              ${input.notes ? `<p><strong>Notas:</strong> ${input.notes}</p>` : ""}
+              <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0"/>
+              <p style="color:#6b7280;font-size:12px">Esta notificación fue enviada por el arrendatario desde el portal del CC. Verifique el pago y regístrelo en el sistema.</p>
+            </div>`;
+          await sendEmail({
+            to: adminEmail,
+            subject: `[${mall.name}] Notificación de pago — ${tenancy.tenantName} (Local ${local.code})`,
+            html,
+            text: `Notificación de pago de ${tenancy.tenantName} (Local ${local.code}) — ${input.method} $${input.amountUsd.toFixed(2)} ${input.reference ? `Ref: ${input.reference}` : ""}`,
+          });
+        }
+
+        // Guardar registro en DB para que el admin lo vea en el panel
+        const notifPayload = JSON.stringify({
+          mallId: payload.mallId,
+          localId: payload.localId,
+          tenancyId: payload.tenancyId,
+          localCode: local.code,
+          localName: local.name ?? null,
+          tenantName: tenancy.tenantName,
+          tenantEmail: tenancy.tenantEmail ?? null,
+          method: input.method,
+          amountUsd: input.amountUsd,
+          reference: input.reference ?? null,
+          bankName: input.bankName ?? null,
+          notes: input.notes ?? null,
+          fechaPago: new Date().toISOString(),
+          estado: "PENDIENTE",
+          createdAt: new Date().toISOString(),
+        });
+        await ctx.db.notification.create({
+          data: {
+            channel: "IN_APP",
+            event: "ANNOUNCEMENT",
+            status: "SENT",
+            organizationId: payload.organizationId,
+            body: `CC_PAGO_POR_VERIFICAR:${notifPayload}`,
+          },
+        });
+
+        return { sent: !!adminEmail, tenantName: tenancy.tenantName };
+      }),
+
+    /** Lista las notificaciones de pago enviadas por arrendatarios desde el portal CC. */
+    listPaymentNotifications: orgProcedure
+      .input(z.object({ organizationId: z.string(), mallId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const notifications = await ctx.db.notification.findMany({
+          where: {
+            organizationId: input.organizationId,
+            body: { startsWith: "CC_PAGO_POR_VERIFICAR:" },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+          select: { id: true, body: true, createdAt: true },
+        });
+
+        type CcPaymentPayload = {
+          mallId: string; localId: string; tenancyId: string;
+          localCode: string; localName: string | null;
+          tenantName: string; tenantEmail: string | null;
+          method: string; amountUsd: number;
+          reference: string | null; bankName: string | null;
+          notes: string | null; fechaPago: string;
+          estado: string; createdAt: string;
+        };
+
+        return notifications
+          .map((n) => {
+            try {
+              const raw = n.body.replace(/^CC_PAGO_POR_VERIFICAR:/, "");
+              const data = JSON.parse(raw) as CcPaymentPayload;
+              // Filtrar por mallId si corresponde
+              if (data.mallId !== input.mallId) return null;
+              return { id: n.id, ...data, notifiedAt: n.createdAt };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+      }),
+
+    /** Consulta pública — valida el token y devuelve el portal del arrendatario (enriquecido). */
     getByToken: publicProcedure
       .input(z.object({ token: z.string() }))
       .query(async ({ ctx, input }) => {
@@ -1120,10 +1439,13 @@ export const comercialRouter = router({
           throw new TRPCError({ code: "UNAUTHORIZED", message: "Enlace inválido o expirado" });
         }
 
-        const [tenancy, local, mall, invoices, payments] = await Promise.all([
+        const [tenancy, local, mall, invoices, payments, rateRec] = await Promise.all([
           ctx.db.ccTenancy.findUniqueOrThrow({ where: { id: payload.tenancyId } }),
           ctx.db.ccLocal.findUniqueOrThrow({ where: { id: payload.localId } }),
-          ctx.db.ccMall.findUniqueOrThrow({ where: { id: payload.mallId }, select: { name: true, address: true, phone: true, email: true } }),
+          ctx.db.ccMall.findUniqueOrThrow({
+            where: { id: payload.mallId },
+            select: { name: true, address: true, phone: true, email: true, city: true, rif: true, notes: true },
+          }),
           ctx.db.ccInvoice.findMany({
             where: { localId: payload.localId, status: { not: "DRAFT" } },
             include: { items: true },
@@ -1136,51 +1458,251 @@ export const comercialRouter = router({
             orderBy: { paidAt: "desc" },
             take: 36,
           }),
+          ctx.db.exchangeRate.findFirst({
+            orderBy: { date: "desc" },
+          }),
         ]);
 
-        const pendingInvoices = invoices.filter((i) => ["ISSUED", "PARTIAL", "OVERDUE"].includes(i.status));
-        const totalPendingUsd = pendingInvoices.reduce((s, i) => s + Number(i.totalUsd) - Number(i.paidUsd), 0);
+        const today = new Date();
+        const todayRate = rateRec ? Number(rateRec.vesPerUsd) : 1;
+
+        // Pending invoices con aging
+        const pendingInvoicesRaw = invoices.filter((i) => ["ISSUED", "PARTIAL", "OVERDUE"].includes(i.status));
+        const pendingInvoices = pendingInvoicesRaw.map((i) => {
+          const daysOverdue = Math.max(0, Math.floor((today.getTime() - new Date(i.dueDate).getTime()) / 86400000));
+          return { ...i, pendingUsdNum: Number(i.totalUsd) - Number(i.paidUsd), daysOverdue, monthsOverdue: Math.ceil(daysOverdue / 30) };
+        });
+        const totalPendingUsd = pendingInvoices.reduce((s, i) => s + i.pendingUsdNum, 0);
+
+        // Aging buckets
+        const agingBuckets = [
+          { label: "0-30d", usd: 0 }, { label: "31-60d", usd: 0 },
+          { label: "61-90d", usd: 0 }, { label: "90+d", usd: 0 },
+        ];
+        for (const inv of pendingInvoices) {
+          if (inv.daysOverdue <= 30) agingBuckets[0]!.usd += inv.pendingUsdNum;
+          else if (inv.daysOverdue <= 60) agingBuckets[1]!.usd += inv.pendingUsdNum;
+          else if (inv.daysOverdue <= 90) agingBuckets[2]!.usd += inv.pendingUsdNum;
+          else agingBuckets[3]!.usd += inv.pendingUsdNum;
+        }
+
+        // Monthly payment totals (last 6 months)
+        const sixMonthsAgo = new Date(); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        const monthlyMap = new Map<string, number>();
+        const MESES_SHORT = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+        for (const p of payments) {
+          const d = new Date(p.paidAt);
+          if (d < sixMonthsAgo) continue;
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + Number(p.amountUsd));
+        }
+        const monthlyPaymentTotals = Array.from(monthlyMap.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([ym, total]) => {
+            const parts = ym.split("-");
+            const yr = Number(parts[0]); const mo = Number(parts[1]);
+            return { yearMonth: ym, label: `${MESES_SHORT[mo - 1]}/${yr}`, totalUsd: total };
+          });
+
+        // Payments con saldo anterior / queda pendiente
+        const invoicesAsc = [...invoices].filter(i => i.status !== "VOIDED")
+          .sort((a, b) => new Date(a.issuedAt).getTime() - new Date(b.issuedAt).getTime());
+        const paymentsAsc = [...payments].sort((a, b) => new Date(a.paidAt).getTime() - new Date(b.paidAt).getTime());
+        let cumPaid = 0;
+        const paymentsWithBalance = paymentsAsc.map((p) => {
+          const totalInvoiced = invoicesAsc
+            .filter(i => new Date(i.issuedAt) <= new Date(p.paidAt))
+            .reduce((s, i) => s + Number(i.totalUsd), 0);
+          const saldoAnterior = Math.max(0, totalInvoiced - cumPaid);
+          cumPaid += Number(p.amountUsd);
+          return {
+            id: p.id, paidAt: p.paidAt,
+            amountUsd: p.amountUsd.toString(), amountBss: p.amountBss.toString(),
+            method: p.method, reference: p.reference,
+            invoiceNumbers: p.allocations.map((a) => a.invoice?.invoiceNumber ?? "").filter(Boolean),
+            saldoAnteriorUsd: saldoAnterior.toFixed(2),
+            quedaPendienteUsd: Math.max(0, saldoAnterior - Number(p.amountUsd)).toFixed(2),
+          };
+        });
+        paymentsWithBalance.reverse(); // desc again
 
         return {
-          tenancy: {
-            id: tenancy.id,
-            tenantName: tenancy.tenantName,
-            tenantRif: tenancy.tenantRif,
-            startDate: tenancy.startDate,
-            endDate: tenancy.endDate,
-          },
-          local: {
-            code: local.code,
-            name: local.name,
-            floor: local.floor,
-          },
-          mall,
+          tenancy: { id: tenancy.id, tenantName: tenancy.tenantName, tenantRif: tenancy.tenantRif, startDate: tenancy.startDate, endDate: tenancy.endDate },
+          local: { code: local.code, name: local.name, floor: local.floor },
+          mall: { name: mall.name, address: mall.address, phone: mall.phone, email: mall.email, city: mall.city, rif: mall.rif, paymentInstructions: mall.notes },
           invoices: invoices.map((inv) => ({
-            id: inv.id,
-            invoiceNumber: inv.invoiceNumber,
-            periodYear: inv.periodYear,
-            periodMonth: inv.periodMonth,
-            type: inv.type,
-            status: inv.status,
-            totalUsd: inv.totalUsd.toString(),
+            id: inv.id, invoiceNumber: inv.invoiceNumber,
+            periodYear: inv.periodYear, periodMonth: inv.periodMonth,
+            type: inv.type, status: inv.status,
+            totalUsd: inv.totalUsd.toString(), totalBss: inv.totalBss.toString(),
             paidUsd: inv.paidUsd.toString(),
-            dueDate: inv.dueDate,
-            issuedAt: inv.issuedAt,
-            items: inv.items.map((it) => ({ description: it.description, amountUsd: it.amountUsd.toString() })),
+            exchangeRate: inv.exchangeRate.toString(),
+            dueDate: inv.dueDate, issuedAt: inv.issuedAt,
+            items: inv.items.map((it) => ({ description: it.description, amountUsd: it.amountUsd.toString(), amountBss: it.amountBss.toString() })),
           })),
-          payments: payments.map((p) => ({
-            id: p.id,
-            paidAt: p.paidAt,
-            amountUsd: p.amountUsd.toString(),
-            method: p.method,
-            reference: p.reference,
-            invoiceNumbers: p.allocations.map((a) => a.invoice?.invoiceNumber ?? "").filter(Boolean),
+          payments: paymentsWithBalance,
+          pendingInvoices: pendingInvoices.map((inv) => ({
+            id: inv.id, invoiceNumber: inv.invoiceNumber,
+            periodYear: inv.periodYear, periodMonth: inv.periodMonth,
+            totalUsd: inv.totalUsd.toString(), paidUsd: inv.paidUsd.toString(),
+            pendingUsd: inv.pendingUsdNum.toFixed(2),
+            dueDate: inv.dueDate, daysOverdue: inv.daysOverdue, monthsOverdue: inv.monthsOverdue, status: inv.status,
           })),
-          summary: {
-            totalPendingUsd,
-            pendingCount: pendingInvoices.length,
-          },
+          summary: { totalPendingUsd, pendingCount: pendingInvoices.length },
+          agingBuckets,
+          monthlyPaymentTotals,
+          lastInvoice: invoices[0] ? {
+            id: invoices[0].id, invoiceNumber: invoices[0].invoiceNumber,
+            totalUsd: invoices[0].totalUsd.toString(), totalBss: invoices[0].totalBss.toString(),
+            periodYear: invoices[0].periodYear, periodMonth: invoices[0].periodMonth,
+          } : null,
+          lastPayment: payments[0] ? {
+            amountUsd: payments[0].amountUsd.toString(), amountBss: payments[0].amountBss.toString(),
+            paidAt: payments[0].paidAt,
+          } : null,
+          todayRate: todayRate.toFixed(4),
+          todayRateSource: rateRec?.source ?? "MANUAL",
         };
+      }),
+
+    /** Deuda general del mall — todos los locales (acceso con token). */
+    getMallDebt: publicProcedure
+      .input(z.object({ token: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const { verifyCcPortalToken } = await import("@/lib/cc-portal-token");
+        let payload;
+        try { payload = verifyCcPortalToken(input.token); }
+        catch { throw new TRPCError({ code: "UNAUTHORIZED", message: "Token inválido" }); }
+
+        const locales = await ctx.db.ccLocal.findMany({
+          where: { mallId: payload.mallId, deletedAt: null },
+          include: {
+            tenancies: { where: { endDate: null }, orderBy: { startDate: "desc" }, take: 1 },
+            invoices: {
+              where: { status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+              select: { totalUsd: true, paidUsd: true, dueDate: true },
+            },
+          },
+          orderBy: [{ floor: "asc" }, { code: "asc" }],
+        });
+
+        const today = new Date();
+        const agingBuckets = [
+          { label: "0-30d", usd: 0 }, { label: "31-60d", usd: 0 },
+          { label: "61-90d", usd: 0 }, { label: "90+d", usd: 0 },
+        ];
+
+        const localesData = locales.map((local) => {
+          const tenancy = local.tenancies[0];
+          let pendingUsd = 0; let maxDays = 0;
+          for (const inv of local.invoices) {
+            const p = Number(inv.totalUsd) - Number(inv.paidUsd);
+            pendingUsd += p;
+            const days = Math.max(0, Math.floor((today.getTime() - new Date(inv.dueDate).getTime()) / 86400000));
+            if (days > maxDays) maxDays = days;
+            if (days <= 30) agingBuckets[0]!.usd += p;
+            else if (days <= 60) agingBuckets[1]!.usd += p;
+            else if (days <= 90) agingBuckets[2]!.usd += p;
+            else agingBuckets[3]!.usd += p;
+          }
+          return {
+            localCode: local.code, localName: local.name, floor: local.floor,
+            tenantName: tenancy?.tenantName ?? null,
+            pendingUsd: pendingUsd.toFixed(2),
+            overdueMonths: Math.ceil(maxDays / 30),
+          };
+        });
+
+        const totalPendingUsd = localesData.reduce((s, l) => s + Number(l.pendingUsd), 0);
+        return {
+          totalPendingUsd: totalPendingUsd.toFixed(2),
+          agingBuckets,
+          locales: localesData.sort((a, b) => Number(b.pendingUsd) - Number(a.pendingUsd)),
+        };
+      }),
+
+    /** Descarga PDF de factura CC desde el portal (sin auth admin). */
+    downloadInvoicePdf: publicProcedure
+      .input(z.object({ token: z.string(), invoiceId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const { verifyCcPortalToken } = await import("@/lib/cc-portal-token");
+        let payload;
+        try { payload = verifyCcPortalToken(input.token); }
+        catch { throw new TRPCError({ code: "UNAUTHORIZED", message: "Token inválido" }); }
+
+        const inv = await ctx.db.ccInvoice.findFirstOrThrow({
+          where: { id: input.invoiceId, localId: payload.localId },
+          include: { items: true, local: { select: { code: true, name: true, floor: true } } },
+        });
+        const [mall, tenancy] = await Promise.all([
+          ctx.db.ccMall.findUniqueOrThrow({
+            where: { id: payload.mallId },
+            select: { name: true, address: true, rif: true, phone: true, email: true, city: true, notes: true },
+          }),
+          ctx.db.ccTenancy.findUniqueOrThrow({ where: { id: payload.tenancyId } }),
+        ]);
+
+        const { generateCcInvoicePdf } = await import("@/server/services/pdf");
+        const buffer = await generateCcInvoicePdf({
+          mallName: mall.name, mallAddress: mall.address, mallRif: mall.rif,
+          mallPhone: mall.phone, mallEmail: mall.email, mallCity: mall.city,
+          invoiceNumber: inv.invoiceNumber, periodYear: inv.periodYear, periodMonth: inv.periodMonth,
+          issuedAt: inv.issuedAt, dueDate: inv.dueDate, status: inv.status, type: inv.type,
+          exchangeRate: inv.exchangeRate.toString(),
+          localCode: inv.local.code, localName: inv.local.name, localFloor: inv.local.floor,
+          tenantName: tenancy.tenantName, tenantRif: tenancy.tenantRif,
+          tenantPhone: tenancy.tenantPhone, tenantEmail: tenancy.tenantEmail,
+          items: inv.items.map((it) => ({ description: it.description, amountUsd: it.amountUsd.toString(), amountBss: it.amountBss.toString() })),
+          totalUsd: inv.totalUsd.toString(), totalBss: inv.totalBss.toString(),
+          paidUsd: inv.paidUsd.toString(), paidBss: inv.paidBss.toString(),
+          notes: inv.notes, paymentInstructions: mall.notes,
+        });
+        return { base64: buffer.toString("base64"), fileName: `Factura-CC-${inv.invoiceNumber}.pdf`, mimeType: "application/pdf" };
+      }),
+
+    /** Descarga comprobante de pago (bauche) desde el portal CC. */
+    downloadPaymentVoucher: publicProcedure
+      .input(z.object({ token: z.string(), paymentId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const { verifyCcPortalToken } = await import("@/lib/cc-portal-token");
+        let payload;
+        try { payload = verifyCcPortalToken(input.token); }
+        catch { throw new TRPCError({ code: "UNAUTHORIZED", message: "Token inválido" }); }
+
+        const payment = await ctx.db.ccPayment.findFirstOrThrow({
+          where: { id: input.paymentId, localId: payload.localId },
+          include: { allocations: { include: { invoice: { select: { invoiceNumber: true, periodYear: true, periodMonth: true } } } } },
+        });
+        const [mall, tenancy, local] = await Promise.all([
+          ctx.db.ccMall.findUniqueOrThrow({
+            where: { id: payload.mallId },
+            select: { name: true, address: true, rif: true, phone: true, email: true },
+          }),
+          ctx.db.ccTenancy.findUniqueOrThrow({ where: { id: payload.tenancyId }, select: { tenantName: true, tenantRif: true } }),
+          ctx.db.ccLocal.findUniqueOrThrow({ where: { id: payload.localId }, select: { code: true } }),
+        ]);
+
+        const MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+        const invoicesData = payment.allocations.map((alloc) => ({
+          number: alloc.invoice?.invoiceNumber ?? "",
+          period: (alloc.invoice?.periodMonth && alloc.invoice?.periodYear)
+            ? `${MESES_ES[(alloc.invoice.periodMonth) - 1]} ${alloc.invoice.periodYear}` : "",
+          amountUsd: alloc.amountUsd.toString(),
+        }));
+
+        const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
+        const buffer = await generatePaymentVoucherPdf({
+          communityName: mall.name, communityAddress: mall.address ?? undefined,
+          communityRif: mall.rif ?? undefined, communityPhone: mall.phone ?? undefined,
+          communityEmail: mall.email ?? undefined,
+          paymentId: payment.id, unitCode: local.code,
+          personName: tenancy.tenantName, personId: tenancy.tenantRif ?? undefined,
+          amountUsd: payment.amountUsd.toString(), amountBss: payment.amountBss.toString(),
+          exchangeRate: payment.exchangeRate.toString(),
+          method: payment.method, reference: payment.reference ?? undefined,
+          paidAt: payment.paidAt, invoices: invoicesData,
+        });
+        return { base64: buffer.toString("base64"), fileName: `Bauche-CC-${payment.id.slice(-8).toUpperCase()}.pdf`, mimeType: "application/pdf" };
       }),
   }),
 
@@ -1298,5 +1820,99 @@ export const comercialRouter = router({
 
         return { created, updated, tenantsCreated, errors, total: rows.length };
       }),
+  }),
+
+  // ── Cierre de mes ──────────────────────────────────────────────────────────
+  monthClose: router({
+    /** Lista los cierres de mes del mall */
+    list: orgProcedure
+      .input(orgIdInput.extend({ mallId: z.string() }))
+      .query(({ ctx, input }) =>
+        ctx.db.ccMonthClose.findMany({
+          where: { mallId: input.mallId, organizationId: input.organizationId },
+          orderBy: [{ year: "desc" }, { month: "desc" }],
+        }),
+      ),
+
+    /** Crea el snapshot de cierre para el mes indicado */
+    close: orgProcedure
+      .input(orgIdInput.extend({
+        mallId: z.string(),
+        year: z.number().int().min(2020).max(2099),
+        month: z.number().int().min(1).max(12),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        // Verificar que no exista ya un cierre para este período
+        const existing = await ctx.db.ccMonthClose.findUnique({
+          where: { mallId_year_month: { mallId: input.mallId, year: input.year, month: input.month } },
+        });
+        if (existing) throw new TRPCError({ code: "CONFLICT", message: `Ya existe un cierre para ${input.month}/${input.year}` });
+
+        // Calcular snapshot del período
+        const [invoices, payments, expenses] = await Promise.all([
+          ctx.db.ccInvoice.findMany({
+            where: {
+              mallId: input.mallId,
+              periodYear: input.year,
+              periodMonth: input.month,
+              status: { not: "VOIDED" },
+            },
+            select: { totalUsd: true, paidUsd: true, status: true },
+          }),
+          ctx.db.ccPayment.aggregate({
+            where: {
+              mallId: input.mallId,
+              paidAt: {
+                gte: new Date(input.year, input.month - 1, 1),
+                lt: new Date(input.year, input.month, 1),
+              },
+            },
+            _sum: { amountUsd: true },
+          }),
+          ctx.db.ccExpense.aggregate({
+            where: {
+              mallId: input.mallId,
+              periodYear: input.year,
+              periodMonth: input.month,
+            },
+            _sum: { amountUsd: true },
+          }),
+        ]);
+
+        const totalInvoicedUsd = invoices.reduce((s, i) => s + Number(i.totalUsd), 0);
+        const totalCollectedUsd = Number(payments._sum?.amountUsd ?? 0);
+        const totalExpensesUsd = Number(expenses._sum?.amountUsd ?? 0);
+        const paidCount = invoices.filter((i) => i.status === "PAID").length;
+        const pendingCount = invoices.filter((i) => ["ISSUED", "PARTIAL", "OVERDUE"].includes(i.status)).length;
+        const collectionPct = totalInvoicedUsd > 0 ? (totalCollectedUsd / totalInvoicedUsd) * 100 : 0;
+
+        return ctx.db.ccMonthClose.create({
+          data: {
+            organizationId: input.organizationId,
+            mallId: input.mallId,
+            year: input.year,
+            month: input.month,
+            closedById: ctx.session?.user?.id ?? "system",
+            notes: input.notes,
+            summary: {
+              totalInvoicedUsd,
+              totalCollectedUsd,
+              totalExpensesUsd,
+              collectionPct: Math.round(collectionPct * 100) / 100,
+              invoiceCount: invoices.length,
+              paidCount,
+              pendingCount,
+            },
+          },
+        });
+      }),
+
+    /** Elimina un cierre de mes (para corrección) */
+    reopen: orgProcedure
+      .input(orgIdInput.extend({ closeId: z.string() }))
+      .mutation(({ ctx, input }) =>
+        ctx.db.ccMonthClose.delete({ where: { id: input.closeId } }),
+      ),
   }),
 });

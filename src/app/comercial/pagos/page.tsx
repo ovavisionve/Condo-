@@ -27,6 +27,13 @@ export default function PagosPage() {
   );
   const payments = paymentsQ.data ?? [];
 
+  // Notificaciones de pago enviadas por arrendatarios desde el portal CC
+  const notifQ = trpc.comercial.portal.listPaymentNotifications.useQuery(
+    { organizationId: selectedOrgId, mallId },
+    { enabled: !!mallId },
+  );
+  const pendingNotifs = (notifQ.data ?? []).filter((n) => n !== null);
+
   const localesQ = trpc.comercial.locales.list.useQuery(
     { organizationId: selectedOrgId, mallId },
     { enabled: !!mallId },
@@ -73,10 +80,88 @@ export default function PagosPage() {
     });
   };
 
+  /** Abre el formulario de registro pre-rellenado con los datos de la notificación */
+  const prefillFromNotif = (n: NonNullable<typeof pendingNotifs[number]>) => {
+    setForm({
+      localId: n.localId,
+      amountUsd: String(n.amountUsd),
+      exchangeRate: "",
+      method: n.method,
+      reference: n.reference ?? "",
+      paidAt: new Date(n.fechaPago).toISOString().split("T")[0]!,
+      notes: [n.bankName ? `Banco: ${n.bankName}` : "", n.notes ?? ""].filter(Boolean).join(" | "),
+    });
+    setShowNew(true);
+  };
+
   const totalPaid = payments.reduce((s, p) => s + Number(p.amountUsd), 0);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
+      {/* ── Notificaciones por verificar ───────────────────────────────── */}
+      {pendingNotifs.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold">📨 Notificaciones por verificar</h2>
+            <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-2 py-0.5">
+              {pendingNotifs.length}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Pagos reportados por arrendatarios desde el portal. Verifícalos y regístralos en el sistema.
+          </p>
+          <div className="rounded-lg border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-amber-50 text-xs text-muted-foreground uppercase tracking-wide">
+                <tr>
+                  <th className="text-left px-4 py-2">Fecha</th>
+                  <th className="text-left px-4 py-2">Arrendatario</th>
+                  <th className="text-left px-4 py-2">Local</th>
+                  <th className="text-left px-4 py-2 hidden sm:table-cell">Método</th>
+                  <th className="text-right px-4 py-2">Monto USD</th>
+                  <th className="text-left px-4 py-2 hidden md:table-cell">Referencia</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {pendingNotifs.map((n) => (
+                  <tr key={n.id} className="hover:bg-amber-50/50">
+                    <td className="px-4 py-2 text-xs">{new Date(n.fechaPago).toLocaleDateString("es-VE")}</td>
+                    <td className="px-4 py-2 font-medium text-xs">
+                      {n.tenantName}
+                      {n.tenantEmail && <span className="block text-muted-foreground">{n.tenantEmail}</span>}
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      <span className="font-medium">{n.localCode}</span>
+                      {n.localName && <span className="text-muted-foreground ml-1">— {n.localName}</span>}
+                    </td>
+                    <td className="px-4 py-2 hidden sm:table-cell text-xs text-muted-foreground">
+                      {METHOD_LABEL[n.method] ?? n.method}
+                    </td>
+                    <td className="px-4 py-2 text-right font-semibold text-amber-700">
+                      ${fmt(n.amountUsd)}
+                    </td>
+                    <td className="px-4 py-2 hidden md:table-cell text-xs text-muted-foreground">
+                      {n.reference ?? "—"}
+                      {n.bankName && <span className="block text-muted-foreground">{n.bankName}</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => prefillFromNotif(n)}
+                        className="text-xs bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1 transition-colors"
+                      >
+                        Registrar pago
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pagos registrados ───────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">💰 Pagos recibidos</h1>
