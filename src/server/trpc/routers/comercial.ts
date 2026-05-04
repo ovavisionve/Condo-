@@ -1426,6 +1426,16 @@ export const comercialRouter = router({
           .filter(Boolean);
       }),
 
+    /** Elimina una notificación CC_PAGO_POR_VERIFICAR una vez registrado el pago. */
+    dismissPaymentNotification: orgProcedure
+      .input(z.object({ organizationId: z.string(), notificationId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        await ctx.db.notification.deleteMany({
+          where: { id: input.notificationId, organizationId: input.organizationId },
+        });
+        return { ok: true };
+      }),
+
     /** Consulta pública — valida el token y devuelve el portal del arrendatario (enriquecido). */
     getByToken: publicProcedure
       .input(z.object({ token: z.string() }))

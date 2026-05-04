@@ -44,14 +44,24 @@ export default function PagosPage() {
 
   const [showNew, setShowNew] = useState(false);
   const [voidingId, setVoidingId] = useState<string | null>(null);
+  const [pendingNotifId, setPendingNotifId] = useState<string | null>(null);
   const [form, setForm] = useState({
     localId: "", amountUsd: "", exchangeRate: "",
     method: "TRANSFER_USD", reference: "", paidAt: new Date().toISOString().split("T")[0]!, notes: "",
   });
 
+  const dismissMut = trpc.comercial.portal.dismissPaymentNotification.useMutation({
+    onSuccess: () => void notifQ.refetch(),
+  });
+
   const recordMut = trpc.comercial.payments.record.useMutation({
     onSuccess: () => {
       void paymentsQ.refetch();
+      // Si el pago vino de una notificación, descartarla
+      if (pendingNotifId) {
+        void dismissMut.mutateAsync({ organizationId: selectedOrgId, notificationId: pendingNotifId });
+        setPendingNotifId(null);
+      }
       setShowNew(false);
       setForm({ localId: "", amountUsd: "", exchangeRate: "", method: "TRANSFER_USD", reference: "", paidAt: new Date().toISOString().split("T")[0]!, notes: "" });
     },
@@ -82,6 +92,7 @@ export default function PagosPage() {
 
   /** Abre el formulario de registro pre-rellenado con los datos de la notificación */
   const prefillFromNotif = (n: NonNullable<typeof pendingNotifs[number]>) => {
+    setPendingNotifId(n.id);
     setForm({
       localId: n.localId,
       amountUsd: String(n.amountUsd),
@@ -268,7 +279,7 @@ export default function PagosPage() {
                 <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
               </div>
               <div className="flex justify-between pt-2">
-                <Button type="button" variant="outline" onClick={() => setShowNew(false)}>Cancelar</Button>
+                <Button type="button" variant="outline" onClick={() => { setShowNew(false); setPendingNotifId(null); }}>Cancelar</Button>
                 <Button type="submit" disabled={recordMut.isPending || !form.localId || !form.amountUsd} className="bg-blue-600 hover:bg-blue-700">
                   {recordMut.isPending ? "Registrando..." : "✓ Registrar pago"}
                 </Button>
