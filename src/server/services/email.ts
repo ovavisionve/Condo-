@@ -68,7 +68,9 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
       from = global.from;
       transport = createTransportFromConfig(global);
     } else {
-      console.log(`[email:dry-run] → ${params.to} | ${params.subject}`);
+      // Redactar email para no leakear PII a logs/observabilidad
+      const redacted = params.to.replace(/^(.{2}).*@(.*)$/, "$1***@$2");
+      console.log(`[email:dry-run] → ${redacted} | ${params.subject}`);
       return { success: true };
     }
   }

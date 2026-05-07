@@ -11,18 +11,21 @@ import crypto from "crypto";
 import { sendEmail } from "@/server/services/email";
 
 const TOKEN_EXPIRY_MINUTES = 15;
+/** Máximo de tokens activos por usuario en una hora (prevención de spam) */
+const MAX_RESETS_PER_HOUR = 3;
 
 const passwordSchema = z
   .string()
   .min(8, "Mínimo 8 caracteres")
+  .max(128, "Máximo 128 caracteres")
   .regex(/[A-Z]/, "Debe incluir al menos una mayúscula")
   .regex(/[0-9]/, "Debe incluir al menos un número");
 
 export const authSecurityRouter = router({
 
-  /** Solicitar recuperación de contraseña */
+  /** Solicitar recuperación de contraseña (rate-limited, no revela si email existe) */
   requestPasswordReset: publicProcedure
-    .input(z.object({ email: z.string().email() }))
+    .input(z.object({ email: z.string().email().max(254) }))
     .mutation(async ({ input }) => {
       // Siempre responder "OK" para no revelar si el email existe
       const user = await db.user.findUnique({
@@ -31,7 +34,19 @@ export const authSecurityRouter = router({
       });
 
       if (!user || !user.active || user.deletedAt) {
-        // No revelar que no existe — respuesta idéntica
+        // No revelar que no existe — respuesta idéntica + delay artificial
+        // para igualar el tiempo de respuesta cuando sí existe (mitigación timing attack).
+        await new Promise((r) => setTimeout(r, 200 + Math.random() * 100));
+        return { ok: true };
+      }
+
+      // Rate limit: máximo 3 solicitudes por hora por usuario
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const recentRequests = await db.passwordResetToken.count({
+        where: { userId: user.id, createdAt: { gte: oneHourAgo } },
+      });
+      if (recentRequests >= MAX_RESETS_PER_HOUR) {
+        // No revelar al cliente — silenciosamente devolver ok
         return { ok: true };
       }
 
@@ -41,7 +56,7 @@ export const authSecurityRouter = router({
         data: { usedAt: new Date() }, // marcar como usados (invalidados)
       });
 
-      // Crear nuevo token seguro
+      // Crear nuevo token seguro (256 bits)
       const rawToken = crypto.randomBytes(32).toString("hex");
       const expiresAt = new Date(Date.now() + TOKEN_EXPIRY_MINUTES * 60 * 1000);
 

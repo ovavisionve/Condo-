@@ -30,8 +30,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="es">
       <head>
-        {/* Soporte iOS PWA */}
-        <link rel="apple-touch-icon" href="/icons/192" />
+        {/* Soporte iOS PWA — usa el PNG estatico nuevo */}
+        <link rel="apple-touch-icon" href="/icons/192.png" />
+        <link rel="apple-touch-icon" sizes="152x152" href="/icons/152.png" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/icons/192.png" />
         <meta name="mobile-web-app-capable" content="yes" />
       </head>
       <body>

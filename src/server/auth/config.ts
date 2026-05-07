@@ -38,6 +38,11 @@ const credentialsSchema = z.object({
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(db),
+  // En producción detrás de proxy (Vercel) confiar en X-Forwarded-* es necesario
+  // para que las cookies HTTPS se establezcan correctamente.
+  trustHost: true,
+  // Cookies endurecidas: __Secure- prefix en producción + sameSite=lax + httpOnly
+  useSecureCookies: process.env.NODE_ENV === "production",
   session: {
     strategy: "jwt",
     maxAge: 30 * 60,       // 30 minutos (expira si no hay actividad)
@@ -86,19 +91,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const ok = await bcrypt.compare(password, user.passwordHash);
 
         if (!ok) {
-          const attempts = (user.failedLoginAttempts ?? 0) + 1;
-          const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
-          await db.user.update({
+          // Incremento atómico → evita race conditions entre requests paralelos.
+          const updated = await db.user.update({
             where: { id: user.id },
-            data: {
-              failedLoginAttempts: attempts,
-              lockedUntil: shouldLock
-                ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
-                : undefined,
-            },
+            data: { failedLoginAttempts: { increment: 1 } },
+            select: { failedLoginAttempts: true },
           });
-          if (shouldLock) throw new Error("ACCOUNT_LOCKED");
-          throw new Error(`INVALID_CREDENTIALS:${MAX_FAILED_ATTEMPTS - attempts}`);
+          const shouldLock = updated.failedLoginAttempts >= MAX_FAILED_ATTEMPTS;
+          if (shouldLock) {
+            await db.user.update({
+              where: { id: user.id },
+              data: {
+                lockedUntil: new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000),
+              },
+            });
+            throw new Error("ACCOUNT_LOCKED");
+          }
+          throw new Error(`INVALID_CREDENTIALS:${MAX_FAILED_ATTEMPTS - updated.failedLoginAttempts}`);
         }
 
         // Login exitoso — resetear contadores

@@ -1,15 +1,39 @@
-import { NextResponse } from "next/server";
+/**
+ * Debug endpoint — protegido con CRON_SECRET.
+ * Solo lectura: NO modifica datos en producción.
+ * No expone strings/keys completos, solo metadatos.
+ */
+import { NextResponse, type NextRequest } from "next/server";
+import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const errors: string[] = [];
+function verifyAuth(req: NextRequest): boolean {
+  const auth = req.headers.get("authorization") ?? "";
+  const expected = process.env.CRON_SECRET;
+  if (!expected) return false;
+  const provided = auth.replace(/^Bearer\s+/i, "");
+  if (provided.length !== expected.length) return false;
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(provided, "utf8"),
+      Buffer.from(expected, "utf8"),
+    );
+  } catch {
+    return false;
+  }
+}
 
-  // URL completa (sin password)
+export async function GET(req: NextRequest) {
+  if (!verifyAuth(req)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const errors: string[] = [];
   const rawUrl = process.env.DATABASE_URL ?? "";
   const maskedUrl = rawUrl.replace(/:([^@:]+)@/, ":***@");
 
-  // Test 1: DB connection
+  // Test 1: DB connection (read-only)
   let userCount = 0;
   try {
     const { db } = await import("@/server/db/client");
@@ -19,39 +43,7 @@ export async function GET() {
     errors.push(`DB ERROR: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Test 2: Write + Read (UPDATE y verificación)
-  try {
-    const { db } = await import("@/server/db/client");
-    const community = await db.community.findFirst({ where: { deletedAt: null } });
-    if (community) {
-      const testVal = "77.77";
-      const prevVal = community.monthlyFeeUsd?.toString() ?? null;
-
-      // Escribe
-      await db.community.update({
-        where: { id: community.id },
-        data: { monthlyFeeUsd: testVal, monthlyFeeSetAt: new Date() },
-      });
-
-      // Lee de vuelta en la misma conexión
-      const after = await db.community.findUnique({ where: { id: community.id } });
-      const readBack = after?.monthlyFeeUsd?.toString();
-      errors.push(`WRITE TEST: wrote 77.77, read back: ${readBack} → ${readBack === testVal ? "✅ OK" : "❌ FALLO"}`);
-
-      // Restaurar
-      await db.community.update({
-        where: { id: community.id },
-        data: { monthlyFeeUsd: prevVal ? prevVal : null, monthlyFeeSetAt: prevVal ? community.monthlyFeeSetAt : null },
-      });
-      errors.push(`RESTORE: restaurado a ${prevVal ?? "null"}`);
-    } else {
-      errors.push("WRITE TEST: no hay community para probar");
-    }
-  } catch (e) {
-    errors.push(`WRITE TEST ERROR: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  // Test 3: Auth import
+  // Test 2: Auth import
   try {
     await import("@/server/auth/config");
     errors.push("Auth import OK");
@@ -68,7 +60,8 @@ export async function GET() {
       PORT_6543: rawUrl.includes(":6543"),
       PORT_5432: rawUrl.includes(":5432"),
       NEXTAUTH_URL: process.env.NEXTAUTH_URL ?? "MISSING",
-      NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET ? `SET(${process.env.NEXTAUTH_SECRET.length} chars)` : "MISSING",
+      // Solo reportar SET/MISSING — nunca el secreto ni su longitud completa
+      NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET ? "SET" : "MISSING",
       NODE_ENV: process.env.NODE_ENV,
     },
     tests: errors,

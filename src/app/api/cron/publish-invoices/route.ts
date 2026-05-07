@@ -59,9 +59,9 @@ async function getOrCreatePortalToken(personId: string, now: Date): Promise<stri
 // ─── Route handler ──────────────────────────────────────────────────────────
 
 export async function GET(req: Request) {
-  // Seguridad: solo Vercel Cron puede llamar esta ruta
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Seguridad: solo Vercel Cron puede llamar esta ruta (timing-safe compare)
+  const { verifyBearerToken } = await import("@/lib/auth-utils");
+  if (!verifyBearerToken(req.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

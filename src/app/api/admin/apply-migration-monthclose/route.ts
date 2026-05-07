@@ -7,8 +7,8 @@ export const dynamic = "force-dynamic";
 // Call with: GET /api/admin/apply-migration-monthclose
 //            Authorization: Bearer <CRON_SECRET>
 export async function GET(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  const { verifyBearerToken } = await import("@/lib/auth-utils");
+  if (!verifyBearerToken(req.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {

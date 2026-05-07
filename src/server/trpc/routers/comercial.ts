@@ -253,9 +253,11 @@ export const comercialRouter = router({
 
     byId: orgProcedure
       .input(orgIdInput.extend({ localId: z.string() }))
-      .query(({ ctx, input }) =>
-        ctx.db.ccLocal.findUniqueOrThrow({
-          where: { id: input.localId },
+      .query(async ({ ctx, input }) => {
+        // Aislamiento multi-tenant: filtrar por organizationId en el WHERE.
+        // findFirst + check explícito en lugar de findUniqueOrThrow para evitar IDOR.
+        const local = await ctx.db.ccLocal.findFirst({
+          where: { id: input.localId, organizationId: input.organizationId },
           include: {
             tenancies: { orderBy: { startDate: "desc" } },
             invoices: {
@@ -277,8 +279,10 @@ export const comercialRouter = router({
               take: 12,
             },
           },
-        }),
-      ),
+        });
+        if (!local) throw new TRPCError({ code: "NOT_FOUND" });
+        return local;
+      }),
 
     create: orgProcedure
       .input(
@@ -765,12 +769,14 @@ export const comercialRouter = router({
       }),
 
     void: orgProcedure
-      .input(orgIdInput.extend({ invoiceId: z.string(), voidReason: z.string().optional() }))
+      .input(orgIdInput.extend({ invoiceId: z.string(), voidReason: z.string().max(500).optional() }))
       .mutation(async ({ ctx, input }) => {
-        const invoice = await ctx.db.ccInvoice.findUniqueOrThrow({
-          where: { id: input.invoiceId },
+        // Aislamiento multi-tenant: validar que la factura pertenece a la org del actor.
+        const invoice = await ctx.db.ccInvoice.findFirst({
+          where: { id: input.invoiceId, organizationId: input.organizationId },
           select: { localId: true, status: true },
         });
+        if (!invoice) throw new TRPCError({ code: "NOT_FOUND" });
 
         // 1. Eliminar allocations vinculadas a esta factura → libera el anticipo de los pagos
         await ctx.db.ccPaymentAllocation.deleteMany({ where: { invoiceId: input.invoiceId } });
@@ -783,7 +789,11 @@ export const comercialRouter = router({
 
         // 3. Re-aplicar el anticipo liberado a otras facturas pendientes del mismo local
         const pendingInvoices = await ctx.db.ccInvoice.findMany({
-          where: { localId: invoice.localId, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+          where: {
+            localId: invoice.localId,
+            organizationId: input.organizationId, // multi-tenant lock
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+          },
           orderBy: { dueDate: "asc" },
         });
         for (const pending of pendingInvoices) {

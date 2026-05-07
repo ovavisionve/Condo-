@@ -390,7 +390,7 @@ pnpm prisma migrate reset
 | **URL prod** | `https://condominios-theta.vercel.app` |
 | **Supabase** | Proyecto **Innova** — `nawbxhpndosiigzpnwlt.supabase.co` |
 | **DB** | Postgres en Supabase (pooler 6543 transaccional, 5432 directo) |
-| **SMTP** | Hotmail `opppe56hugochavez@hotmail.com` (host `smtp-mail.outlook.com`, port 587, pass `hugochavez2026`) |
+| **SMTP** | Hotmail (credenciales en Vercel env: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`) |
 | **Cron** | Vercel Cron — `/api/cron/bcv` (tasa BCV diaria) y `/api/cron/publish-invoices` (publicar borradores día 1) |
 
 ### 14.2 Variables Vercel (production)
@@ -413,13 +413,8 @@ Visibles:
 
 - **Auth provider:** NextAuth Credentials, validación con `bcryptjs` (`bcrypt.compare`).
 - **Migración:** commit `4829c4d` cambió de argon2id → bcryptjs (rounds=12).
-- **Hash bcrypt para `admin1234`** (seed del platform owner): `$2b$12$9Qfau.ZWENkNuQcKz5Z0ZeXBvVysuhu0115SqDjEUF/3gEyxRzQKa`
-- **CRÍTICO:** si el seed SQL trae hash argon2id, el login va a fallar. Siempre usar bcrypt en producción. Para arreglar:
-  ```sql
-  UPDATE "User"
-  SET "passwordHash" = '$2b$12$9Qfau.ZWENkNuQcKz5Z0ZeXBvVysuhu0115SqDjEUF/3gEyxRzQKa'
-  WHERE email = 'admin@condominios.local';
-  ```
+- **Password del platform owner:** se setea via env `PLATFORM_OWNER_PASSWORD` y se hashea en el seed con bcrypt rounds=12.
+- **CRÍTICO:** si el seed SQL trae hash argon2id, el login va a fallar. Siempre usar bcrypt en producción. Para reset manual de hash, generar con `bcrypt.hash(newPassword, 12)` localmente — NO commitear el hash al repo.
 
 ### 14.5 Onboarding "Los Arrayanes" (Naguanagua, Valencia)
 
@@ -429,7 +424,7 @@ Comunidad real del usuario para producción.
 - **Estructura:** 188 unidades = 2 torres (A, B) × (23 pisos × 4 aptos A/B/C/D + piso 24 con 2 PH) = 94 × 2
 - **Nomenclatura:** `{torre}-{piso}{letra}` (ej. `A-15C`), PHs `{torre}-24PH1` / `{torre}-24PH2`
 - **Cuota mensual:** USD 20
-- **10 propietarios de prueba** (primer registro = Luis Ilarraza, unidad A-15C, email `luissilvalaguna1@gmail.com`)
+- **10 propietarios de prueba** (datos reales — NO documentar nombres/emails específicos en este archivo público)
 
 **Mecanismo de seeding:**
 - Script local: `scripts/seed-arrayanes.ts` (requiere DATABASE_URL apuntando a Supabase, conexión directa falla con pooler).

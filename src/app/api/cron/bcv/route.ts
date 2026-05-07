@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import { getCurrentRate } from "@/server/services/exchange";
+import { verifyBearerToken } from "@/lib/auth-utils";
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   // Proteger el endpoint — solo Vercel Cron puede llamarlo
-  const authHeader = request.headers.get("authorization");
   if (
     process.env.NODE_ENV === "production" &&
-    authHeader !== `Bearer ${process.env.CRON_SECRET}`
+    !verifyBearerToken(request.headers.get("authorization"), process.env.CRON_SECRET)
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
