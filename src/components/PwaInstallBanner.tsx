@@ -76,7 +76,7 @@ export function PwaInstallBanner() {
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="font-semibold text-sm">Instalar Condominios</p>
+        <p className="font-semibold text-sm">Instalar ResidIA</p>
         {isIos ? (
           <p className="text-xs text-slate-300 mt-0.5">
             Toca <strong>Compartir</strong> → <strong>Agregar a pantalla de inicio</strong>

@@ -8,6 +8,13 @@ import type { SessionMembership } from "@/server/auth/config";
 
 const orgIdInput = z.object({ organizationId: z.string() });
 
+// Email permisivo: acepta unicode en la parte local (ej. josecastaños@gmail.com)
+const emailSchema = z
+  .string()
+  .refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v), {
+    message: "Formato de email inválido",
+  });
+
 export const orgRouter = router({
   /** Lista organizaciones a las que el usuario tiene acceso (para selector). */
   myOrganizations: protectedProcedure.query(async ({ ctx }) => {
@@ -74,7 +81,7 @@ export const orgRouter = router({
           city: z.string().optional(),
           state: z.string().optional(),
           phone: z.string().optional(),
-          email: z.string().email().optional(),
+          email: emailSchema.optional(),
           website: z.string().optional(),
           primaryCurrency: z.enum(["VES", "USD"]).optional(),
           floorsCount: z.coerce.number().int().positive().nullable().optional(),
@@ -537,7 +544,7 @@ export const orgRouter = router({
           lastName: z.string().min(1),
           idType: z.enum(["CEDULA_V", "CEDULA_E", "RIF", "PASSPORT", "OTHER"]).default("CEDULA_V"),
           idNumber: z.string().min(1),
-          email: z.string().email().optional(),
+          email: emailSchema.optional(),
           phone: z.string().optional(),
           whatsapp: z.string().optional(),
           address: z.string().optional(),
@@ -555,7 +562,7 @@ export const orgRouter = router({
           id: z.string(),
           firstName: z.string().min(1).optional(),
           lastName: z.string().min(1).optional(),
-          email: z.string().email().optional(),
+          email: emailSchema.optional(),
           phone: z.string().optional(),
           whatsapp: z.string().optional(),
           address: z.string().optional(),
@@ -634,7 +641,7 @@ export const orgRouter = router({
               lastName: z.string().min(1),
               idType: z.enum(["CEDULA_V", "CEDULA_E", "RIF", "PASSPORT", "OTHER"]).default("CEDULA_V"),
               idNumber: z.string().min(1),
-              email: z.string().email().optional(),
+              email: emailSchema.optional(),
               phone: z.string().optional(),
               whatsapp: z.string().optional(),
               role: z.enum(["OWNER", "TENANT"]).default("OWNER"),
@@ -896,7 +903,7 @@ export const orgRouter = router({
     create: orgProcedure
       .input(
         orgIdInput.extend({
-          email: z.string().email(),
+          email: emailSchema,
           name: z.string().min(2),
           password: z.string().min(8),
           cargo: z.string().min(2),

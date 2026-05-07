@@ -55,7 +55,34 @@ export function NewOrganizationDialog({ open, onClose, onCreated, plans: plansPr
       setStep(0);
       setOrgType("RESIDENTIAL");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al crear");
+      if (err instanceof Error) {
+        // tRPC Zod errors come as a JSON string — parse and humanize them
+        try {
+          const parsed = JSON.parse(err.message) as Array<{ path: string[]; message: string }>;
+          if (Array.isArray(parsed)) {
+            const fieldNames: Record<string, string> = {
+              email: "Email de contacto (paso 1)",
+              adminEmail: "Email del administrador",
+              adminPassword: "Contraseña",
+              adminName: "Nombre del administrador",
+              name: "Nombre de la organización",
+              slug: "Slug",
+            };
+            const msgs = parsed.map((e) => {
+              const field = fieldNames[e.path[e.path.length - 1] ?? ""] ?? e.path.join(".");
+              const msg = e.message === "Invalid email" ? "Formato de email inválido" : e.message;
+              return `${field}: ${msg}`;
+            });
+            setError(msgs.join(" · "));
+            return;
+          }
+        } catch {
+          // not JSON, fall through
+        }
+        setError(err.message);
+      } else {
+        setError("Error al crear");
+      }
     }
   };
 

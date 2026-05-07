@@ -26,14 +26,23 @@ export type SessionMembership = {
   permissions: string[];
 };
 
+/** Intentos fallidos antes de bloquear la cuenta */
+const MAX_FAILED_ATTEMPTS = 5;
+/** Minutos de bloqueo tras exceder los intentos */
+const LOCKOUT_MINUTES = 15;
+
 const credentialsSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(8),
+  password: z.string().min(1),
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(db),
-  session: { strategy: "jwt" },
+  session: {
+    strategy: "jwt",
+    maxAge: 30 * 60,       // 30 minutos (expira si no hay actividad)
+    updateAge: 5 * 60,     // renueva el token cada 5 min de actividad
+  },
   pages: {
     signIn: "/login",
   },
@@ -51,14 +60,57 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const user = await db.user.findUnique({
           where: { email: email.toLowerCase() },
-          select: { id: true, email: true, name: true, passwordHash: true, active: true, deletedAt: true },
+          select: {
+            id: true, email: true, name: true,
+            passwordHash: true, active: true, deletedAt: true,
+            failedLoginAttempts: true, lockedUntil: true,
+          },
         });
+
+        // Usuario no existe o inactivo
         if (!user || !user.active || user.deletedAt || !user.passwordHash) return null;
 
-        const ok = await bcrypt.compare(password, user.passwordHash);
-        if (!ok) return null;
+        // Cuenta bloqueada
+        if (user.lockedUntil && user.lockedUntil > new Date()) {
+          throw new Error("ACCOUNT_LOCKED");
+        }
 
-        await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+        // Si el bloqueo expiró, limpiar el contador
+        if (user.lockedUntil && user.lockedUntil <= new Date()) {
+          await db.user.update({
+            where: { id: user.id },
+            data: { failedLoginAttempts: 0, lockedUntil: null },
+          });
+        }
+
+        const ok = await bcrypt.compare(password, user.passwordHash);
+
+        if (!ok) {
+          const attempts = (user.failedLoginAttempts ?? 0) + 1;
+          const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
+          await db.user.update({
+            where: { id: user.id },
+            data: {
+              failedLoginAttempts: attempts,
+              lockedUntil: shouldLock
+                ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000)
+                : undefined,
+            },
+          });
+          if (shouldLock) throw new Error("ACCOUNT_LOCKED");
+          throw new Error(`INVALID_CREDENTIALS:${MAX_FAILED_ATTEMPTS - attempts}`);
+        }
+
+        // Login exitoso — resetear contadores
+        await db.user.update({
+          where: { id: user.id },
+          data: {
+            lastLoginAt: new Date(),
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+          },
+        });
+
         return { id: user.id, email: user.email, name: user.name ?? undefined };
       },
     }),

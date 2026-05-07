@@ -8,6 +8,7 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const VEHICLE_TYPES: Record<string, string> = {
   CAR: "Carro", MOTORCYCLE: "Moto", TRUCK: "Camión", VAN: "Van", OTHER: "Otro",
@@ -372,15 +373,15 @@ export default function ResidentsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="res-unit">Unidad *</Label>
-                <select id="res-unit" value={unitId} onChange={(e) => setUnitId(e.target.value)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm">
-                  <option value="">Seleccionar unidad...</option>
-                  {units.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.code}{u.floor != null ? ` - Piso ${u.floor}` : ""}{u.tower ? ` - Torre ${u.tower}` : ""}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={unitId}
+                  onChange={setUnitId}
+                  placeholder="Buscar unidad (ej. 101A)..."
+                  options={units.map((u) => ({
+                    value: u.id,
+                    label: u.code + (u.floor != null ? ` - Piso ${u.floor}` : "") + (u.tower ? ` - Torre ${u.tower}` : ""),
+                  }))}
+                />
               </div>
             </div>
           </div>

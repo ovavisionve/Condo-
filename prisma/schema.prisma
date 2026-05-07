@@ -62,6 +62,7 @@ model Organization {
   logoUrl     String?
   type        OrganizationType @default(RESIDENTIAL)
   active      Boolean  @default(true)
+  aiEnabled   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   deletedAt   DateTime?
@@ -163,6 +164,7 @@ model Community {
   visitors                 Visitor[]
   accessLogs               AccessLog[]
   violations               Violation[]
+  securityNotes            SecurityNote[]
   boardMembers             BoardMember[]
   assemblies               Assembly[]
   communityDocuments       CommunityDocument[]
@@ -280,14 +282,17 @@ model User {
   emailVerified  DateTime?
   name           String?
   image          String?
-  passwordHash   String? // null si solo magic link
-  twoFactorSecret String?
-  twoFactorEnabled Boolean @default(false)
-  lastLoginAt    DateTime?
-  active         Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  deletedAt      DateTime?
+  passwordHash         String?  // null si solo magic link
+  twoFactorSecret      String?
+  twoFactorEnabled     Boolean  @default(false)
+  lastLoginAt          DateTime?
+  lastLoginIp          String?
+  failedLoginAttempts  Int      @default(0)
+  lockedUntil          DateTime?
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  deletedAt            DateTime?
 
   person                Person?
   memberships           Membership[]
@@ -303,8 +308,23 @@ model User {
   monthCloses           MonthClose[]        @relation("MonthCloseUser")
   reservationsRequested Reservation[]       @relation("ReservationRequester")
   reservationsApproved  Reservation[]       @relation("ReservationApprover")
+  passwordResetTokens   PasswordResetToken[]
 
   @@index([active])
+}
+
+/// Token de recuperación de contraseña (expira en 15 min, uso único).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([token])
+  @@index([userId])
 }
 
 enum Role {
@@ -1228,6 +1248,34 @@ model Violation {
 
   @@index([communityId, createdAt])
   @@index([unitId])
+}
+
+// ─── Novedades del día (bitácora del vigilante) ───────────────────────────────
+
+enum SecurityNoteCategory {
+  PATROL        // Recorrido de vigilancia
+  UTILITY_VISIT // Visita empresa (Corpoelec, Hidrolara, etc.)
+  MAINTENANCE   // Mantenimiento en área común
+  INCIDENT      // Incidente o situación inusual
+  DELIVERY      // Entrega / paquetería
+  MEETING       // Reunión o asamblea
+  OTHER         // Otro
+}
+
+model SecurityNote {
+  id             String               @id @default(cuid())
+  organizationId String
+  communityId    String
+  category       SecurityNoteCategory @default(OTHER)
+  description    String               @db.Text
+  reportedBy     String?              // Nombre del vigilante de turno
+
+  community      Community            @relation(fields: [communityId], references: [id])
+
+  createdAt      DateTime             @default(now())
+
+  @@index([communityId, createdAt(sort: Desc)])
+  @@index([organizationId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

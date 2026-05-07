@@ -7,6 +7,7 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 type Tab = "board" | "assemblies" | "documents" | "certificates";
 
@@ -108,12 +109,15 @@ function BoardTab({ organizationId, communityId }: { organizationId: string; com
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label>Persona</Label>
-              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={form.personId} onChange={(e) => setForm((f) => ({ ...f, personId: e.target.value }))} required>
-                <option value="">Seleccionar...</option>
-                {Array.isArray(persons.data) && persons.data.map((p) => (
-                  <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
-                ))}
-              </select>
+              <SearchableSelect
+                value={form.personId}
+                onChange={(v) => setForm((f) => ({ ...f, personId: v }))}
+                placeholder="Buscar persona..."
+                options={(Array.isArray(persons.data) ? persons.data : []).map((p) => ({
+                  value: p.id,
+                  label: `${p.firstName} ${p.lastName}`,
+                }))}
+              />
             </div>
             <div>
               <Label>Cargo</Label>
@@ -572,10 +576,15 @@ function CertificatesTab({ organizationId, communityId }: { organizationId: stri
       <form onSubmit={onGenerate} className="space-y-4">
         <div>
           <Label>Unidad</Label>
-          <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={form.unitId} onChange={(e) => setForm((f) => ({ ...f, unitId: e.target.value }))} required>
-            <option value="">Seleccionar unidad...</option>
-            {units.data?.map((u) => <option key={u.id} value={u.id}>{u.code}{u.floor != null ? ` — Piso ${u.floor}` : ""}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.unitId}
+            onChange={(v) => setForm((f) => ({ ...f, unitId: v }))}
+            placeholder="Buscar unidad..."
+            options={(units.data ?? []).map((u) => ({
+              value: u.id,
+              label: u.code + (u.floor != null ? ` — Piso ${u.floor}` : ""),
+            }))}
+          />
         </div>
         <div>
           <Label>Validez del certificado</Label>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useState } from "react";
+import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useComercial } from "../../ComercialContext";
 import { Button } from "@/components/ui/button";
@@ -30,8 +30,8 @@ const METHOD_LABEL: Record<string, string> = {
   TRANSFER_USD: "Trans. USD", ZELLE: "Zelle", PAGO_MOVIL: "Pago Móvil", CRYPTO: "Crypto", CHECK: "Cheque", OTHER: "Otro",
 };
 
-export default function LocalDetailPage({ params }: { params: Promise<{ localId: string }> }) {
-  const { localId } = use(params);
+export default function LocalDetailPage({ params }: { params: { localId: string } }) {
+  const { localId } = params;
   const { selectedOrgId } = useComercial();
   const [tab, setTab] = useState<"facturas" | "pagos" | "ventas" | "contratos" | "estado">("facturas");
   const [stmtView, setStmtView] = useState<"statement" | "debt-breakdown" | "accounting">("statement");

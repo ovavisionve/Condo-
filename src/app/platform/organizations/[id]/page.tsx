@@ -36,6 +36,7 @@ export default function OrganizationDetailPage() {
   const updateMut = trpc.platform.organizations.update.useMutation({ onSuccess: () => void refetch() });
   const updateSubMut = trpc.platform.organizations.updateSubscription.useMutation({ onSuccess: () => void refetch() });
   const softDeleteMut = trpc.platform.organizations.softDelete.useMutation({ onSuccess: () => router.push("/platform/organizations") });
+  const toggleAiMut = trpc.ai.toggleEnabled.useMutation({ onSuccess: () => void refetch() });
   const createAdminMut = trpc.platform.organizations.createAdmin.useMutation({
     onSuccess: () => { void refetchAdmins(); setShowNewAdmin(false); setAdminForm({ email: "", name: "", password: "", role: "ORG_ADMIN" }); setAdminErr(null); },
     onError: (e) => setAdminErr(e.message),
@@ -211,65 +212,110 @@ export default function OrganizationDetailPage() {
 
       {/* ─── Tab: Resumen ─── */}
       {tab === "resumen" && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader><CardTitle>Datos de la organización</CardTitle></CardHeader>
-            <CardContent>
-              <dl className="grid gap-2 sm:grid-cols-2 text-sm">
-                {[
-                  ["Razón social", org.legalName],
-                  ["RIF", org.rif],
-                  ["Email", org.email],
-                  ["Teléfono", org.phone],
-                  ["Ciudad", org.city],
-                  ["Dirección", org.address],
-                  ["Estado", org.active ? "✅ Activa" : "❌ Inactiva"],
-                  ["Creada", new Date(org.createdAt).toLocaleDateString("es-VE")],
-                ].map(([label, val]) => (
-                  <div key={String(label)}>
-                    <dt className="text-muted-foreground text-xs">{label}</dt>
-                    <dd className="font-medium">{val ?? "—"}</dd>
-                  </div>
-                ))}
-              </dl>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Suscripción actual</CardTitle></CardHeader>
-            <CardContent className="text-sm space-y-2">
-              {sub ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Plan</span>
-                    <span className="font-semibold">{sub.plan.name} — ${sub.plan.priceUsd.toString()}/mes</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Estado</span>
-                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[sub.status] ?? ""}`}>{STATUS_LABEL[sub.status] ?? sub.status}</span>
-                  </div>
-                  {sub.trialEndsAt && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Trial hasta</span>
-                      <span>{new Date(sub.trialEndsAt).toLocaleDateString("es-VE")} ({trialDaysLeft}d)</span>
+        <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader><CardTitle>Datos de la organización</CardTitle></CardHeader>
+              <CardContent>
+                <dl className="grid gap-2 sm:grid-cols-2 text-sm">
+                  {[
+                    ["Razón social", org.legalName],
+                    ["RIF", org.rif],
+                    ["Email", org.email],
+                    ["Teléfono", org.phone],
+                    ["Ciudad", org.city],
+                    ["Dirección", org.address],
+                    ["Estado", org.active ? "✅ Activa" : "❌ Inactiva"],
+                    ["Creada", new Date(org.createdAt).toLocaleDateString("es-VE")],
+                  ].map(([label, val]) => (
+                    <div key={String(label)}>
+                      <dt className="text-muted-foreground text-xs">{label}</dt>
+                      <dd className="font-medium">{val ?? "—"}</dd>
                     </div>
-                  )}
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Período actual</span>
-                    <span>{new Date(sub.currentPeriodStart).toLocaleDateString("es-VE")} – {new Date(sub.currentPeriodEnd).toLocaleDateString("es-VE")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Límites</span>
-                    <span>{sub.plan.maxCommunities} edif. · {sub.plan.maxUnits} unidades</span>
-                  </div>
-                  {sub.notes && <div className="rounded bg-muted/50 p-2 text-xs mt-2">📝 {sub.notes}</div>}
-                  <div className="pt-2">
-                    <Button size="sm" variant="outline" onClick={() => setTab("suscripcion")}>Gestionar suscripción →</Button>
-                  </div>
-                </>
-              ) : (
-                <p className="text-muted-foreground">Sin suscripción activa.</p>
-              )}
+                  ))}
+                </dl>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle>Suscripción actual</CardTitle></CardHeader>
+              <CardContent className="text-sm space-y-2">
+                {sub ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Plan</span>
+                      <span className="font-semibold">{sub.plan.name} — ${sub.plan.priceUsd.toString()}/mes</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Estado</span>
+                      <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[sub.status] ?? ""}`}>{STATUS_LABEL[sub.status] ?? sub.status}</span>
+                    </div>
+                    {sub.trialEndsAt && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Trial hasta</span>
+                        <span>{new Date(sub.trialEndsAt).toLocaleDateString("es-VE")} ({trialDaysLeft}d)</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Período actual</span>
+                      <span>{new Date(sub.currentPeriodStart).toLocaleDateString("es-VE")} – {new Date(sub.currentPeriodEnd).toLocaleDateString("es-VE")}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Límites</span>
+                      <span>{sub.plan.maxCommunities} edif. · {sub.plan.maxUnits} unidades</span>
+                    </div>
+                    {sub.notes && <div className="rounded bg-muted/50 p-2 text-xs mt-2">📝 {sub.notes}</div>}
+                    <div className="pt-2">
+                      <Button size="sm" variant="outline" onClick={() => setTab("suscripcion")}>Gestionar suscripción →</Button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-muted-foreground">Sin suscripción activa.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* AI Toggle Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle>🤖 Asistente de IA (Gemini)</CardTitle>
+              <CardDescription>
+                Habilita el bot de consultas con Gemini AI para esta organización.
+                Cuando está activo, los administradores verán un botón flotante de chat con acceso a datos en tiempo real.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">
+                    {(org as { aiEnabled?: boolean }).aiEnabled ? "✅ IA habilitada" : "⭕ IA deshabilitada"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {(org as { aiEnabled?: boolean }).aiEnabled
+                      ? "El bot está disponible en los módulos residencial y comercial de esta organización."
+                      : "El bot está oculto para los usuarios de esta organización."}
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    toggleAiMut.mutate({
+                      organizationId: id,
+                      enabled: !(org as { aiEnabled?: boolean }).aiEnabled,
+                    })
+                  }
+                  disabled={toggleAiMut.isPending}
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${
+                    (org as { aiEnabled?: boolean }).aiEnabled ? "bg-primary" : "bg-muted-foreground/30"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
+                      (org as { aiEnabled?: boolean }).aiEnabled ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
             </CardContent>
           </Card>
         </div>

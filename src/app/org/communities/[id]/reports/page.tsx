@@ -70,11 +70,11 @@ export default function ReportsPage() {
       .map(d => [
         d.unitCode,
         d.ownerName ?? "",
-        (d as Record<string,unknown>).ownerEmail as string ?? "",
-        (d as Record<string,unknown>).ownerPhone as string ?? "",
-        (d as Record<string,unknown>).invoiceCount as number ?? "",
+        d.ownerEmail ?? "",
+        d.ownerPhone ?? "",
+        d.invoiceCount ?? "",
         Number(d.pendingUsd).toFixed(2),
-        (d as Record<string,unknown>).overdueMonths as number ?? "",
+        d.overdueMonths ?? "",
       ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
     const csv = [header.join(","), ...rows].join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
@@ -292,9 +292,44 @@ export default function ReportsPage() {
       {/* ── KPI Cards ──────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <KpiCard label="Recibos emitidos" value={`$${s?.billing.totalUsd ?? "—"}`} sub={`${s?.billing.invoiceCount ?? 0} recibos en el período`} color="slate" loading={summary.isLoading} />
-        <KpiCard label="Cobrado"   value={`$${s?.billing.paidUsd ?? "—"}`}  sub={`${s?.billing.collectionRate ?? 0}% de cobranza`} color={Number(s?.billing.collectionRate ?? 0) >= 80 ? "green" : Number(s?.billing.collectionRate ?? 0) >= 40 ? "amber" : "red"} loading={summary.isLoading} />
+        <KpiCard label="Cobrado en recibos" value={`$${s?.billing.paidUsd ?? "—"}`}  sub={`${s?.billing.collectionRate ?? 0}% de cobranza`} color={Number(s?.billing.collectionRate ?? 0) >= 80 ? "green" : Number(s?.billing.collectionRate ?? 0) >= 40 ? "amber" : "red"} loading={summary.isLoading} />
         <KpiCard label="Por cobrar" value={`$${s?.billing.pendingUsd ?? "—"}`} sub={Number(s?.billing.pendingUsd ?? 0) > 0 ? "saldo pendiente" : "✓ todo cobrado"} color={Number(s?.billing.pendingUsd ?? 0) > 0 ? "red" : "green"} loading={summary.isLoading} />
         <KpiCard label="Unidades"  value={String(s?.occupancy.total ?? "—")} sub={`${s?.occupancy.owned ?? 0} con dueño · ${s?.occupancy.rented ?? 0} arrendadas`} color="slate" loading={summary.isLoading} />
+      </div>
+
+      {/* ── Flujo de caja real ─────────────────────────────── */}
+      <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+        <p className="text-xs font-semibold text-green-800 mb-2 uppercase tracking-wide">💰 Flujo de caja real — {MONTHS_ES[month - 1]} {year}</p>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs text-green-700 opacity-80">Pagos recibidos en el período</p>
+            {summary.isLoading
+              ? <div className="mt-1 h-6 w-20 animate-pulse rounded bg-green-300/40" />
+              : <p className="text-xl font-bold text-green-800">${s?.payments.totalReceivedUsd ?? "0.00"}</p>
+            }
+            <p className="text-xs text-green-600 mt-0.5">{s?.payments.count ?? 0} transacciones con fecha en el mes</p>
+          </div>
+          <div>
+            <p className="text-xs text-green-700 opacity-80">Anticipo / Crédito disponible</p>
+            {summary.isLoading
+              ? <div className="mt-1 h-6 w-20 animate-pulse rounded bg-green-300/40" />
+              : <p className="text-xl font-bold text-green-800">${s?.payments.anticipoUsd ?? "0.00"}</p>
+            }
+            <p className="text-xs text-green-600 mt-0.5">Pagos recibidos no asignados a recibos</p>
+          </div>
+          <div className="hidden sm:block">
+            <p className="text-xs text-green-700 opacity-80">Tasa de cobranza (flujo real)</p>
+            {summary.isLoading
+              ? <div className="mt-1 h-6 w-20 animate-pulse rounded bg-green-300/40" />
+              : <p className="text-xl font-bold text-green-800">
+                  {s?.billing.totalUsd && Number(s.billing.totalUsd) > 0
+                    ? `${(Number(s.payments.totalReceivedUsd) / Number(s.billing.totalUsd) * 100).toFixed(1)}%`
+                    : "—"}
+                </p>
+            }
+            <p className="text-xs text-green-600 mt-0.5">Pagos recibidos ÷ recibos emitidos en el mes</p>
+          </div>
+        </div>
       </div>
 
       {/* ── Gráficas ───────────────────────────────────────── */}

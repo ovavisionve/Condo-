@@ -44,7 +44,10 @@ function parseXlsxFile(file: File): Promise<Record<string, string>[]> {
       try {
         import("xlsx").then((xlsx) => {
           const data = new Uint8Array(e.target!.result as ArrayBuffer);
-          const wb = xlsx.read(data, { type: "array" });
+          // Force UTF-8 (codepage 65001) for CSV files so accented characters
+          // are read correctly regardless of whether a BOM is present.
+          const isCsv = file.name.toLowerCase().endsWith(".csv") || file.type === "text/csv";
+          const wb = xlsx.read(data, { type: "array", ...(isCsv ? { codepage: 65001 } : {}) });
           const ws = wb.Sheets[wb.SheetNames[0]!]!;
           const rows = xlsx.utils.sheet_to_json<Record<string, string>>(ws, {
             raw: false,

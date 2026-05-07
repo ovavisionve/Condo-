@@ -7,6 +7,7 @@ import { useOrgId } from "../../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const MONTHS = [
   "Ene","Feb","Mar","Abr","May","Jun",
@@ -480,21 +481,18 @@ function NewPaymentDialog({
           {/* ── Unidad ── */}
           <div>
             <Label>Unidad</Label>
-            <select
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            <SearchableSelect
               value={unitId}
-              onChange={(e) => { setUnitId(e.target.value); setAllocs({}); }}
-              required
-            >
-              <option value="">Selecciona una unidad...</option>
-              {units.data?.map((u) => {
+              onChange={(v) => { setUnitId(v); setAllocs({}); }}
+              placeholder="Buscar unidad (ej. 101A, B-16)..."
+              options={(units.data ?? []).map((u) => {
                 const owner = u.ownerships?.[0]?.person;
-                const label = owner
-                  ? `${u.code}  —  ${owner.firstName} ${owner.lastName}`
-                  : u.code;
-                return <option key={u.id} value={u.id}>{label}</option>;
+                return {
+                  value: u.id,
+                  label: owner ? `${u.code} — ${owner.firstName} ${owner.lastName}` : u.code,
+                };
               })}
-            </select>
+            />
             {ownerName && (
               <p className="mt-1 text-xs text-muted-foreground">👤 Propietario: {ownerName}</p>
             )}

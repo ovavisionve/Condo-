@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const fmt = (n: number) => new Intl.NumberFormat("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
@@ -229,11 +230,13 @@ export default function VentasPage() {
             <form onSubmit={(e) => { void handleSubmit(e); }} className="p-6 space-y-3">
               <div className="space-y-1">
                 <Label>Local *</Label>
-                <select value={form.localId} onChange={(e) => setForm({ ...form, localId: e.target.value })} required
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none">
-                  <option value="">Selecciona un local...</option>
-                  {variableLocales.map((l) => <option key={l.id} value={l.id}>{l.code}{l.name ? ` — ${l.name}` : ""}</option>)}
-                </select>
+                <SearchableSelect
+                  value={form.localId}
+                  onChange={(v) => setForm({ ...form, localId: v })}
+                  options={variableLocales.map((l) => ({ value: l.id, label: `${l.code}${l.name ? ` — ${l.name}` : ""}` }))}
+                  placeholder="Selecciona un local..."
+                  emptyText="Sin locales disponibles"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">

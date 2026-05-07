@@ -7,6 +7,7 @@ import { useOrgId } from "../../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const CATS = [
   "ELECTRICITY", "WATER", "GAS", "INTERNET", "CLEANING", "GARDENING",
@@ -736,19 +737,15 @@ function NewExpenseDialog({
             {form.isIndividual ? (
               <div>
                 <Label className="text-xs">Unidad destino</Label>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                <SearchableSelect
                   value={form.targetUnitId}
-                  onChange={(e) => setForm((f) => ({ ...f, targetUnitId: e.target.value }))}
-                  required={form.isIndividual}
-                >
-                  <option value="">— Seleccionar unidad —</option>
-                  {units.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.code}{u.tower ? ` (Torre ${u.tower})` : ""}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setForm((f) => ({ ...f, targetUnitId: v }))}
+                  placeholder="Buscar unidad..."
+                  options={units.map((u) => ({
+                    value: u.id,
+                    label: u.code + (u.tower ? ` (Torre ${u.tower})` : ""),
+                  }))}
+                />
               </div>
             ) : (
               <div>

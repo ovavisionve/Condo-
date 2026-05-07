@@ -8,6 +8,74 @@ import { router, orgProcedure, publicProcedure } from "@/server/trpc/init";
 
 const orgIdInput = z.object({ organizationId: z.string() });
 
+// ── Helper: auto-aplicar pagos en anticipo a una nueva factura ────────────────
+async function applyAnticipToNewInvoice(
+  db: {
+    ccInvoice: { findUnique: Function; update: Function };
+    ccPayment: { findMany: Function };
+    ccPaymentAllocation: { createMany: Function };
+  },
+  invoiceId: string,
+  localId: string,
+): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const invoice = await (db.ccInvoice.findUnique as any)({ where: { id: invoiceId } });
+  if (!invoice) return;
+
+  let remainingDebt = Number(invoice.totalUsd) - Number(invoice.paidUsd);
+  if (remainingDebt <= 0.001) return;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const payments = await (db.ccPayment.findMany as any)({
+    where: { localId, voidedAt: null },
+    include: { allocations: { include: { invoice: { select: { status: true } } } } },
+    orderBy: { paidAt: "asc" },
+  });
+
+  let totalAppliedUsd = 0;
+  const newAllocations: Array<{
+    paymentId: string;
+    invoiceId: string;
+    localId: string;
+    amountUsd: number;
+    amountBss: number;
+  }> = [];
+
+  for (const payment of payments) {
+    if (remainingDebt <= 0.001) break;
+    // Ignorar allocations de facturas anuladas (pueden quedar huérfanas si void no limpió)
+    const totalAllocated = payment.allocations
+      .filter((a: { invoice?: { status?: string } }) => a.invoice?.status !== "VOIDED")
+      .reduce((s: number, a: { amountUsd: unknown }) => s + Number(a.amountUsd), 0);
+    const surplus = Number(payment.amountUsd) - totalAllocated;
+    if (surplus <= 0.001) continue;
+    const apply = Math.min(surplus, remainingDebt);
+    newAllocations.push({
+      paymentId: payment.id,
+      invoiceId,
+      localId,
+      amountUsd: apply,
+      amountBss: apply * Number(payment.exchangeRate),
+    });
+    totalAppliedUsd += apply;
+    remainingDebt -= apply;
+  }
+
+  if (newAllocations.length === 0) return;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (db.ccPaymentAllocation.createMany as any)({ data: newAllocations });
+
+  const newPaidUsd = Number(invoice.paidUsd) + totalAppliedUsd;
+  const newPaidBss = Number(invoice.paidBss) + totalAppliedUsd * Number(invoice.exchangeRate);
+  const newStatus = newPaidUsd >= Number(invoice.totalUsd) - 0.001 ? "PAID" : "PARTIAL";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (db.ccInvoice.update as any)({
+    where: { id: invoiceId },
+    data: { paidUsd: newPaidUsd, paidBss: newPaidBss, status: newStatus },
+  });
+}
+
 export const comercialRouter = router({
 
   // ── Malls ──────────────────────────────────────────────────────────────
@@ -160,8 +228,8 @@ export const comercialRouter = router({
   locales: router({
     list: orgProcedure
       .input(orgIdInput.extend({ mallId: z.string(), includeInactive: z.boolean().default(false) }))
-      .query(({ ctx, input }) =>
-        ctx.db.ccLocal.findMany({
+      .query(async ({ ctx, input }) => {
+        const locals = await ctx.db.ccLocal.findMany({
           where: {
             mallId: input.mallId,
             organizationId: input.organizationId,
@@ -170,10 +238,18 @@ export const comercialRouter = router({
           },
           include: {
             tenancies: { where: { endDate: null }, take: 1, orderBy: { startDate: "desc" } },
+            invoices: { where: { status: { not: "VOIDED" } }, select: { totalUsd: true, paidUsd: true } },
+            payments: { where: { voidedAt: null }, select: { amountUsd: true } },
           },
           orderBy: [{ floor: "asc" }, { code: "asc" }],
-        }),
-      ),
+        });
+        return locals.map((l) => {
+          const totalInvoicedUsd = l.invoices.reduce((s, i) => s + Number(i.totalUsd), 0);
+          const totalPaidUsd = l.payments.reduce((s, p) => s + Number(p.amountUsd), 0);
+          const balanceUsd = totalPaidUsd - totalInvoicedUsd; // positivo = saldo a favor, negativo = deuda
+          return { ...l, totalInvoicedUsd, totalPaidUsd, balanceUsd };
+        });
+      }),
 
     byId: orgProcedure
       .input(orgIdInput.extend({ localId: z.string() }))
@@ -533,7 +609,7 @@ export const comercialRouter = router({
         const count = await ctx.db.ccInvoice.count({ where: { mallId: input.mallId } });
         const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
 
-        return ctx.db.ccInvoice.create({
+        const invoice = await ctx.db.ccInvoice.create({
           data: {
             organizationId: input.organizationId,
             mallId: input.mallId,
@@ -560,6 +636,10 @@ export const comercialRouter = router({
           },
           include: { items: true, local: { select: { code: true, name: true } } },
         });
+
+        // Auto-aplicar anticipo existente a la nueva factura
+        await applyAnticipToNewInvoice(ctx.db, invoice.id, input.localId);
+        return invoice;
       }),
 
     // Emitir canon a TODOS los locales activos del mall de un período
@@ -619,7 +699,7 @@ export const comercialRouter = router({
             const amountBss = amountUsd * input.exchangeRate;
             const description = `Canon de arrendamiento — ${new Date(input.periodYear, input.periodMonth - 1).toLocaleDateString("es-VE", { month: "long", year: "numeric" })}`;
 
-            await ctx.db.ccInvoice.create({
+            const createdInvoice = await ctx.db.ccInvoice.create({
               data: {
                 organizationId: input.organizationId,
                 mallId: input.mallId,
@@ -640,6 +720,8 @@ export const comercialRouter = router({
                 },
               },
             });
+            // Auto-aplicar anticipo existente a la nueva factura
+            await applyAnticipToNewInvoice(ctx.db, createdInvoice.id, local.id);
             results.issued++;
 
             // Email automático al arrendatario (silencioso: no rompe el batch si falla)
@@ -684,12 +766,32 @@ export const comercialRouter = router({
 
     void: orgProcedure
       .input(orgIdInput.extend({ invoiceId: z.string(), voidReason: z.string().optional() }))
-      .mutation(({ ctx, input }) =>
-        ctx.db.ccInvoice.update({
+      .mutation(async ({ ctx, input }) => {
+        const invoice = await ctx.db.ccInvoice.findUniqueOrThrow({
           where: { id: input.invoiceId },
-          data: { status: "VOIDED", voidedAt: new Date(), voidReason: input.voidReason },
-        }),
-      ),
+          select: { localId: true, status: true },
+        });
+
+        // 1. Eliminar allocations vinculadas a esta factura → libera el anticipo de los pagos
+        await ctx.db.ccPaymentAllocation.deleteMany({ where: { invoiceId: input.invoiceId } });
+
+        // 2. Anular la factura (paidUsd/paidBss a 0 porque las allocations ya no existen)
+        await ctx.db.ccInvoice.update({
+          where: { id: input.invoiceId },
+          data: { status: "VOIDED", voidedAt: new Date(), voidReason: input.voidReason, paidUsd: 0, paidBss: 0 },
+        });
+
+        // 3. Re-aplicar el anticipo liberado a otras facturas pendientes del mismo local
+        const pendingInvoices = await ctx.db.ccInvoice.findMany({
+          where: { localId: invoice.localId, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+          orderBy: { dueDate: "asc" },
+        });
+        for (const pending of pendingInvoices) {
+          await applyAnticipToNewInvoice(ctx.db, pending.id, invoice.localId);
+        }
+
+        return { success: true };
+      }),
 
     /** Genera PDF de la factura CC y lo devuelve como base64. */
     downloadPdf: orgProcedure
@@ -1829,6 +1931,316 @@ export const comercialRouter = router({
         }
 
         return { created, updated, tenantsCreated, errors, total: rows.length };
+      }),
+
+    // ── bulkPayments — Importar pagos históricos ────────────────────────────
+    bulkPayments: orgProcedure
+      .input(
+        orgIdInput.extend({
+          mallId: z.string(),
+          rows: z.array(z.object({
+            localCode: z.string().min(1),
+            amountUsd: z.coerce.number().positive(),
+            exchangeRate: z.coerce.number().positive().optional(),
+            method: z.enum(["CASH_BSS","CASH_USD","TRANSFER_BSS","TRANSFER_USD","ZELLE","PAGO_MOVIL","CRYPTO","CHECK","OTHER"]).default("TRANSFER_USD"),
+            paidAt: z.coerce.date(),
+            reference: z.string().optional(),
+            notes: z.string().optional(),
+          })).min(1).max(1000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, mallId, rows } = input;
+        let created = 0;
+        const errors: string[] = [];
+
+        for (const row of rows) {
+          try {
+            const local = await ctx.db.ccLocal.findFirst({
+              where: { mallId, organizationId, code: row.localCode.toUpperCase() },
+            });
+            if (!local) { errors.push(`Local "${row.localCode}": no encontrado`); continue; }
+
+            const rate = row.exchangeRate ?? 1;
+            const amountBss = row.amountUsd * rate;
+
+            // Buscar facturas pendientes oldest-first
+            const pendingInvoices = await ctx.db.ccInvoice.findMany({
+              where: { localId: local.id, status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] } },
+              orderBy: { dueDate: "asc" },
+            });
+
+            let remaining = row.amountUsd;
+            const allocations: Array<{ invoiceId: string; localId: string; amountBss: number; amountUsd: number }> = [];
+
+            for (const inv of pendingInvoices) {
+              if (remaining <= 0) break;
+              const pendingUsd = Number(inv.totalUsd) - Number(inv.paidUsd);
+              if (pendingUsd <= 0) continue;
+              const apply = Math.min(remaining, pendingUsd);
+              allocations.push({ invoiceId: inv.id, localId: local.id, amountBss: apply * rate, amountUsd: apply });
+              remaining -= apply;
+            }
+
+            await ctx.db.ccPayment.create({
+              data: {
+                organizationId,
+                mallId,
+                localId: local.id,
+                amountUsd: row.amountUsd,
+                amountBss,
+                exchangeRate: rate,
+                exchangeSource: "MANUAL",
+                currencyPrimary: "USD",
+                method: row.method,
+                reference: row.reference,
+                paidAt: row.paidAt,
+                notes: row.notes,
+                allocations: { create: allocations },
+              },
+            });
+
+            // Actualizar facturas con las allocations
+            for (const alloc of allocations) {
+              const inv = pendingInvoices.find((i) => i.id === alloc.invoiceId)!;
+              const newPaidUsd = Number(inv.paidUsd) + alloc.amountUsd;
+              const newPaidBss = Number(inv.paidBss) + alloc.amountBss;
+              const newStatus =
+                newPaidUsd >= Number(inv.totalUsd) - 0.001 ? "PAID"
+                : newPaidUsd > 0 ? "PARTIAL"
+                : "ISSUED";
+              await ctx.db.ccInvoice.update({
+                where: { id: inv.id },
+                data: { paidUsd: newPaidUsd, paidBss: newPaidBss, status: newStatus },
+              });
+            }
+
+            created++;
+          } catch (err) {
+            errors.push(`Local "${row.localCode}": ${err instanceof Error ? err.message : "Error"}`);
+          }
+        }
+
+        return { created, errors };
+      }),
+
+    // ── bulkInvoices — Importar facturas históricas ─────────────────────────
+    bulkInvoices: orgProcedure
+      .input(
+        orgIdInput.extend({
+          mallId: z.string(),
+          rows: z.array(z.object({
+            localCode: z.string().min(1),
+            periodYear: z.number().int(),
+            periodMonth: z.number().int().min(1).max(12),
+            amountUsd: z.coerce.number().positive(),
+            exchangeRate: z.coerce.number().positive().optional(),
+            type: z.enum(["CANON","CANON_SALES","ALIQUOT","EXTRA_FEE","FINE","OTHER"]).default("CANON"),
+            description: z.string().optional(),
+            dueDate: z.coerce.date().optional(),
+            issuedAt: z.coerce.date().optional(),
+            status: z.enum(["ISSUED","PAID","PARTIAL","OVERDUE","VOIDED"]).optional(),
+            paidUsd: z.coerce.number().optional(),
+          })).min(1).max(1000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, mallId, rows } = input;
+        let created = 0;
+        let skipped = 0;
+        const errors: string[] = [];
+
+        for (const row of rows) {
+          try {
+            const local = await ctx.db.ccLocal.findFirst({
+              where: { mallId, organizationId, code: row.localCode.toUpperCase() },
+            });
+            if (!local) { errors.push(`Local "${row.localCode}": no encontrado`); continue; }
+
+            // No duplicar si ya existe factura del mismo tipo+período+local (no VOIDED)
+            const existing = await ctx.db.ccInvoice.findFirst({
+              where: {
+                localId: local.id,
+                periodYear: row.periodYear,
+                periodMonth: row.periodMonth,
+                type: row.type,
+                status: { not: "VOIDED" },
+              },
+            });
+            if (existing) { skipped++; continue; }
+
+            const rate = row.exchangeRate ?? 1;
+            const amountBss = row.amountUsd * rate;
+            const issuedAt = row.issuedAt ?? new Date();
+            const dueDate = row.dueDate ?? new Date(issuedAt.getTime() + 5 * 24 * 60 * 60 * 1000);
+
+            const count = await ctx.db.ccInvoice.count({ where: { mallId } });
+            const invoiceNumber = `${row.periodYear}-${String(row.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
+
+            const paidUsd = row.paidUsd ?? 0;
+            const paidBss = paidUsd * rate;
+            let status = row.status ?? "ISSUED";
+            if (!row.status && paidUsd > 0) {
+              status = paidUsd >= row.amountUsd - 0.001 ? "PAID" : "PARTIAL";
+            }
+
+            const description = row.description ?? `${row.type} ${row.periodYear}-${String(row.periodMonth).padStart(2, "0")}`;
+
+            await ctx.db.ccInvoice.create({
+              data: {
+                organizationId,
+                mallId,
+                localId: local.id,
+                invoiceNumber,
+                type: row.type,
+                periodYear: row.periodYear,
+                periodMonth: row.periodMonth,
+                issuedAt,
+                dueDate,
+                totalBss: amountBss,
+                totalUsd: row.amountUsd,
+                paidUsd,
+                paidBss,
+                exchangeRate: rate,
+                exchangeSource: "MANUAL",
+                currencyPrimary: "USD",
+                status,
+                items: { create: { description, amountBss, amountUsd: row.amountUsd } },
+              },
+            });
+            created++;
+          } catch (err) {
+            errors.push(`Local "${row.localCode}" ${row.periodYear}/${row.periodMonth}: ${err instanceof Error ? err.message : "Error"}`);
+          }
+        }
+
+        return { created, skipped, errors };
+      }),
+
+    // ── bulkSalesDeclarations — Importar declaraciones de ventas ───────────
+    bulkSalesDeclarations: orgProcedure
+      .input(
+        orgIdInput.extend({
+          mallId: z.string(),
+          rows: z.array(z.object({
+            localCode: z.string().min(1),
+            periodYear: z.number().int(),
+            periodMonth: z.number().int().min(1).max(12),
+            salesAmountUsd: z.coerce.number().nonnegative(),
+            salesAmountBss: z.coerce.number().nonnegative().optional(),
+            exchangeRate: z.coerce.number().positive().optional(),
+            verified: z.boolean().default(false),
+          })).min(1).max(1000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, mallId, rows } = input;
+        let created = 0;
+        let updated = 0;
+        const errors: string[] = [];
+
+        for (const row of rows) {
+          try {
+            const local = await ctx.db.ccLocal.findFirst({
+              where: { mallId, organizationId, code: row.localCode.toUpperCase() },
+            });
+            if (!local) { errors.push(`Local "${row.localCode}": no encontrado`); continue; }
+
+            const rate = row.exchangeRate ?? 1;
+            const salesAmountBss = row.salesAmountBss ?? row.salesAmountUsd * rate;
+
+            const existing = await ctx.db.ccSalesDeclaration.findUnique({
+              where: { localId_periodYear_periodMonth: { localId: local.id, periodYear: row.periodYear, periodMonth: row.periodMonth } },
+            });
+
+            if (existing) {
+              await ctx.db.ccSalesDeclaration.update({
+                where: { id: existing.id },
+                data: {
+                  salesAmountUsd: row.salesAmountUsd,
+                  salesAmountBss,
+                  exchangeRate: rate,
+                  verified: row.verified,
+                },
+              });
+              updated++;
+            } else {
+              await ctx.db.ccSalesDeclaration.create({
+                data: {
+                  organizationId,
+                  mallId,
+                  localId: local.id,
+                  periodYear: row.periodYear,
+                  periodMonth: row.periodMonth,
+                  salesAmountUsd: row.salesAmountUsd,
+                  salesAmountBss,
+                  exchangeRate: rate,
+                  verified: row.verified,
+                },
+              });
+              created++;
+            }
+          } catch (err) {
+            errors.push(`Local "${row.localCode}" ${row.periodYear}/${row.periodMonth}: ${err instanceof Error ? err.message : "Error"}`);
+          }
+        }
+
+        return { created, updated, errors };
+      }),
+
+    // ── bulkIncomes — Importar recaudación extra ────────────────────────────
+    bulkIncomes: orgProcedure
+      .input(
+        orgIdInput.extend({
+          mallId: z.string(),
+          rows: z.array(z.object({
+            category: z.enum(["PUBLICIDAD_INTERNA","ALQUILER_ESPACIO","ESTACIONAMIENTO","PATROCINIOS","INTERESES","PENALIDADES","OTHER"]).default("OTHER"),
+            description: z.string().min(1),
+            amountUsd: z.coerce.number().positive(),
+            exchangeRate: z.coerce.number().positive().optional(),
+            periodYear: z.number().int(),
+            periodMonth: z.number().int().min(1).max(12),
+            reference: z.string().optional(),
+            affectsInvoice: z.boolean().default(false),
+            notes: z.string().optional(),
+          })).min(1).max(1000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, mallId, rows } = input;
+        let created = 0;
+        const errors: string[] = [];
+
+        for (const row of rows) {
+          try {
+            const rate = row.exchangeRate ?? 1;
+            const amountBss = row.amountUsd * rate;
+
+            await ctx.db.ccIncome.create({
+              data: {
+                organizationId,
+                mallId,
+                category: row.category,
+                description: row.description,
+                amountUsd: row.amountUsd,
+                amountBss,
+                exchangeRate: rate,
+                exchangeSource: "MANUAL",
+                currencyPrimary: "USD",
+                periodYear: row.periodYear,
+                periodMonth: row.periodMonth,
+                reference: row.reference,
+                affectsInvoice: row.affectsInvoice,
+                notes: row.notes,
+              },
+            });
+            created++;
+          } catch (err) {
+            errors.push(`Fila "${row.description}": ${err instanceof Error ? err.message : "Error"}`);
+          }
+        }
+
+        return { created, errors };
       }),
   }),
 

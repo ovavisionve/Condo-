@@ -7,6 +7,7 @@ import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const PAYMENT_METHODS: Record<string, string> = {
   TRANSFER_USD: "Transf. USD", TRANSFER_BSS: "Transf. Bs",
@@ -308,14 +309,12 @@ function NewWorkOrderDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Unidad (dejar vacío si es área común)</Label>
-              <select
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              <SearchableSelect
                 value={form.unitId}
-                onChange={(e) => setForm((f) => ({ ...f, unitId: e.target.value }))}
-              >
-                <option value="">Área común</option>
-                {units.data?.map((u) => <option key={u.id} value={u.id}>{u.code}</option>)}
-              </select>
+                onChange={(v) => setForm((f) => ({ ...f, unitId: v }))}
+                placeholder="Área común / buscar unidad..."
+                options={(units.data ?? []).map((u) => ({ value: u.id, label: u.code }))}
+              />
             </div>
             <div>
               <Label>Costo estimado USD</Label>
@@ -499,16 +498,14 @@ function WorkOrderDetailDialog({
                 <option key={s} value={s}>{STATUS_LABELS[s]}</option>
               ))}
             </select>
-            <select
-              className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
-              value={contractorId}
-              onChange={(e) => setContractorId(e.target.value)}
-            >
-              <option value="">Asignar contratista...</option>
-              {contractors.data?.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            <div className="flex-1">
+              <SearchableSelect
+                value={contractorId}
+                onChange={(v) => setContractorId(v)}
+                placeholder="Asignar contratista..."
+                options={(contractors.data ?? []).map((c) => ({ value: c.id, label: c.name }))}
+              />
+            </div>
             <Button size="sm" onClick={handleUpdate} disabled={update.isPending}>
               Guardar
             </Button>

@@ -1475,7 +1475,7 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
 
       {/* Footer */}
       <div className="border-t bg-white py-4 text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()} · Sistema de Gestión de Condominios
+        © {new Date().getFullYear()} · ResidIA
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import { canManageOrganization, isPlatform } from "@/server/auth/permissions";
 import { db } from "@/server/db/client";
 import { ComercialContextProvider } from "./ComercialContext";
 import { ComercialSidebar } from "./ComercialSidebar";
+import { ComercialAiChat } from "@/components/ComercialAiChat";
 
 export default async function ComercialLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
@@ -50,6 +51,7 @@ export default async function ComercialLayout({ children }: { children: React.Re
           </div>
         </main>
       </div>
+      <ComercialAiChat />
     </ComercialContextProvider>
   );
 }

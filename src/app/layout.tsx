@@ -4,13 +4,13 @@ import { PwaInstallBanner } from "@/components/PwaInstallBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Condominios",
-  description: "Sistema de gestión de condominios para Venezuela",
-  applicationName: "Condominios Venezuela",
+  title: "ResidIA",
+  description: "Gestión inteligente de condominios en Venezuela",
+  applicationName: "ResidIA",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Condominios",
+    title: "ResidIA",
   },
   formatDetection: {
     telephone: false,

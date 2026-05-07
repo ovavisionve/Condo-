@@ -3,6 +3,8 @@ import { auth } from "@/server/auth/config";
 import { canManageOrganization, isPlatform } from "@/server/auth/permissions";
 import { OrgContextProvider } from "./OrgContext";
 import { AppSidebar } from "@/components/admin/AppSidebar";
+import { OrgAiChat } from "@/components/OrgAiChat";
+import { InactivityGuard } from "@/components/InactivityGuard";
 import { db } from "@/server/db/client";
 
 export default async function OrgLayout({ children }: { children: React.ReactNode }) {
@@ -42,12 +44,15 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
     <OrgContextProvider orgs={orgs}>
       <div className="flex h-screen overflow-hidden bg-gray-50">
         <AppSidebar userEmail={session.user.email ?? ""} isOrgAdmin={isOrgAdmin} />
-        <main className="flex-1 overflow-y-auto">
-          <div className="p-6 max-w-5xl mx-auto">
+        <main className="flex-1 overflow-y-auto min-w-0">
+          {/* pt-16 on mobile gives room for the floating hamburger button */}
+          <div className="pt-16 px-4 pb-6 md:pt-6 md:px-6 max-w-5xl mx-auto">
             {children}
           </div>
         </main>
       </div>
+      <OrgAiChat />
+      <InactivityGuard />
     </OrgContextProvider>
   );
 }

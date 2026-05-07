@@ -5,6 +5,7 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../../OrgContext";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const MONTHS_ES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
@@ -100,21 +101,18 @@ export default function AccountStatementPage() {
       <div className="flex flex-wrap items-end gap-4">
         <div className="max-w-xs flex-1">
           <Label>Seleccionar unidad</Label>
-          <select
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+          <SearchableSelect
             value={unitId}
-            onChange={(e) => setUnitId(e.target.value)}
-          >
-            <option value="">Seleccionar...</option>
-            {units.data?.map((u) => {
+            onChange={setUnitId}
+            placeholder="Buscar unidad (ej. 101A, B-16)..."
+            options={(units.data ?? []).map((u) => {
               const owner = u.ownerships[0]?.person;
-              return (
-                <option key={u.id} value={u.id}>
-                  {u.code}{owner ? ` — ${owner.firstName} ${owner.lastName}` : ""}
-                </option>
-              );
+              return {
+                value: u.id,
+                label: u.code + (owner ? ` — ${owner.firstName} ${owner.lastName}` : ""),
+              };
             })}
-          </select>
+          />
         </div>
 
         {unitId && (

@@ -9,6 +9,15 @@ const slugSchema = z
   .max(50)
   .regex(/^[a-z0-9-]+$/, "Solo minúsculas, números y guiones");
 
+// Validación de email permisiva: acepta unicode en la parte local (ej. josecastaños@gmail.com)
+// z.string().email() solo acepta ASCII estricto (RFC 5321), lo que rechaza caracteres venezolanos comunes.
+const emailSchema = z
+  .string()
+  .min(1)
+  .refine((v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v), {
+    message: "Formato de email inválido",
+  });
+
 export const platformRouter = router({
   // ─── Plans ─────────────────────────────────────────────────────────
   plans: router({
@@ -201,14 +210,14 @@ export const platformRouter = router({
           name: z.string().min(2),
           legalName: z.string().optional(),
           rif: z.string().optional(),
-          email: z.string().email(),
+          email: emailSchema,
           phone: z.string().optional(),
           address: z.string().optional(),
           city: z.string().optional(),
           type: z.enum(["RESIDENTIAL", "COMMERCIAL"]).default("RESIDENTIAL"),
           planId: z.string(),
           trialDays: z.number().int().min(0).default(30),
-          adminEmail: z.string().email(),
+          adminEmail: emailSchema,
           adminName: z.string().min(2),
           adminPassword: z.string().min(8),
         }),
@@ -287,7 +296,7 @@ export const platformRouter = router({
           name: z.string().optional(),
           legalName: z.string().optional(),
           rif: z.string().optional(),
-          email: z.string().email().optional(),
+          email: emailSchema.optional(),
           phone: z.string().optional(),
           address: z.string().optional(),
           city: z.string().optional(),
@@ -395,7 +404,7 @@ export const platformRouter = router({
     createAdmin: platformProcedure
       .input(z.object({
         organizationId: z.string(),
-        email: z.string().email(),
+        email: emailSchema,
         name: z.string().min(2),
         password: z.string().min(8),
         role: z.enum(["ORG_ADMIN", "COMMUNITY_ADMIN"]).default("ORG_ADMIN"),

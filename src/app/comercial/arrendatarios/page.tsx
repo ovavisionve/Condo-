@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const CANON_TYPE_LABEL: Record<string, string> = {
   FIXED: "Canon fijo", VARIABLE_SALES: "% ventas", MIXED: "Mixto",
@@ -104,14 +105,15 @@ export default function ArrendatariosPage() {
                   <th className="text-left px-4 py-3">Arrendatario</th>
                   <th className="text-left px-4 py-3 hidden sm:table-cell">RIF / Contacto</th>
                   <th className="text-left px-4 py-3 hidden md:table-cell">Canon</th>
+                  <th className="text-left px-4 py-3">Saldo</th>
                   <th className="text-left px-4 py-3 hidden lg:table-cell">Desde</th>
-                  <th className="text-left px-4 py-3 hidden lg:table-cell">Depósito</th>
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {occupied.map((local) => {
                   const t = local.tenancies![0]!;
+                  const balance = local.balanceUsd ?? 0;
                   return (
                     <tr key={local.id} className="hover:bg-accent/30">
                       <td className="px-4 py-3">
@@ -132,11 +134,21 @@ export default function ArrendatariosPage() {
                         {t.canonUsd && <p className="text-xs font-medium text-green-700">${fmt(Number(t.canonUsd))}/mes</p>}
                         {t.salesPct && <p className="text-xs text-purple-700">{Number(t.salesPct).toFixed(2)}%</p>}
                       </td>
+                      <td className="px-4 py-3 text-xs font-semibold whitespace-nowrap">
+                        {balance > 0.005 ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-green-100 text-green-700 px-2 py-0.5">
+                            ✅ +${fmt(balance)}
+                          </span>
+                        ) : balance < -0.005 ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 px-2 py-0.5">
+                            ⚠️ -${fmt(Math.abs(balance))}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">Al día</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 hidden lg:table-cell text-muted-foreground text-xs">
                         {new Date(t.startDate).toLocaleDateString("es-VE")}
-                      </td>
-                      <td className="px-4 py-3 hidden lg:table-cell text-xs text-muted-foreground">
-                        {t.depositUsd ? `$${fmt(Number(t.depositUsd))}` : "—"}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex gap-1 justify-end flex-wrap">
@@ -193,11 +205,13 @@ export default function ArrendatariosPage() {
             <form onSubmit={(e) => { void handleSubmit(e); }} className="p-6 space-y-3 max-h-[70vh] overflow-y-auto">
               <div className="space-y-1">
                 <Label>Local *</Label>
-                <select value={selectedLocalId} onChange={(e) => setSelectedLocalId(e.target.value)} required
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                  <option value="">Selecciona un local...</option>
-                  {locales.map((l) => <option key={l.id} value={l.id}>{l.code}{l.name ? ` — ${l.name}` : ""}</option>)}
-                </select>
+                <SearchableSelect
+                  value={selectedLocalId}
+                  onChange={(v) => setSelectedLocalId(v)}
+                  options={locales.map((l) => ({ value: l.id, label: `${l.code}${l.name ? ` — ${l.name}` : ""}` }))}
+                  placeholder="Selecciona un local..."
+                  emptyText="Sin locales disponibles"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2 space-y-1">

@@ -381,6 +381,45 @@ export const securityRouter = router({
       }),
   }),
 
+  // ─── Novedades del día ────────────────────────────────────────
+  notes: router({
+    list: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        date: z.coerce.date().optional(),
+      }))
+      .query(({ ctx, input }) => {
+        const { organizationId, communityId, date } = input;
+        const dateFilter = date
+          ? {
+              createdAt: {
+                gte: new Date(date.toISOString().slice(0, 10) + "T00:00:00.000Z"),
+                lte: new Date(date.toISOString().slice(0, 10) + "T23:59:59.999Z"),
+              },
+            }
+          : {};
+        return ctx.db.securityNote.findMany({
+          where: { organizationId, communityId, ...dateFilter },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        });
+      }),
+
+    create: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        category: z.enum(["PATROL", "UTILITY_VISIT", "MAINTENANCE", "INCIDENT", "DELIVERY", "MEETING", "OTHER"]).default("OTHER"),
+        description: z.string().min(3).max(1000),
+        reportedBy: z.string().optional(),
+      }))
+      .mutation(({ ctx, input }) => {
+        const { organizationId, communityId, category, description, reportedBy } = input;
+        return ctx.db.securityNote.create({
+          data: { organizationId, communityId, category, description, reportedBy },
+        });
+      }),
+  }),
+
   // ─── Verificar código QR de visitante ─────────────────────────
   verifyAccessCode: orgProcedure
     .input(z.object({

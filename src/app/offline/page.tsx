@@ -47,7 +47,7 @@ export default function OfflinePage() {
         </button>
 
         <p className="text-xs text-slate-400 mt-4">
-          Condominios Venezuela — Modo sin conexión
+          ResidIA — Modo sin conexión
         </p>
       </div>
     </div>

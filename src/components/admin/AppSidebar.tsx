@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgs } from "@/app/org/OrgContext";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -62,6 +63,10 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
   const params = useParams<{ id?: string }>();
   const communityId = params?.id;
   const { orgs, selectedOrgId, setSelectedOrgId } = useOrgs();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close sidebar on route change (mobile)
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   // Detect if we're inside a community route
   const inCommunity = Boolean(communityId) && pathname.includes("/communities/");
@@ -75,16 +80,55 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
   const base = `/org/communities/${communityId}`;
 
   return (
-    <aside className="flex h-screen w-60 flex-shrink-0 flex-col bg-slate-900 border-r border-slate-800">
+    <>
+      {/* ── Mobile hamburger button ──────────────────────── */}
+      <button
+        className="fixed top-3 left-3 z-50 flex items-center justify-center w-10 h-10 rounded-xl bg-slate-900 text-slate-200 shadow-lg border border-slate-700 md:hidden"
+        onClick={() => setMobileOpen(true)}
+        aria-label="Abrir menú"
+      >
+        <svg width="18" height="14" viewBox="0 0 18 14" fill="none">
+          <rect y="0" width="18" height="2" rx="1" fill="currentColor"/>
+          <rect y="6" width="18" height="2" rx="1" fill="currentColor"/>
+          <rect y="12" width="18" height="2" rx="1" fill="currentColor"/>
+        </svg>
+      </button>
+
+      {/* ── Mobile backdrop ──────────────────────────────── */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+    <aside className={cn(
+      "flex h-screen w-64 flex-shrink-0 flex-col bg-slate-900 border-r border-slate-800 transition-transform duration-300",
+      // Desktop: always visible, relative
+      "md:relative md:translate-x-0",
+      // Mobile: fixed overlay, toggled
+      "fixed inset-y-0 left-0 z-50 md:z-auto",
+      mobileOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full md:translate-x-0",
+    )}>
       {/* Brand */}
       <div className="flex items-center gap-3 px-4 py-4 border-b border-slate-800">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white text-sm font-bold flex-shrink-0">
-          C
+          R
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-white leading-tight">Condominios</p>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-white leading-tight">ResidIA</p>
           <p className="text-[10px] text-slate-500 leading-tight">Panel de admin</p>
         </div>
+        {/* Close button — mobile only */}
+        <button
+          className="md:hidden flex-shrink-0 text-slate-400 hover:text-slate-200 p-1"
+          onClick={() => setMobileOpen(false)}
+          aria-label="Cerrar menú"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M2 2L14 14M14 2L2 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </button>
       </div>
 
       {/* Org selector */}
@@ -194,5 +238,6 @@ export function AppSidebar({ userEmail, isOrgAdmin }: AppSidebarProps) {
         </p>
       </div>
     </aside>
+    </>
   );
 }

@@ -54,6 +54,29 @@ export const reportsRouter = router({
         else                 aging.d90plus += bal;
       }
 
+      // ── Pagos recibidos en el período (por fecha de pago) ────────
+      const periodStart = new Date(year, month - 1, 1);
+      const periodEnd   = new Date(year, month, 1); // exclusive
+      const paymentsInPeriod = await ctx.db.payment.aggregate({
+        where: { organizationId, communityId, paidAt: { gte: periodStart, lt: periodEnd }, voidedAt: null },
+        _sum: { amountUsd: true },
+        _count: true,
+      });
+      const totalReceivedUsd = new Decimal(paymentsInPeriod._sum.amountUsd?.toString() ?? "0");
+      const paymentsCount    = paymentsInPeriod._count;
+
+      // Anticipo acumulado total = pagos que no tienen allocations o cuyo monto excede lo asignado
+      const anticipoAgg = await ctx.db.payment.aggregate({
+        where: { organizationId, communityId, voidedAt: null },
+        _sum: { amountUsd: true },
+      });
+      const allAllocated = await ctx.db.paymentAllocation.aggregate({
+        where: { payment: { organizationId, communityId, voidedAt: null } },
+        _sum: { amountUsd: true },
+      });
+      const anticipoUsd = new Decimal(anticipoAgg._sum.amountUsd?.toString() ?? "0")
+        .minus(new Decimal(allAllocated._sum.amountUsd?.toString() ?? "0"));
+
       // ── Ocupación de unidades ─────────────────────────────────
       const units = await ctx.db.unit.findMany({
         where: { organizationId, communityId, deletedAt: null, active: true },
@@ -61,10 +84,14 @@ export const reportsRouter = router({
       });
       const unitIds = units.map((u) => u.id);
 
-      const [ownedCount, rentedCount] = await Promise.all([
-        ctx.db.ownership.count({ where: { unitId: { in: unitIds }, endDate: null } }),
-        ctx.db.tenancy.count({ where: { unitId: { in: unitIds }, endDate: null } }),
+      const [ownedUnitRows, rentedUnitRows] = await Promise.all([
+        ctx.db.ownership.findMany({ where: { unitId: { in: unitIds }, endDate: null }, select: { unitId: true } }),
+        ctx.db.tenancy.findMany({ where: { unitId: { in: unitIds }, endDate: null }, select: { unitId: true } }),
       ]);
+      const ownedCount   = ownedUnitRows.length;
+      const rentedCount  = rentedUnitRows.length;
+      const occupiedIds  = new Set([...ownedUnitRows.map(o => o.unitId), ...rentedUnitRows.map(t => t.unitId)]);
+      const vacantCount  = units.length - occupiedIds.size;
 
       // ── Work orders del período ───────────────────────────────
       const wos = await ctx.db.workOrder.groupBy({
@@ -84,6 +111,11 @@ export const reportsRouter = router({
           invoiceCount: invoices.length,
           byStatus: invoicesByStatus,
         },
+        payments: {
+          totalReceivedUsd: totalReceivedUsd.toFixed(2),
+          count: paymentsCount,
+          anticipoUsd: anticipoUsd.isNegative() ? "0.00" : anticipoUsd.toFixed(2),
+        },
         aging: {
           current: Number(aging.current.toFixed(2)),
           d30: Number(aging.d30.toFixed(2)),
@@ -95,7 +127,7 @@ export const reportsRouter = router({
           total: units.length,
           owned: ownedCount,
           rented: rentedCount,
-          vacant: units.length - ownedCount,
+          vacant: vacantCount,
         },
         workOrders: {
           open:        woByStatus["OPEN"]        ?? 0,
@@ -232,22 +264,34 @@ export const reportsRouter = router({
           communityId: input.communityId,
           status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
         },
-        select: { unitId: true, totalUsd: true, paidUsd: true, unit: { select: { code: true } } },
+        select: { unitId: true, totalUsd: true, paidUsd: true, dueDate: true, unit: { select: { code: true } } },
       });
 
-      const byUnit = new Map<string, { code: string; pending: Decimal }>();
+      const today = new Date();
+      const MS = 86_400_000;
+
+      const byUnit = new Map<string, {
+        code: string; pending: Decimal; invoiceCount: number; oldestDueDate: Date | null;
+      }>();
       for (const inv of invoices) {
         const pending = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
         if (pending.lte(0)) continue;
         const existing = byUnit.get(inv.unitId);
-        if (existing) existing.pending = existing.pending.plus(pending);
-        else byUnit.set(inv.unitId, { code: inv.unit.code, pending });
+        if (existing) {
+          existing.pending = existing.pending.plus(pending);
+          existing.invoiceCount += 1;
+          if (!existing.oldestDueDate || inv.dueDate < existing.oldestDueDate) {
+            existing.oldestDueDate = inv.dueDate;
+          }
+        } else {
+          byUnit.set(inv.unitId, { code: inv.unit.code, pending, invoiceCount: 1, oldestDueDate: inv.dueDate });
+        }
       }
 
       const unitIds = [...byUnit.keys()];
       const ownerships = await ctx.db.ownership.findMany({
         where: { unitId: { in: unitIds }, endDate: null },
-        include: { person: { select: { firstName: true, lastName: true } } },
+        include: { person: { select: { firstName: true, lastName: true, email: true, phone: true } } },
       });
       const ownerMap = new Map(ownerships.map((o) => [o.unitId, o.person]));
 
@@ -256,11 +300,18 @@ export const reportsRouter = router({
         .slice(0, input.take)
         .map(([unitId, data]) => {
           const owner = ownerMap.get(unitId);
+          const overdueMonths = data.oldestDueDate
+            ? Math.max(0, Math.floor((today.getTime() - data.oldestDueDate.getTime()) / MS / 30))
+            : 0;
           return {
             unitId,
             unitCode: data.code,
             ownerName: owner ? `${owner.firstName} ${owner.lastName}` : "Sin propietario",
+            ownerEmail: owner?.email ?? "",
+            ownerPhone: owner?.phone ?? "",
             pendingUsd: data.pending.toFixed(2),
+            invoiceCount: data.invoiceCount,
+            overdueMonths,
           };
         });
     }),
@@ -418,9 +469,10 @@ export const reportsRouter = router({
       endMonth:    z.number().int().min(1).max(12),
     }))
     .query(async ({ ctx, input }) => {
-      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const { organizationId, communityId, startYear, startMonth, endYear, endMonth } = input;
       const expenses = await ctx.db.expense.findMany({
         where: {
+          organizationId,
           communityId,
           voidedAt: null,
           OR: [
@@ -460,12 +512,13 @@ export const reportsRouter = router({
       endMonth:    z.number().int().min(1).max(12),
     }))
     .query(async ({ ctx, input }) => {
-      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const { organizationId, communityId, startYear, startMonth, endYear, endMonth } = input;
       const start = new Date(Date.UTC(startYear, startMonth - 1, 1));
       const end   = new Date(Date.UTC(endYear, endMonth, 1)); // exclusive
 
       const payments = await ctx.db.payment.findMany({
         where: {
+          organizationId,
           communityId,
           voidedAt: null,
           paidAt: { gte: start, lt: end },
@@ -525,9 +578,10 @@ export const reportsRouter = router({
       endMonth:    z.number().int().min(1).max(12),
     }))
     .query(async ({ ctx, input }) => {
-      const { communityId, startYear, startMonth, endYear, endMonth } = input;
+      const { organizationId, communityId, startYear, startMonth, endYear, endMonth } = input;
       const incomes = await ctx.db.income.findMany({
         where: {
+          organizationId,
           communityId,
           voidedAt: null,
           OR: [

@@ -8,13 +8,69 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/**
+ * Subtipo de transacción bancaria venezolana.
+ * Detectado automáticamente del campo descripción del extracto.
+ */
+type TransactionSubtype =
+  | "transfer"        // TRF interbancaria recibida / enviada
+  | "mobile_payment"  // Pago Móvil (PM)
+  | "commission"      // Comisión bancaria (COM.TRF, COM.PM, EMISION, etc.)
+  | "igtf"            // Retención IGTF (3% sobre divisas)
+  | "pos"             // Punto de venta
+  | "deposit"         // Depósito en efectivo
+  | "check"           // Cheque cobrado/depositado
+  | "interest"        // Intereses ganados
+  | "other";          // No clasificado
+
+/** Detecta el subtipo venezolano de la descripción del movimiento */
+function detectSubtype(descripcion: string): TransactionSubtype {
+  const d = descripcion.toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // Orden importa: más específico primero
+  if (/ret\.?\s*igtf|igtf/.test(d))                                                        return "igtf";
+  if (/com\.?\s*trf|com\.?\s*transf|com\.?\s*serv|com\.?\s*srv|com\.?\s*mtto|com\.?\s*pm|comision\s*(banca|serv|transf|mtto|trf|pm)|emisi[oó]n\s*(de\s*)?esta|gasto\s*banca/.test(d)) return "commission";
+  if (/pago\.?\s*m[oó]vil|\bpm\b|p\.m\b/.test(d))                                         return "mobile_payment";
+  if (/\btrf\b|transf|transferencia|trans\.ctas/.test(d))                                  return "transfer";
+  if (/\bpos\b|punto\.?\s*venta|cobro\s*tdc/.test(d))                                      return "pos";
+  if (/dep[oó]sito|\bdep\b/.test(d))                                                       return "deposit";
+  if (/cheque|\bchq\b/.test(d))                                                            return "check";
+  if (/inter[eé]s|rendimiento/.test(d))                                                    return "interest";
+  return "other";
+}
+
+/** Metadatos visuales por subtipo */
+const SUBTYPE_INFO: Record<TransactionSubtype, { label: string; icon: string; colorCls: string }> = {
+  transfer:       { label: "TRF",        icon: "↔",  colorCls: "text-blue-300 bg-blue-500/10 border-blue-500/20" },
+  mobile_payment: { label: "Pago Móvil", icon: "📱", colorCls: "text-purple-300 bg-purple-500/10 border-purple-500/20" },
+  commission:     { label: "Comisión",   icon: "🏦", colorCls: "text-orange-300 bg-orange-500/10 border-orange-500/20" },
+  igtf:           { label: "IGTF 3%",   icon: "🏛",  colorCls: "text-yellow-300 bg-yellow-500/10 border-yellow-500/20" },
+  pos:            { label: "POS",        icon: "💳", colorCls: "text-indigo-300 bg-indigo-500/10 border-indigo-500/20" },
+  deposit:        { label: "Depósito",   icon: "💵", colorCls: "text-green-300 bg-green-500/10 border-green-500/20" },
+  check:          { label: "Cheque",     icon: "📄", colorCls: "text-slate-300 bg-slate-500/10 border-slate-500/20" },
+  interest:       { label: "Intereses",  icon: "📈", colorCls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/20" },
+  other:          { label: "Movim.",     icon: "•",  colorCls: "text-slate-400 bg-slate-500/10 border-slate-500/20" },
+};
+
 interface BankRow {
   fecha: string;
   referencia: string;
-  monto: number;
+  monto: number;       // valor absoluto (siempre positivo)
+  montoRaw: number;    // firmado: negativo = débito/comisión
   descripcion: string;
+  tipo: "credito" | "debito";
+  subtype: TransactionSubtype;
+  /** Referencia del crédito "padre" si es comisión con misma ref */
+  linkedToRef?: string;
+}
+
+// Formato venezolano: 34.000,27
+function formatBs(n: number): string {
+  return Math.abs(n).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 interface PaymentForReconciliation {
@@ -26,7 +82,7 @@ interface PaymentForReconciliation {
   paidAt: string;
 }
 
-type MatchType = "exact" | "partial" | "amount" | "none";
+type MatchType = "exact" | "partial" | "amount" | "unit_code" | "none";
 
 interface MatchResult {
   bankRow: BankRow;
@@ -39,6 +95,7 @@ interface MatchResult {
 
 type FileFormat = "csv" | "xlsx" | "xls" | "ofx" | "qfx" | "tsv" | "unknown";
 type TabView = "results" | "unidentified";
+type FilterMode = "all" | "matched" | "unmatched" | "debits";
 
 // ─── Number parsing ───────────────────────────────────────────────────────────
 function parseMoney(raw: string): number {
@@ -117,17 +174,16 @@ function parseCSV(text: string): BankRow[] {
   const headers = splitLine(lines[0]!, sep);
   const cols = detectColumns(headers);
   if (!cols) return [];
-  return lines.slice(1).flatMap(line => {
+  const rows = lines.slice(1).flatMap(line => {
     const cells = splitLine(line, sep);
-    const monto = parseMoney(cells[cols.monto] ?? "");
-    if (monto <= 0) return [];
-    return [{
-      fecha:       cells[cols.fecha] ?? "",
-      referencia:  cols.referencia >= 0 ? (cells[cols.referencia] ?? "") : "",
-      monto,
-      descripcion: cols.descripcion >= 0 ? (cells[cols.descripcion] ?? "") : "",
-    }];
+    const montoRaw = parseMoney(cells[cols.monto] ?? "");
+    if (montoRaw === 0) return [];
+    const monto = Math.abs(montoRaw);
+    const descripcion = cols.descripcion >= 0 ? (cells[cols.descripcion] ?? "") : "";
+    const tipo: "credito" | "debito" = montoRaw > 0 ? "credito" : "debito";
+    return [{ fecha: cells[cols.fecha] ?? "", referencia: cols.referencia >= 0 ? (cells[cols.referencia] ?? "") : "", monto, montoRaw, descripcion, tipo, subtype: detectSubtype(descripcion) }] as BankRow[];
   });
+  return linkCommissions(rows);
 }
 
 async function parseExcel(file: File): Promise<BankRow[]> {
@@ -142,16 +198,15 @@ async function parseExcel(file: File): Promise<BankRow[]> {
   const headers = (rows[0] as string[]).map(String);
   const cols = detectColumns(headers);
   if (!cols) return [];
-  return (rows.slice(1) as string[][]).flatMap(cells => {
-    const monto = parseMoney(String(cells[cols.monto] ?? ""));
-    if (monto <= 0) return [];
-    return [{
-      fecha:       String(cells[cols.fecha] ?? ""),
-      referencia:  cols.referencia >= 0 ? String(cells[cols.referencia] ?? "") : "",
-      monto,
-      descripcion: cols.descripcion >= 0 ? String(cells[cols.descripcion] ?? "") : "",
-    }];
+  const parsed = (rows.slice(1) as string[][]).flatMap(cells => {
+    const montoRaw = parseMoney(String(cells[cols.monto] ?? ""));
+    if (montoRaw === 0) return [];
+    const monto = Math.abs(montoRaw);
+    const descripcion = cols.descripcion >= 0 ? String(cells[cols.descripcion] ?? "") : "";
+    const tipo: "credito" | "debito" = montoRaw > 0 ? "credito" : "debito";
+    return [{ fecha: String(cells[cols.fecha] ?? ""), referencia: cols.referencia >= 0 ? String(cells[cols.referencia] ?? "") : "", monto, montoRaw, descripcion, tipo, subtype: detectSubtype(descripcion) }] as BankRow[];
   });
+  return linkCommissions(parsed);
 }
 
 function parseOFX(text: string): BankRow[] {
@@ -163,20 +218,36 @@ function parseOFX(text: string): BankRow[] {
       return m?.[1]?.trim() ?? "";
     };
     const trnamt = parseMoney(get("TRNAMT"));
-    if (trnamt <= 0) continue;
+    if (trnamt === 0) continue;
     const dtposted = get("DTPOSTED");
     let fecha = dtposted;
     if (/^\d{8,}/.test(dtposted)) {
       fecha = `${dtposted.slice(6, 8)}/${dtposted.slice(4, 6)}/${dtposted.slice(0, 4)}`;
     }
-    rows.push({
-      fecha,
-      referencia:  get("FITID") || get("CHECKNUM") || get("REFNUM") || "",
-      monto:       trnamt,
-      descripcion: get("NAME") || get("MEMO") || "",
-    });
+    const descripcion = get("NAME") || get("MEMO") || "";
+    const tipo: "credito" | "debito" = trnamt > 0 ? "credito" : "debito";
+    rows.push({ fecha, referencia: get("FITID") || get("CHECKNUM") || get("REFNUM") || "", monto: Math.abs(trnamt), montoRaw: trnamt, descripcion, tipo, subtype: detectSubtype(descripcion) });
   }
-  return rows;
+  return linkCommissions(rows);
+}
+
+/**
+ * Detecta comisiones/IGTF que comparten referencia con un crédito anterior
+ * y las "enlaza" visualmente al crédito padre.
+ * Este es el patrón venezolano: Banesco cobra comisión por cada TRF recibida
+ * usando la MISMA referencia que la transferencia original.
+ */
+function linkCommissions(rows: BankRow[]): BankRow[] {
+  // Construir set de referencias de créditos
+  const creditRefs = new Set(
+    rows.filter(r => r.tipo === "credito" && r.referencia).map(r => r.referencia)
+  );
+  return rows.map(r => {
+    if (r.tipo === "debito" && r.referencia && creditRefs.has(r.referencia)) {
+      return { ...r, linkedToRef: r.referencia };
+    }
+    return r;
+  });
 }
 
 function detectFormat(filename: string): FileFormat {
@@ -202,20 +273,58 @@ const FORMAT_LABELS: Record<FileFormat, { label: string; icon: string; color: st
 // ─── Match engine ─────────────────────────────────────────────────────────────
 const TOLERANCE = 0.05;
 
-function matchPayments(bankRows: BankRow[], payments: PaymentForReconciliation[]): MatchResult[] {
+/**
+ * Motor de conciliación venezolano.
+ *
+ * Pasos de matching (orden de confianza):
+ *  1. Referencia exacta       — máxima confianza
+ *  2. Referencia parcial      — dígitos finales/iniciales coinciden (inter-banco)
+ *  3. Código de unidad        — "B-15C", "APT304", "304" en desc/ref del banco
+ *  4. Por monto (Bs→USD)      — si hay tasa configurada, tolerancia 5%
+ *
+ * Los débitos (comisiones, IGTF, etc.) NO se concilian contra pagos de residentes.
+ *
+ * @param units Lista de unidades para matching por código
+ */
+function matchPayments(
+  bankRows: BankRow[],
+  payments: PaymentForReconciliation[],
+  rate = 0,
+  units: { id: string; code: string }[] = [],
+): MatchResult[] {
   const used = new Set<string>();
+
+  // Pre-computar códigos de unidades normalizados para búsqueda rápida
+  // Mapeo: unitCode.lower → payment que coincide con esa unidad
+  // (se busca el code en desc+ref del banco)
+  const unitCodePatterns = units.map(u => ({
+    code: u.code,
+    pattern: new RegExp(
+      // Escapa caracteres especiales y busca el código rodeado de separadores
+      `(?<![\\w])(${u.code.replace(/[-]/g, "[-]").replace(/[[\]]/g, "\\$&")})(?![\\w])`,
+      "i"
+    ),
+  }));
+
   return bankRows.map(br => {
+    // Los débitos (comisiones/IGTF/cargos bancarios) no se concilian contra pagos de residentes
+    if (br.tipo === "debito") {
+      return { bankRow: br, matched: false, matchType: "none" as MatchType };
+    }
+
     let pay: PaymentForReconciliation | undefined;
     let matchType: MatchType = "none";
 
-    // 1. Referencia exacta
+    // ── Paso 1: Referencia exacta ────────────────────────────────────────────
     pay = payments.find(p =>
       !used.has(p.id) && p.reference && br.referencia &&
       p.reference.toLowerCase().trim() === br.referencia.toLowerCase().trim()
     );
     if (pay) { matchType = "exact"; }
 
-    // 2. Referencia parcial (dígitos finales/iniciales coinciden)
+    // ── Paso 2: Referencia parcial (dígitos finales coinciden) ───────────────
+    // En Venezuela la ref del banco emisor ≠ ref del banco receptor.
+    // Comparten solo los últimos 6-8 dígitos.
     if (!pay && br.referencia) {
       pay = payments.find(p => {
         if (used.has(p.id) || !p.reference) return false;
@@ -226,18 +335,41 @@ function matchPayments(bankRows: BankRow[], payments: PaymentForReconciliation[]
       if (pay) matchType = "partial";
     }
 
-    // 3. Monto dentro de tolerancia (último recurso)
-    if (!pay) {
+    // ── Paso 3: Código de unidad en descripción o referencia del banco ─────────
+    // Los propietarios venezolanos suelen incluir "B-15C", "APT 304", "304"
+    // en el concepto de la transferencia o pago móvil.
+    if (!pay && unitCodePatterns.length > 0) {
+      const haystack = `${br.descripcion} ${br.referencia}`.toLowerCase();
+      for (const { code, pattern } of unitCodePatterns) {
+        if (!pattern.test(haystack)) continue;
+        // Buscar pago pendiente de esa unidad
+        const candidate = payments.find(p => {
+          if (used.has(p.id)) return false;
+          return p.unitLabel.toLowerCase() === code.toLowerCase();
+        });
+        if (candidate) { pay = candidate; matchType = "unit_code"; break; }
+      }
+    }
+
+    // ── Paso 4: Por monto (Bs→USD) — requiere tasa configurada ──────────────
+    // Tolerancia: 5% del monto (cubre diferencias por comisiones, IGTF parcial, etc.)
+    if (!pay && rate > 0) {
+      const montoUsd = br.monto / rate;
       pay = payments.find(p => {
         if (used.has(p.id)) return false;
-        return Math.abs(Number(p.amountUsd) - br.monto) <= TOLERANCE;
+        const pUsd = Number(p.amountUsd);
+        const tol = Math.max(TOLERANCE, pUsd * 0.05);
+        return Math.abs(pUsd - montoUsd) <= tol;
       });
       if (pay) matchType = "amount";
     }
 
     if (pay) {
       used.add(pay.id);
-      return { bankRow: br, matched: true, matchType, payment: pay, diff: Math.abs(Number(pay.amountUsd) - br.monto) };
+      // diff en USD: si hay tasa se convierte, si no se deja vacío para no confundir
+      const montoUsd = rate > 0 ? br.monto / rate : null;
+      const diff = montoUsd !== null ? Math.abs(Number(pay.amountUsd) - montoUsd) : undefined;
+      return { bankRow: br, matched: true, matchType, payment: pay, diff };
     }
     return { bankRow: br, matched: false, matchType: "none" };
   });
@@ -245,10 +377,11 @@ function matchPayments(bankRows: BankRow[], payments: PaymentForReconciliation[]
 
 // ─── Match type badge ─────────────────────────────────────────────────────────
 const MATCH_TYPE_LABELS: Record<MatchType, { label: string; color: string } | null> = {
-  exact:   { label: "Ref exacta",   color: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20" },
-  partial: { label: "Ref parcial",  color: "bg-cyan-500/15 text-cyan-300 border-cyan-500/20" },
-  amount:  { label: "Por monto",    color: "bg-yellow-500/15 text-yellow-300 border-yellow-500/20" },
-  none:    null,
+  exact:     { label: "Ref exacta",    color: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20" },
+  partial:   { label: "Ref parcial",   color: "bg-cyan-500/15 text-cyan-300 border-cyan-500/20" },
+  unit_code: { label: "Cód. unidad",   color: "bg-violet-500/15 text-violet-300 border-violet-500/20" },
+  amount:    { label: "Por monto",     color: "bg-yellow-500/15 text-yellow-300 border-yellow-500/20" },
+  none:      null,
 };
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -279,8 +412,11 @@ export default function ConciliacionPage() {
   const [error, setError]           = useState("");
   const [parsing, setParsing]       = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [filterMode, setFilterMode] = useState<"all" | "matched" | "unmatched">("all");
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [tab, setTab]               = useState<TabView>("results");
+  const [rateInput, setRateInput]   = useState("");   // tasa Bs/$ ingresada por usuario
+  const rate = parseFloat(rateInput.replace(",", ".")) || 0;
+  const [displayInBs, setDisplayInBs] = useState(true); // toggle Bs / USD en columna "Pago sistema"
 
   // Dialogs
   const [parkingRow, setParkingRow] = useState<BankRow | null>(null);
@@ -325,14 +461,14 @@ export default function ConciliacionPage() {
         return;
       }
       setBankRows(rows);
-      setResults(matchPayments(rows, payments.data ?? []));
+      setResults(matchPayments(rows, payments.data ?? [], rate, units.data ?? []));
       setTab("results");
     } catch (err) {
       setError(`Error al leer el archivo: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setParsing(false);
     }
-  }, [payments.data]);
+  }, [payments.data, units.data]);
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -346,14 +482,22 @@ export default function ConciliacionPage() {
     if (f) void processFile(f);
   }, [processFile]);
 
-  const matchedCount   = results?.filter(r => r.matched).length ?? 0;
-  const unmatchedCount = results?.filter(r => !r.matched).length ?? 0;
-  const totalBank      = bankRows.reduce((s, r) => s + r.monto, 0);
-  const matchedAmount  = results?.filter(r => r.matched).reduce((s, r) => s + r.bankRow.monto, 0) ?? 0;
+  const creditRows      = bankRows.filter(r => r.tipo === "credito");
+  const debitRows       = bankRows.filter(r => r.tipo === "debito");
+  const commissionRows  = debitRows.filter(r => r.subtype === "commission" || r.subtype === "igtf");
+  const matchedCount    = results?.filter(r => r.matched).length ?? 0;
+  const unmatchedCount  = results?.filter(r => !r.matched && r.bankRow.tipo === "credito").length ?? 0;
+  const totalBank       = creditRows.reduce((s, r) => s + r.monto, 0);
+  const totalDebits     = debitRows.reduce((s, r) => s + r.monto, 0);
+  const totalCommissions = commissionRows.reduce((s, r) => s + r.monto, 0);
+  const matchedAmount   = results?.filter(r => r.matched).reduce((s, r) => s + r.bankRow.monto, 0) ?? 0;
+  // Neto disponible = créditos - comisiones bancarias
+  const netoDisponible  = totalBank - totalCommissions;
 
   const filtered = results?.filter(r => {
     if (filterMode === "matched")   return r.matched;
-    if (filterMode === "unmatched") return !r.matched;
+    if (filterMode === "unmatched") return !r.matched && r.bankRow.tipo === "credito";
+    if (filterMode === "debits")    return r.bankRow.tipo === "debito";
     return true;
   });
 
@@ -438,6 +582,55 @@ export default function ConciliacionPage() {
                 )}
               </div>
 
+              {/* Campo de tasa Bs/$ + toggle visualización */}
+              <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-800 border border-slate-600 px-4 py-3">
+                <span className="text-slate-300 text-sm font-medium whitespace-nowrap">💱 Tasa del día (Bs/$):</span>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={rateInput}
+                  onChange={e => {
+                    setRateInput(e.target.value);
+                    // Re-run match if ya hay resultados
+                    if (bankRows.length > 0 && payments.data) {
+                      const r = parseFloat(e.target.value.replace(",", ".")) || 0;
+                      setResults(matchPayments(bankRows, payments.data, r, units.data ?? []));
+                    }
+                  }}
+                  placeholder="ej. 102.50"
+                  className="w-36 bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 text-sm h-8"
+                />
+                {rate > 0 ? (
+                  <span className="text-emerald-400 text-xs">✓ Tasa activa — conversión Bs↔$ habilitada</span>
+                ) : (
+                  <span className="text-slate-500 text-xs">Sin tasa: solo conciliación por referencia</span>
+                )}
+                {/* Toggle Bs / USD */}
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-slate-400 text-xs">Ver pagos en:</span>
+                  <button
+                    onClick={() => setDisplayInBs(false)}
+                    className={`px-3 py-1 rounded-l-md text-xs font-medium border transition-colors ${
+                      !displayInBs
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-slate-900 text-slate-400 border-slate-600 hover:text-slate-200"
+                    }`}
+                  >
+                    USD $
+                  </button>
+                  <button
+                    onClick={() => setDisplayInBs(true)}
+                    className={`px-3 py-1 rounded-r-md text-xs font-medium border-t border-r border-b transition-colors ${
+                      displayInBs
+                        ? "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-slate-900 text-slate-400 border-slate-600 hover:text-slate-200"
+                    }`}
+                  >
+                    Bs
+                  </button>
+                </div>
+              </div>
+
               {error && (
                 <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-4 text-red-400 text-sm">
                   ⚠️ {error}
@@ -467,24 +660,25 @@ export default function ConciliacionPage() {
           {/* Results */}
           {results && (
             <>
-              {/* Stats */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {/* Stats — 5 tarjetas con info venezolana */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
-                  { label: "Total en banco",   value: `$${totalBank.toFixed(2)}`,       sub: `${bankRows.length} movimientos`, color: "text-white" },
-                  { label: "Conciliados",       value: String(matchedCount),             sub: `$${matchedAmount.toFixed(2)}`,   color: "text-emerald-400" },
-                  { label: "Sin conciliar",     value: String(unmatchedCount),           sub: "requieren revisión",             color: "text-amber-400" },
-                  { label: "% Conciliado",      value: `${bankRows.length > 0 ? Math.round((matchedCount / bankRows.length) * 100) : 0}%`, sub: null, color: "text-blue-400" },
+                  { label: "Créditos recibidos",   value: `Bs ${formatBs(totalBank)}`,          sub: `${creditRows.length} entradas`,          color: "text-white",         border: "border-slate-700" },
+                  { label: "🏦 Comisiones banco",   value: `Bs ${formatBs(totalCommissions)}`,   sub: `${commissionRows.length} cargos`,        color: "text-orange-400",    border: "border-orange-900/30" },
+                  { label: "Neto disponible",        value: `Bs ${formatBs(netoDisponible)}`,     sub: "créditos − comisiones",                  color: "text-emerald-300",   border: "border-emerald-900/30" },
+                  { label: "✅ Conciliados",          value: String(matchedCount),                 sub: `Bs ${formatBs(matchedAmount)}`,           color: "text-emerald-400",   border: "border-slate-700" },
+                  { label: "% Conciliado",            value: `${creditRows.length > 0 ? Math.round((matchedCount / creditRows.length) * 100) : 0}%`, sub: `${unmatchedCount} pendientes`, color: "text-blue-400", border: "border-slate-700" },
                 ].map((s, i) => (
-                  <Card key={i} className="bg-slate-900 border-slate-700">
-                    <CardContent className="pt-5">
-                      <p className="text-xs text-slate-400 mb-1">{s.label}</p>
-                      <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
-                      {s.sub && <p className="text-xs text-slate-500">{s.sub}</p>}
-                      {i === 3 && (
-                        <div className="mt-1.5 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                  <Card key={i} className={`bg-slate-900 border ${s.border}`}>
+                    <CardContent className="pt-4 pb-3">
+                      <p className="text-[11px] text-slate-400 mb-1">{s.label}</p>
+                      <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
+                      {s.sub && <p className="text-[10px] text-slate-500 mt-0.5">{s.sub}</p>}
+                      {i === 4 && (
+                        <div className="mt-1.5 h-1 rounded-full bg-slate-700 overflow-hidden">
                           <div
                             className="h-full bg-blue-500 rounded-full transition-all"
-                            style={{ width: `${bankRows.length > 0 ? (matchedCount / bankRows.length) * 100 : 0}%` }}
+                            style={{ width: `${creditRows.length > 0 ? (matchedCount / creditRows.length) * 100 : 0}%` }}
                           />
                         </div>
                       )}
@@ -493,22 +687,37 @@ export default function ConciliacionPage() {
                 ))}
               </div>
 
-              {/* Leyenda de tipos de match — Feature 4 */}
-              <div className="flex flex-wrap gap-2 items-center text-xs text-slate-400">
-                <span className="font-medium">Tipo de conciliación:</span>
-                {(Object.entries(MATCH_TYPE_LABELS) as [MatchType, typeof MATCH_TYPE_LABELS[MatchType]][])
-                  .filter(([, v]) => v !== null)
-                  .map(([k, v]) => (
-                    <span key={k} className={`px-2 py-0.5 rounded-full border text-[10px] font-medium ${v!.color}`}>
-                      {v!.label}
+              {/* Leyenda compacta */}
+              <div className="rounded-lg bg-slate-800/50 border border-slate-700 px-4 py-3 space-y-2">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 items-center text-xs">
+                  <span className="text-slate-400 font-medium">Tipo de movimiento:</span>
+                  {(Object.entries(SUBTYPE_INFO) as [TransactionSubtype, typeof SUBTYPE_INFO[TransactionSubtype]][]).map(([k, v]) => (
+                    <span key={k} className={`px-2 py-0.5 rounded-full border text-[10px] font-medium ${v.colorCls}`}>
+                      {v.icon} {v.label}
                     </span>
                   ))}
-                <span className="ml-2 opacity-60">· Haz click en 🏭 para registrar comisión bancaria · 📦 para aparcar no-identificado</span>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 items-center text-xs">
+                  <span className="text-slate-400 font-medium">Coincidencia:</span>
+                  {(Object.entries(MATCH_TYPE_LABELS) as [MatchType, typeof MATCH_TYPE_LABELS[MatchType]][])
+                    .filter(([, v]) => v !== null)
+                    .map(([k, v]) => (
+                      <span key={k} className={`px-2 py-0.5 rounded-full border text-[10px] font-medium ${v!.color}`}>
+                        {v!.label}
+                      </span>
+                    ))}
+                  <span className="text-slate-600 text-[10px]">· ↑ = comisión ligada a su TRF padre · 🏭 registrar gasto · 📦 aparcar</span>
+                </div>
               </div>
 
               {/* Filter */}
               <div className="flex gap-2 flex-wrap">
-                {(["all", "matched", "unmatched"] as const).map(mode => (
+                {([
+                  { mode: "all",       label: `Todos (${results.length})` },
+                  { mode: "matched",   label: `✅ Conciliados (${matchedCount})` },
+                  { mode: "unmatched", label: `⚠️ Sin conciliar (${unmatchedCount})` },
+                  { mode: "debits",    label: `🔴 Débitos / Comis. (${debitRows.length})` },
+                ] as { mode: FilterMode; label: string }[]).map(({ mode, label }) => (
                   <button
                     key={mode}
                     onClick={() => setFilterMode(mode)}
@@ -516,9 +725,7 @@ export default function ConciliacionPage() {
                       filterMode === mode ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
                     }`}
                   >
-                    {mode === "all"       && `Todos (${results.length})`}
-                    {mode === "matched"   && `✅ Conciliados (${matchedCount})`}
-                    {mode === "unmatched" && `⚠️ Sin conciliar (${unmatchedCount})`}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -544,10 +751,12 @@ export default function ConciliacionPage() {
                           <th className="py-2 px-3 text-left text-xs text-slate-400">Fecha</th>
                           <th className="py-2 px-3 text-left text-xs text-slate-400">Referencia banco</th>
                           <th className="py-2 px-3 text-left text-xs text-slate-400 max-w-[130px]">Descripción</th>
-                          <th className="py-2 px-3 text-right text-xs text-slate-400">Monto banco</th>
+                          <th className="py-2 px-3 text-right text-xs text-slate-400">Monto banco (Bs)</th>
                           <th className="py-2 px-3 text-left text-xs text-slate-400">Propietario</th>
                           <th className="py-2 px-3 text-left text-xs text-slate-400">Unidad</th>
-                          <th className="py-2 px-3 text-right text-xs text-slate-400">Pago sistema</th>
+                          <th className="py-2 px-3 text-right text-xs text-slate-400">
+                            Pago sistema {displayInBs ? "(Bs)" : "(USD)"}
+                          </th>
                           <th className="py-2 px-3 text-right text-xs text-slate-400">Dif.</th>
                           <th className="py-2 px-3 text-center text-xs text-slate-400">Acciones</th>
                         </tr>
@@ -555,11 +764,25 @@ export default function ConciliacionPage() {
                       <tbody>
                         {(filtered ?? []).map((r, i) => {
                           const mtLabel = MATCH_TYPE_LABELS[r.matchType];
+                          const isDebit = r.bankRow.tipo === "debito";
+                          const subtypeInfo = SUBTYPE_INFO[r.bankRow.subtype];
+                          const isLinkedComm = isDebit && !!r.bankRow.linkedToRef;
+                          const rowBg = isDebit
+                            ? isLinkedComm
+                              ? "border-b border-orange-900/20 bg-orange-950/10 hover:bg-orange-950/20"
+                              : "border-b border-red-900/30 bg-red-950/20 hover:bg-red-950/30"
+                            : "border-b border-slate-800 hover:bg-slate-800/40";
                           return (
-                            <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/40 transition-colors">
+                            <tr key={i} className={`transition-colors ${rowBg}`}>
                               <td className="py-2.5 px-3">
                                 <div className="flex flex-col gap-1">
-                                  {r.matched ? (
+                                  {/* Estado principal */}
+                                  {isDebit ? (
+                                    <span className={`inline-flex items-center gap-1 rounded-full text-[10px] px-2 py-0.5 border whitespace-nowrap ${subtypeInfo.colorCls}`}>
+                                      {subtypeInfo.icon} {subtypeInfo.label}
+                                      {isLinkedComm && <span className="opacity-60 ml-0.5">↑</span>}
+                                    </span>
+                                  ) : r.matched ? (
                                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 border border-emerald-500/20 whitespace-nowrap">
                                       ✅ Conciliado
                                     </span>
@@ -572,7 +795,13 @@ export default function ConciliacionPage() {
                                       ⚠️ Pendiente
                                     </span>
                                   )}
-                                  {/* Feature 4: tipo de match */}
+                                  {/* Subtipo de créditos */}
+                                  {!isDebit && (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${subtypeInfo.colorCls}`}>
+                                      {subtypeInfo.icon} {subtypeInfo.label}
+                                    </span>
+                                  )}
+                                  {/* Tipo de match */}
                                   {r.matched && mtLabel && (
                                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${mtLabel.color}`}>
                                       {mtLabel.label}
@@ -581,14 +810,24 @@ export default function ConciliacionPage() {
                                 </div>
                               </td>
                               <td className="py-2.5 px-3 text-slate-300 font-mono text-xs whitespace-nowrap">{r.bankRow.fecha}</td>
-                              <td className="py-2.5 px-3 text-slate-300 font-mono text-xs">
-                                {r.bankRow.referencia || <span className="text-slate-600">—</span>}
+                              <td className="py-2.5 px-3 font-mono text-xs">
+                                <span className="text-slate-300">{r.bankRow.referencia || <span className="text-slate-600">—</span>}</span>
+                                {isLinkedComm && (
+                                  <div className="text-[10px] text-orange-400/70 mt-0.5">↑ comis. de TRF</div>
+                                )}
                               </td>
                               <td className="py-2.5 px-3 text-slate-500 text-xs max-w-[130px] truncate" title={r.bankRow.descripcion}>
                                 {r.bankRow.descripcion || "—"}
                               </td>
-                              <td className="py-2.5 px-3 text-right text-white font-semibold text-xs">
-                                ${r.bankRow.monto.toFixed(2)}
+                              <td className="py-2.5 px-3 text-right font-semibold text-xs">
+                                <span className={isDebit ? "text-red-400" : "text-white"}>
+                                  {isDebit ? "−" : ""}Bs {formatBs(r.bankRow.monto)}
+                                </span>
+                                {rate > 0 && (
+                                  <div className="text-[10px] text-slate-500 font-normal">
+                                    ≈ ${(r.bankRow.monto / rate).toFixed(2)}
+                                  </div>
+                                )}
                               </td>
                               <td className="py-2.5 px-3 text-slate-300 text-xs">
                                 {r.payment?.ownerName ?? <span className="text-slate-600">—</span>}
@@ -597,18 +836,44 @@ export default function ConciliacionPage() {
                                 {r.payment?.unitLabel ?? <span className="text-slate-600">—</span>}
                               </td>
                               <td className="py-2.5 px-3 text-right text-slate-300 text-xs">
-                                {r.payment ? `$${Number(r.payment.amountUsd).toFixed(2)}` : <span className="text-slate-600">—</span>}
+                                {r.payment ? (
+                                  displayInBs && rate > 0
+                                    ? <span className="text-emerald-300 font-semibold">Bs {formatBs(Number(r.payment.amountUsd) * rate)}</span>
+                                    : displayInBs
+                                      ? <span className="text-slate-300">${Number(r.payment.amountUsd).toFixed(2)} <span className="text-slate-600 text-[10px]">(sin tasa)</span></span>
+                                      : <span>${Number(r.payment.amountUsd).toFixed(2)}</span>
+                                ) : <span className="text-slate-600">—</span>}
                               </td>
                               <td className="py-2.5 px-3 text-right text-xs">
                                 {r.matched && r.diff !== undefined ? (
-                                  r.diff < 0.01
-                                    ? <span className="text-emerald-400">—</span>
-                                    : <span className="text-amber-400">${r.diff.toFixed(2)}</span>
+                                  (() => {
+                                    if (displayInBs && rate > 0) {
+                                      // diff en Bs: |br.monto - p.amountUsd * rate|
+                                      const diffBs = Math.abs(r.bankRow.monto - Number(r.payment!.amountUsd) * rate);
+                                      return diffBs < 1
+                                        ? <span className="text-emerald-400">✓</span>
+                                        : <span className="text-amber-400">Bs {formatBs(diffBs)}</span>;
+                                    }
+                                    return r.diff < 0.01
+                                      ? <span className="text-emerald-400">✓</span>
+                                      : <span className="text-amber-400">${r.diff.toFixed(2)}</span>;
+                                  })()
+                                ) : r.matched && rate === 0 ? (
+                                  <span className="text-slate-500 text-[10px]">sin tasa</span>
                                 ) : <span className="text-slate-600">—</span>}
                               </td>
-                              {/* Feature 2 + 3: acciones en filas no-conciliadas */}
+                              {/* Feature 2 + 3: acciones */}
                               <td className="py-2.5 px-3 text-center">
-                                {!r.matched && !r.parked && (
+                                {isDebit && !r.parked ? (
+                                  // Débitos: solo registrar como gasto
+                                  <button
+                                    title="Registrar como gasto (comisión bancaria)"
+                                    onClick={() => setExpenseRow(r.bankRow)}
+                                    className="rounded p-1 text-red-400/60 hover:text-orange-400 hover:bg-orange-400/10 transition-colors text-base"
+                                  >
+                                    🏭
+                                  </button>
+                                ) : !r.matched && !r.parked && !isDebit ? (
                                   <div className="flex items-center justify-center gap-1">
                                     <button
                                       title="Registrar como gasto (comisión bancaria)"
@@ -625,7 +890,7 @@ export default function ConciliacionPage() {
                                       📦
                                     </button>
                                   </div>
-                                )}
+                                ) : null}
                               </td>
                             </tr>
                           );
@@ -728,6 +993,7 @@ export default function ConciliacionPage() {
       {expenseRow && (
         <ExpenseFromBankDialog
           row={expenseRow}
+          rate={rate}
           organizationId={organizationId}
           communityId={communityId}
           onClose={() => setExpenseRow(null)}
@@ -931,7 +1197,7 @@ function ParkDialog({
         <div className="space-y-2 text-sm bg-slate-800 rounded-lg p-3 mb-4">
           <div className="flex justify-between"><span className="text-slate-400">Fecha</span><span className="text-white font-mono">{row.fecha}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Referencia</span><span className="text-white font-mono">{row.referencia || "—"}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Monto</span><span className="text-emerald-400 font-semibold">${row.monto.toFixed(2)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-400">Monto</span><span className="text-emerald-400 font-semibold">Bs {formatBs(row.monto)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Descripción</span><span className="text-slate-300 text-xs">{row.descripcion || "—"}</span></div>
         </div>
         <form onSubmit={onSubmit} className="space-y-3">
@@ -1031,15 +1297,13 @@ function AssignDialog({
         <form onSubmit={onSubmit} className="space-y-3">
           <div>
             <Label className="text-slate-300">Unidad</Label>
-            <select
+            <SearchableSelect
               value={unitId}
-              onChange={e => { setUnitId(e.target.value); setSelectedInvoiceId(null); }}
-              className="flex h-10 w-full rounded-md border border-slate-600 bg-slate-800 px-3 text-sm text-white"
-              required
-            >
-              <option value="">Seleccionar…</option>
-              {units.map(u => <option key={u.id} value={u.id}>{u.code}</option>)}
-            </select>
+              onChange={(v) => { setUnitId(v); setSelectedInvoiceId(null); }}
+              placeholder="Buscar unidad..."
+              options={units.map(u => ({ value: u.id, label: u.code }))}
+              className="[&_button]:border-slate-600 [&_button]:bg-slate-800 [&_button]:text-white [&>div]:bg-slate-800 [&>div]:border-slate-600"
+            />
           </div>
           <div>
             <Label className="text-slate-300">Método de pago</Label>
@@ -1096,12 +1360,14 @@ const EXPENSE_CATEGORIES_ES = [
 
 function ExpenseFromBankDialog({
   row,
+  rate,
   organizationId,
   communityId,
   onClose,
   onCreated,
 }: {
   row: BankRow;
+  rate: number;
   organizationId: string;
   communityId: string;
   onClose: () => void;
@@ -1134,7 +1400,7 @@ function ExpenseFromBankDialog({
         periodYear: form.periodYear,
         periodMonth: form.periodMonth,
         amount: Number(form.amount),
-        currencyPrimary: "USD",
+        currencyPrimary: "VES",
         supplierName: form.supplierName || undefined,
         notes: form.notes || undefined,
       });
@@ -1184,7 +1450,7 @@ function ExpenseFromBankDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="text-slate-300">Monto USD</Label>
+              <Label className="text-slate-300">Monto (Bs)</Label>
               <Input
                 type="number" step="0.01"
                 value={form.amount}
@@ -1192,6 +1458,11 @@ function ExpenseFromBankDialog({
                 className="bg-slate-800 border-slate-600 text-white"
                 required
               />
+              {rate > 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">
+                  ≈ ${(Number(form.amount) / rate).toFixed(2)} USD (a tasa {rate})
+                </p>
+              )}
             </div>
             <div>
               <Label className="text-slate-300">Período</Label>

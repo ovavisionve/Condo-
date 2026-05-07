@@ -10,6 +10,8 @@ import { governanceRouter } from "@/server/trpc/routers/governance";
 import { portalRouter } from "@/server/trpc/routers/portal";
 import { comercialRouter } from "@/server/trpc/routers/comercial";
 import { reservationsRouter } from "@/server/trpc/routers/reservations";
+import { aiRouter } from "@/server/trpc/routers/ai";
+import { authSecurityRouter } from "@/server/trpc/routers/auth-security";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, ts: new Date() })),
@@ -24,6 +26,8 @@ export const appRouter = router({
   portal: portalRouter,
   comercial: comercialRouter,
   reservations: reservationsRouter,
+  ai: aiRouter,
+  authSecurity: authSecurityRouter,
 });
 
 export type AppRouter = typeof appRouter;
