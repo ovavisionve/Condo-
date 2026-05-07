@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Condominios Venezuela",
-    short_name: "Condominios",
-    description: "Sistema de gestión de condominios para Venezuela — Bimonetario, offline-first.",
+    name: "ResidIA",
+    short_name: "ResidIA",
+    description: "Gestión inteligente de condominios en Venezuela — Bimonetario, offline-first.",
     start_url: "/",
     id: "/",
     display: "standalone",
@@ -15,55 +15,55 @@ export default function manifest(): MetadataRoute.Manifest {
     lang: "es",
     icons: [
       {
-        src: "/icons/72",
+        src: "/icons/72.png",
         sizes: "72x72",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/96",
+        src: "/icons/96.png",
         sizes: "96x96",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/128",
+        src: "/icons/128.png",
         sizes: "128x128",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/144",
+        src: "/icons/144.png",
         sizes: "144x144",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/152",
+        src: "/icons/152.png",
         sizes: "152x152",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/192",
+        src: "/icons/192.png",
         sizes: "192x192",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/384",
+        src: "/icons/384.png",
         sizes: "384x384",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/512",
+        src: "/icons/512.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "any",
       },
       {
-        src: "/icons/512",
+        src: "/icons/512.png",
         sizes: "512x512",
         type: "image/png",
         purpose: "maskable",
