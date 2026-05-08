@@ -124,6 +124,15 @@ export async function POST(req: NextRequest) {
 
     if (missing.length > 0) {
       report.error = `Códigos sin matchear: ${missing.length}. Aborto antes de tocar la BD.`;
+      // Para diagnosticar: incluir los primeros 30 códigos REALES del sistema
+      report.steps.push({
+        step: "DIAGNOSTIC",
+        details: {
+          systemCodesSample: units.slice(0, 30).map((u) => u.code),
+          totalUnits: String(units.length),
+          hint: "Compara estos códigos con los del Excel para ajustar la función de mapeo",
+        },
+      });
       return NextResponse.json(report, { status: 422 });
     }
 
