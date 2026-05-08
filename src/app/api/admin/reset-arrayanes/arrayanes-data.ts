@@ -1,8 +1,9 @@
-﻿// Data extraida del Excel del cliente (AL 1-4.xls). 188 unidades.
+// Data extraida del Excel del cliente (AL 1-4.xls). 188 unidades.
+// Mapeo Excel -> Sistema: A011 -> 11A, A234 -> 234A, APH1 -> PH1A, etc.
 export const ARRAYANES_DATA = [
   {
     "excelCode": "A011",
-    "systemCode": "A-01A",
+    "systemCode": "11A",
     "owners": [
       "Juan Duarte"
     ],
@@ -12,7 +13,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A012",
-    "systemCode": "A-01B",
+    "systemCode": "12A",
     "owners": [
       "Miguel Arroyo",
       "Yuemmy Arroyo"
@@ -23,7 +24,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A013",
-    "systemCode": "A-01C",
+    "systemCode": "13A",
     "owners": [
       "Nelly Almarza"
     ],
@@ -33,7 +34,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A014",
-    "systemCode": "A-01D",
+    "systemCode": "14A",
     "owners": [
       "Maria Natalia Pereria"
     ],
@@ -43,7 +44,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A021",
-    "systemCode": "A-02A",
+    "systemCode": "21A",
     "owners": [
       "Luisa Guarache"
     ],
@@ -53,7 +54,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A022",
-    "systemCode": "A-02B",
+    "systemCode": "22A",
     "owners": [
       "Ronald Sevilla"
     ],
@@ -63,10 +64,10 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A023",
-    "systemCode": "A-02C",
+    "systemCode": "23A",
     "owners": [
-      "Mirna HernÃ¡ndez",
-      "JosÃ© Romero"
+      "Mirna Hernández",
+      "José Romero"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0.63,
@@ -74,7 +75,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A024",
-    "systemCode": "A-02D",
+    "systemCode": "24A",
     "owners": [
       "Odalis Ravelo"
     ],
@@ -84,7 +85,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A031",
-    "systemCode": "A-03A",
+    "systemCode": "31A",
     "owners": [
       "Irma Archer"
     ],
@@ -94,9 +95,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A032",
-    "systemCode": "A-03B",
+    "systemCode": "32A",
     "owners": [
-      "JosÃ© Coronel"
+      "José Coronel"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0.4,
@@ -104,7 +105,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A033",
-    "systemCode": "A-03C",
+    "systemCode": "33A",
     "owners": [
       "Omar Antonio Vidal"
     ],
@@ -114,7 +115,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A034",
-    "systemCode": "A-03D",
+    "systemCode": "34A",
     "owners": [
       "Marina de Gorrin"
     ],
@@ -124,7 +125,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A041",
-    "systemCode": "A-04A",
+    "systemCode": "41A",
     "owners": [
       "Rebe Villalta"
     ],
@@ -134,7 +135,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A042",
-    "systemCode": "A-04B",
+    "systemCode": "42A",
     "owners": [
       "Edgar Subero"
     ],
@@ -144,7 +145,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A043",
-    "systemCode": "A-04C",
+    "systemCode": "43A",
     "owners": [
       "Jose Perera"
     ],
@@ -154,7 +155,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A044",
-    "systemCode": "A-04D",
+    "systemCode": "44A",
     "owners": [
       "Robinson Viafara"
     ],
@@ -164,9 +165,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A051",
-    "systemCode": "A-05A",
+    "systemCode": "51A",
     "owners": [
-      "Claudia RodrÃ­guez"
+      "Claudia Rodríguez"
     ],
     "totalUsd": 131.66,
     "paidUsd": 0,
@@ -174,7 +175,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A052",
-    "systemCode": "A-05B",
+    "systemCode": "52A",
     "owners": [
       "Kelly Martinez"
     ],
@@ -184,7 +185,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A053",
-    "systemCode": "A-05C",
+    "systemCode": "53A",
     "owners": [
       "Fanny Castellano"
     ],
@@ -194,7 +195,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A054",
-    "systemCode": "A-05D",
+    "systemCode": "54A",
     "owners": [
       "Carlos Leiva"
     ],
@@ -204,7 +205,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A061",
-    "systemCode": "A-06A",
+    "systemCode": "61A",
     "owners": [
       "Nelson Alvarez"
     ],
@@ -214,7 +215,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A062",
-    "systemCode": "A-06B",
+    "systemCode": "62A",
     "owners": [
       "Henrry Romero"
     ],
@@ -224,7 +225,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A063",
-    "systemCode": "A-06C",
+    "systemCode": "63A",
     "owners": [
       "Belkis Maldonado"
     ],
@@ -234,7 +235,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A064",
-    "systemCode": "A-06D",
+    "systemCode": "64A",
     "owners": [
       "Mildred Palacios",
       "Rafael Palacios"
@@ -245,9 +246,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A071",
-    "systemCode": "A-07A",
+    "systemCode": "71A",
     "owners": [
-      "Loida PÃ¨rez"
+      "Loida Pèrez"
     ],
     "totalUsd": 69.99,
     "paidUsd": 0,
@@ -255,7 +256,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A072",
-    "systemCode": "A-07B",
+    "systemCode": "72A",
     "owners": [
       "Victor Macabi"
     ],
@@ -265,7 +266,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A073",
-    "systemCode": "A-07C",
+    "systemCode": "73A",
     "owners": [
       "Raquel Benitez"
     ],
@@ -275,9 +276,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A074",
-    "systemCode": "A-07D",
+    "systemCode": "74A",
     "owners": [
-      "MarÃ­a MoscÃ³"
+      "María Moscó"
     ],
     "totalUsd": 69.99,
     "paidUsd": 0.24,
@@ -285,7 +286,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A081",
-    "systemCode": "A-08A",
+    "systemCode": "81A",
     "owners": [
       "Joao Goncalves"
     ],
@@ -295,7 +296,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A082",
-    "systemCode": "A-08B",
+    "systemCode": "82A",
     "owners": [
       "Rafael Gil Guerrero"
     ],
@@ -305,9 +306,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A083",
-    "systemCode": "A-08C",
+    "systemCode": "83A",
     "owners": [
-      "Francys MartÃ¬nez"
+      "Francys Martìnez"
     ],
     "totalUsd": 36.75,
     "paidUsd": 14.39,
@@ -315,7 +316,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A084",
-    "systemCode": "A-08D",
+    "systemCode": "84A",
     "owners": [
       "Luis Marin"
     ],
@@ -325,7 +326,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A091",
-    "systemCode": "A-09A",
+    "systemCode": "91A",
     "owners": [
       "Doris Calvo"
     ],
@@ -335,7 +336,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A092",
-    "systemCode": "A-09B",
+    "systemCode": "92A",
     "owners": [
       "Mayte Duarte"
     ],
@@ -345,9 +346,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A093",
-    "systemCode": "A-09C",
+    "systemCode": "93A",
     "owners": [
-      "Miriam RodrÃ­guez"
+      "Miriam Rodríguez"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0,
@@ -355,7 +356,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A094",
-    "systemCode": "A-09D",
+    "systemCode": "94A",
     "owners": [
       "Gregorio Alonzo"
     ],
@@ -365,7 +366,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A101",
-    "systemCode": "A-10A",
+    "systemCode": "101A",
     "owners": [
       "Marcelo Gonzalez"
     ],
@@ -375,7 +376,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A102",
-    "systemCode": "A-10B",
+    "systemCode": "102A",
     "owners": [
       "Jose Rodriguez"
     ],
@@ -385,7 +386,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A103",
-    "systemCode": "A-10C",
+    "systemCode": "103A",
     "owners": [
       "Delia Mendez"
     ],
@@ -395,7 +396,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A104",
-    "systemCode": "A-10D",
+    "systemCode": "104A",
     "owners": [
       "Adriana Montesinos"
     ],
@@ -405,7 +406,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A111",
-    "systemCode": "A-11A",
+    "systemCode": "111A",
     "owners": [
       "Javier Forsyth"
     ],
@@ -415,7 +416,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A112",
-    "systemCode": "A-11B",
+    "systemCode": "112A",
     "owners": [
       "Yolaidy Bravo"
     ],
@@ -425,7 +426,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A113",
-    "systemCode": "A-11C",
+    "systemCode": "113A",
     "owners": [
       "Pedro Bellorin"
     ],
@@ -435,7 +436,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A114",
-    "systemCode": "A-11D",
+    "systemCode": "114A",
     "owners": [
       "Arol Wright"
     ],
@@ -444,10 +445,10 @@ export const ARRAYANES_DATA = [
     "pendUsd": 117.08
   },
   {
-    "excelCode": "A121 -Nubia Roman",
-    "systemCode": "A-12A",
+    "excelCode": "A121",
+    "systemCode": "121A",
     "owners": [
-      ""
+      "Nubia Roman"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0,
@@ -455,7 +456,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A122",
-    "systemCode": "A-12B",
+    "systemCode": "122A",
     "owners": [
       "Raquel de Gil"
     ],
@@ -465,7 +466,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A123",
-    "systemCode": "A-12C",
+    "systemCode": "123A",
     "owners": [
       "John Ali",
       "Yely Ramos"
@@ -476,9 +477,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A124",
-    "systemCode": "A-12D",
+    "systemCode": "124A",
     "owners": [
-      "RamÃ³n Alvarez"
+      "Ramón Alvarez"
     ],
     "totalUsd": 69.99,
     "paidUsd": 0.13,
@@ -486,7 +487,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A131",
-    "systemCode": "A-13A",
+    "systemCode": "131A",
     "owners": [
       "Clarisa Herrera"
     ],
@@ -496,7 +497,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A132",
-    "systemCode": "A-13B",
+    "systemCode": "132A",
     "owners": [
       "Nelly Molina"
     ],
@@ -506,7 +507,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A133",
-    "systemCode": "A-13C",
+    "systemCode": "133A",
     "owners": [
       "Edgar Jugo"
     ],
@@ -516,7 +517,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A134",
-    "systemCode": "A-13D",
+    "systemCode": "134A",
     "owners": [
       "Marisol Rivas"
     ],
@@ -526,7 +527,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A141",
-    "systemCode": "A-14A",
+    "systemCode": "141A",
     "owners": [
       "Haimara Caraballo"
     ],
@@ -536,7 +537,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A142",
-    "systemCode": "A-14B",
+    "systemCode": "142A",
     "owners": [
       "Isabel Moreno"
     ],
@@ -546,7 +547,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A143",
-    "systemCode": "A-14C",
+    "systemCode": "143A",
     "owners": [
       "Howard Gonzalez"
     ],
@@ -556,7 +557,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A144",
-    "systemCode": "A-14D",
+    "systemCode": "144A",
     "owners": [
       "Angela D'Alesio"
     ],
@@ -566,7 +567,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A151",
-    "systemCode": "A-15A",
+    "systemCode": "151A",
     "owners": [
       "Yessika Duque"
     ],
@@ -576,7 +577,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A152",
-    "systemCode": "A-15B",
+    "systemCode": "152A",
     "owners": [
       "Yolanda Davila"
     ],
@@ -586,7 +587,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A153",
-    "systemCode": "A-15C",
+    "systemCode": "153A",
     "owners": [
       "Olga Laguna"
     ],
@@ -596,10 +597,10 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A154",
-    "systemCode": "A-15D",
+    "systemCode": "154A",
     "owners": [
       "Jose Roy Salazar",
-      "Yanheva GarcÃ­a"
+      "Yanheva García"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0,
@@ -607,7 +608,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A161",
-    "systemCode": "A-16A",
+    "systemCode": "161A",
     "owners": [
       "Miguel Sandoval",
       "Neilyn Sandoval"
@@ -618,7 +619,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A162",
-    "systemCode": "A-16B",
+    "systemCode": "162A",
     "owners": [
       "Carlos T. Arevalo"
     ],
@@ -628,7 +629,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A163",
-    "systemCode": "A-16C",
+    "systemCode": "163A",
     "owners": [
       "Deciderio Contreras"
     ],
@@ -638,9 +639,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A164",
-    "systemCode": "A-16D",
+    "systemCode": "164A",
     "owners": [
-      "JesÃºs Ãlvarez"
+      "Jesús Álvarez"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0.21,
@@ -648,7 +649,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A171",
-    "systemCode": "A-17A",
+    "systemCode": "171A",
     "owners": [
       "Yleana Nuzzo"
     ],
@@ -658,9 +659,10 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A172",
-    "systemCode": "A-17B",
+    "systemCode": "172A",
     "owners": [
-      "Vigdalia Mora/ Luis Godoy"
+      "Vigdalia Mora",
+      "Luis Godoy"
     ],
     "totalUsd": 227.48,
     "paidUsd": 15.79,
@@ -668,7 +670,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A173",
-    "systemCode": "A-17C",
+    "systemCode": "173A",
     "owners": [
       "Elsa Moreno"
     ],
@@ -678,7 +680,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A174",
-    "systemCode": "A-17D",
+    "systemCode": "174A",
     "owners": [
       "Oswaldo Fajardo"
     ],
@@ -688,9 +690,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A181",
-    "systemCode": "A-18A",
+    "systemCode": "181A",
     "owners": [
-      "Victor RenÃ© Orta"
+      "Victor René Orta"
     ],
     "totalUsd": 36.75,
     "paidUsd": 0,
@@ -698,7 +700,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A182",
-    "systemCode": "A-18B",
+    "systemCode": "182A",
     "owners": [
       "Oswaldo Oliveros",
       "Gloria de Oliveros"
@@ -709,7 +711,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A183",
-    "systemCode": "A-18C",
+    "systemCode": "183A",
     "owners": [
       "Nelson Diaz"
     ],
@@ -719,7 +721,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A184",
-    "systemCode": "A-18D",
+    "systemCode": "184A",
     "owners": [
       "Santiago Gomez"
     ],
@@ -729,7 +731,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A191",
-    "systemCode": "A-19A",
+    "systemCode": "191A",
     "owners": [
       "Miryan Doza"
     ],
@@ -739,7 +741,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A192",
-    "systemCode": "A-19B",
+    "systemCode": "192A",
     "owners": [
       "Majorlin Ramos"
     ],
@@ -749,9 +751,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A193",
-    "systemCode": "A-19C",
+    "systemCode": "193A",
     "owners": [
-      "Cruz AlcalÃ¡"
+      "Cruz Alcalá"
     ],
     "totalUsd": 853.89,
     "paidUsd": 5.73,
@@ -759,7 +761,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A194",
-    "systemCode": "A-19D",
+    "systemCode": "194A",
     "owners": [
       "Zaiduby Conde"
     ],
@@ -769,7 +771,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A201",
-    "systemCode": "A-20A",
+    "systemCode": "201A",
     "owners": [
       "Manuel Rivas"
     ],
@@ -779,7 +781,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A202",
-    "systemCode": "A-20B",
+    "systemCode": "202A",
     "owners": [
       "Dario Mantilla"
     ],
@@ -789,7 +791,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A203",
-    "systemCode": "A-20C",
+    "systemCode": "203A",
     "owners": [
       "Manuel Perez"
     ],
@@ -799,7 +801,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A204",
-    "systemCode": "A-20D",
+    "systemCode": "204A",
     "owners": [
       "Cesar Novelino"
     ],
@@ -809,7 +811,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A211",
-    "systemCode": "A-21A",
+    "systemCode": "211A",
     "owners": [
       "Eduardo Saez"
     ],
@@ -819,7 +821,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A212",
-    "systemCode": "A-21B",
+    "systemCode": "212A",
     "owners": [
       "Luis Linares"
     ],
@@ -829,7 +831,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A213",
-    "systemCode": "A-21C",
+    "systemCode": "213A",
     "owners": [
       "Esperanza Perez"
     ],
@@ -839,7 +841,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A214",
-    "systemCode": "A-21D",
+    "systemCode": "214A",
     "owners": [
       "Hassan Rondon"
     ],
@@ -849,7 +851,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A221",
-    "systemCode": "A-22A",
+    "systemCode": "221A",
     "owners": [
       "Angel Cordoba"
     ],
@@ -859,7 +861,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A222",
-    "systemCode": "A-22B",
+    "systemCode": "222A",
     "owners": [
       "Jean Hernandez"
     ],
@@ -869,7 +871,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A223",
-    "systemCode": "A-22C",
+    "systemCode": "223A",
     "owners": [
       "Cruz Berguis"
     ],
@@ -879,7 +881,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A224",
-    "systemCode": "A-22D",
+    "systemCode": "224A",
     "owners": [
       "Tiffanny Sanchez"
     ],
@@ -889,7 +891,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A231",
-    "systemCode": "A-23A",
+    "systemCode": "231A",
     "owners": [
       "Fanny Castellanos"
     ],
@@ -899,7 +901,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A232",
-    "systemCode": "A-23B",
+    "systemCode": "232A",
     "owners": [
       "Dalia Valor"
     ],
@@ -909,7 +911,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A233",
-    "systemCode": "A-23C",
+    "systemCode": "233A",
     "owners": [
       "Carlos Lachica",
       "Maria Lachica"
@@ -920,7 +922,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "A234",
-    "systemCode": "A-23D",
+    "systemCode": "234A",
     "owners": [
       "Alix Perez de Tadino"
     ],
@@ -930,10 +932,10 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "APH1",
-    "systemCode": "A-24PH1",
+    "systemCode": "PH1A",
     "owners": [
       "Yanet Romero",
-      "JosÃ© Rodriguez"
+      "José Rodriguez"
     ],
     "totalUsd": 70.09,
     "paidUsd": 0.8,
@@ -941,7 +943,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "APH2",
-    "systemCode": "A-24PH2",
+    "systemCode": "PH2A",
     "owners": [
       "Amanda Antolines"
     ],
@@ -951,7 +953,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B011",
-    "systemCode": "B-01A",
+    "systemCode": "11B",
     "owners": [
       "Alexis Palmero"
     ],
@@ -961,7 +963,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B012",
-    "systemCode": "B-01B",
+    "systemCode": "12B",
     "owners": [
       "Angelo Lopez"
     ],
@@ -971,7 +973,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B013",
-    "systemCode": "B-01C",
+    "systemCode": "13B",
     "owners": [
       "Jeferson Brito"
     ],
@@ -981,7 +983,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B014",
-    "systemCode": "B-01D",
+    "systemCode": "14B",
     "owners": [
       "Luis Gongalez"
     ],
@@ -991,7 +993,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B021",
-    "systemCode": "B-02A",
+    "systemCode": "21B",
     "owners": [
       "Maria Arellano"
     ],
@@ -1001,7 +1003,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B022",
-    "systemCode": "B-02B",
+    "systemCode": "22B",
     "owners": [
       "Carmen Chavez",
       "Albert Perez"
@@ -1012,7 +1014,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B023",
-    "systemCode": "B-02C",
+    "systemCode": "23B",
     "owners": [
       "Elena Gil"
     ],
@@ -1022,7 +1024,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B024",
-    "systemCode": "B-02D",
+    "systemCode": "24B",
     "owners": [
       "Manuel Moreno",
       "Ines Sanchez"
@@ -1033,7 +1035,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B031",
-    "systemCode": "B-03A",
+    "systemCode": "31B",
     "owners": [
       "Anamar Carmona"
     ],
@@ -1043,7 +1045,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B032",
-    "systemCode": "B-03B",
+    "systemCode": "32B",
     "owners": [
       "Consuelo Bellorin"
     ],
@@ -1053,7 +1055,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B033",
-    "systemCode": "B-03C",
+    "systemCode": "33B",
     "owners": [
       "Naharais Sarmiento"
     ],
@@ -1063,7 +1065,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B034",
-    "systemCode": "B-03D",
+    "systemCode": "34B",
     "owners": [
       "Maria Martinez"
     ],
@@ -1073,9 +1075,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B041",
-    "systemCode": "B-04A",
+    "systemCode": "41B",
     "owners": [
-      "Nohellys RomÃ¡n"
+      "Nohellys Román"
     ],
     "totalUsd": 61.1,
     "paidUsd": 0,
@@ -1083,10 +1085,10 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B042",
-    "systemCode": "B-04B",
+    "systemCode": "42B",
     "owners": [
       "Elizabeth Zerpa",
-      "Ernesto PeÃ±aloza"
+      "Ernesto Peñaloza"
     ],
     "totalUsd": 29.86,
     "paidUsd": 0,
@@ -1094,9 +1096,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B043",
-    "systemCode": "B-04C",
+    "systemCode": "43B",
     "owners": [
-      "Maria RomÃ¡n"
+      "Maria Román"
     ],
     "totalUsd": 61.1,
     "paidUsd": 0,
@@ -1104,7 +1106,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B044",
-    "systemCode": "B-04D",
+    "systemCode": "44B",
     "owners": [
       "Monika Rios"
     ],
@@ -1114,7 +1116,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B051",
-    "systemCode": "B-05A",
+    "systemCode": "51B",
     "owners": [
       "Carmen Herrera"
     ],
@@ -1124,7 +1126,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B052",
-    "systemCode": "B-05B",
+    "systemCode": "52B",
     "owners": [
       "Azucena Carrasco"
     ],
@@ -1134,7 +1136,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B053",
-    "systemCode": "B-05C",
+    "systemCode": "53B",
     "owners": [
       "Javier Gomez"
     ],
@@ -1144,7 +1146,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B054",
-    "systemCode": "B-05D",
+    "systemCode": "54B",
     "owners": [
       "Larry Caceres"
     ],
@@ -1154,7 +1156,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B061",
-    "systemCode": "B-06A",
+    "systemCode": "61B",
     "owners": [
       "Eglee Sisco"
     ],
@@ -1164,7 +1166,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B062",
-    "systemCode": "B-06B",
+    "systemCode": "62B",
     "owners": [
       "Fortunato Alonzo",
       "Tiade Alonzo"
@@ -1175,9 +1177,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B063",
-    "systemCode": "B-06C",
+    "systemCode": "63B",
     "owners": [
-      "JosÃ©  Edgardo RÃ­os Guevara"
+      "José  Edgardo Ríos Guevara"
     ],
     "totalUsd": 29.86,
     "paidUsd": 0,
@@ -1185,7 +1187,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B064",
-    "systemCode": "B-06D",
+    "systemCode": "64B",
     "owners": [
       "Elia Matilde Cabrices de Gutierrez"
     ],
@@ -1195,7 +1197,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B071",
-    "systemCode": "B-07A",
+    "systemCode": "71B",
     "owners": [
       "Alejandro Maiz"
     ],
@@ -1205,7 +1207,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B072",
-    "systemCode": "B-07B",
+    "systemCode": "72B",
     "owners": [
       "NIlda Alvarez"
     ],
@@ -1215,7 +1217,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B073",
-    "systemCode": "B-07C",
+    "systemCode": "73B",
     "owners": [
       "Zulaima Fermin"
     ],
@@ -1225,7 +1227,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B074",
-    "systemCode": "B-07D",
+    "systemCode": "74B",
     "owners": [
       "Luis Berroteran"
     ],
@@ -1235,9 +1237,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B081",
-    "systemCode": "B-08A",
+    "systemCode": "81B",
     "owners": [
-      "MarÃ­a Croce"
+      "María Croce"
     ],
     "totalUsd": 97.72,
     "paidUsd": 32.91,
@@ -1245,7 +1247,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B082",
-    "systemCode": "B-08B",
+    "systemCode": "82B",
     "owners": [
       "Nora Fernandez"
     ],
@@ -1255,7 +1257,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B083",
-    "systemCode": "B-08C",
+    "systemCode": "83B",
     "owners": [
       "Kelvin Ascanio"
     ],
@@ -1265,7 +1267,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B084",
-    "systemCode": "B-08D",
+    "systemCode": "84B",
     "owners": [
       "Mary Gavidia"
     ],
@@ -1275,7 +1277,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B091",
-    "systemCode": "B-09A",
+    "systemCode": "91B",
     "owners": [
       "Justa Gonzalez"
     ],
@@ -1285,7 +1287,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B092",
-    "systemCode": "B-09B",
+    "systemCode": "92B",
     "owners": [
       "Omar Ribas"
     ],
@@ -1295,9 +1297,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B093",
-    "systemCode": "B-09C",
+    "systemCode": "93B",
     "owners": [
-      "Gustavo LeÃ³n Pino"
+      "Gustavo León Pino"
     ],
     "totalUsd": 29.86,
     "paidUsd": 0.08,
@@ -1305,7 +1307,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B094",
-    "systemCode": "B-09D",
+    "systemCode": "94B",
     "owners": [
       "Nancy Guzman"
     ],
@@ -1315,7 +1317,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B101",
-    "systemCode": "B-10A",
+    "systemCode": "101B",
     "owners": [
       "Alan Lugo"
     ],
@@ -1325,7 +1327,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B102",
-    "systemCode": "B-10B",
+    "systemCode": "102B",
     "owners": [
       "Adriana Lopez"
     ],
@@ -1335,7 +1337,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B103",
-    "systemCode": "B-10C",
+    "systemCode": "103B",
     "owners": [
       "Arlette Hernandez"
     ],
@@ -1345,7 +1347,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B104",
-    "systemCode": "B-10D",
+    "systemCode": "104B",
     "owners": [
       "Luis Medina Mendoza"
     ],
@@ -1355,7 +1357,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B111",
-    "systemCode": "B-11A",
+    "systemCode": "111B",
     "owners": [
       "Angel Navarro"
     ],
@@ -1365,7 +1367,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B112",
-    "systemCode": "B-11B",
+    "systemCode": "112B",
     "owners": [
       "Reina Teran"
     ],
@@ -1375,7 +1377,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B113",
-    "systemCode": "B-11C",
+    "systemCode": "113B",
     "owners": [
       "Omaira Ruiz"
     ],
@@ -1385,7 +1387,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B114",
-    "systemCode": "B-11D",
+    "systemCode": "114B",
     "owners": [
       "Antonio Carvajal"
     ],
@@ -1395,7 +1397,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B121",
-    "systemCode": "B-12A",
+    "systemCode": "121B",
     "owners": [
       "Myriam Mijares"
     ],
@@ -1405,9 +1407,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B122",
-    "systemCode": "B-12B",
+    "systemCode": "122B",
     "owners": [
-      "Rubin dÃ­az"
+      "Rubin díaz"
     ],
     "totalUsd": 556.58,
     "paidUsd": 13.07,
@@ -1415,7 +1417,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B123",
-    "systemCode": "B-12C",
+    "systemCode": "123B",
     "owners": [
       "Keyla Padilla"
     ],
@@ -1425,7 +1427,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B124",
-    "systemCode": "B-12D",
+    "systemCode": "124B",
     "owners": [
       "Luis Virguez"
     ],
@@ -1435,9 +1437,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B131",
-    "systemCode": "B-13A",
+    "systemCode": "131B",
     "owners": [
-      "Carlos MÃ¡rquez"
+      "Carlos Márquez"
     ],
     "totalUsd": 29.86,
     "paidUsd": 0,
@@ -1445,7 +1447,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B132",
-    "systemCode": "B-13B",
+    "systemCode": "132B",
     "owners": [
       "Argimiro Montilla"
     ],
@@ -1455,7 +1457,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B133",
-    "systemCode": "B-13C",
+    "systemCode": "133B",
     "owners": [
       "Nicola Russo"
     ],
@@ -1465,7 +1467,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B134",
-    "systemCode": "B-13D",
+    "systemCode": "134B",
     "owners": [
       "Oswaldo Sanchez"
     ],
@@ -1475,9 +1477,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B141",
-    "systemCode": "B-14A",
+    "systemCode": "141B",
     "owners": [
-      "Soveida E. De BÃ³er B"
+      "Soveida E. De Bóer B"
     ],
     "totalUsd": 29.86,
     "paidUsd": 0,
@@ -1485,7 +1487,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B142",
-    "systemCode": "B-14B",
+    "systemCode": "142B",
     "owners": [
       "Angela Aranda"
     ],
@@ -1495,7 +1497,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B143",
-    "systemCode": "B-14C",
+    "systemCode": "143B",
     "owners": [
       "Nancy Stoyko"
     ],
@@ -1505,7 +1507,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B144",
-    "systemCode": "B-14D",
+    "systemCode": "144B",
     "owners": [
       "Jose Delgado"
     ],
@@ -1515,7 +1517,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B151",
-    "systemCode": "B-15A",
+    "systemCode": "151B",
     "owners": [
       "Juan Carlos Daza"
     ],
@@ -1525,7 +1527,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B152",
-    "systemCode": "B-15B",
+    "systemCode": "152B",
     "owners": [
       "Luisa De Abreu"
     ],
@@ -1535,7 +1537,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B153",
-    "systemCode": "B-15C",
+    "systemCode": "153B",
     "owners": [
       "Freddy Guerrero y Shashesca Araujo"
     ],
@@ -1545,7 +1547,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B154",
-    "systemCode": "B-15D",
+    "systemCode": "154B",
     "owners": [
       "Julio Bustamante"
     ],
@@ -1555,7 +1557,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B161",
-    "systemCode": "B-16A",
+    "systemCode": "161B",
     "owners": [
       "Eneida Flores"
     ],
@@ -1565,7 +1567,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B162",
-    "systemCode": "B-16B",
+    "systemCode": "162B",
     "owners": [
       "Carmen Roche"
     ],
@@ -1575,9 +1577,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B163",
-    "systemCode": "B-16C",
+    "systemCode": "163B",
     "owners": [
-      "Reinaldo MartÃ­nez"
+      "Reinaldo Martínez"
     ],
     "totalUsd": 61.1,
     "paidUsd": 2.58,
@@ -1585,7 +1587,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B164",
-    "systemCode": "B-16D",
+    "systemCode": "164B",
     "owners": [
       "Delia Llovera"
     ],
@@ -1595,7 +1597,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B171",
-    "systemCode": "B-17A",
+    "systemCode": "171B",
     "owners": [
       "Jasmin Sosa"
     ],
@@ -1605,7 +1607,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B172",
-    "systemCode": "B-17B",
+    "systemCode": "172B",
     "owners": [
       "Federico Trinquete"
     ],
@@ -1615,7 +1617,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B173",
-    "systemCode": "B-17C",
+    "systemCode": "173B",
     "owners": [
       "Brigger Jose Plaza Vizcaya."
     ],
@@ -1625,7 +1627,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B174",
-    "systemCode": "B-17D",
+    "systemCode": "174B",
     "owners": [
       "Andrea Camacho"
     ],
@@ -1635,7 +1637,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B181",
-    "systemCode": "B-18A",
+    "systemCode": "181B",
     "owners": [
       "Edgar Monagas"
     ],
@@ -1645,7 +1647,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B182",
-    "systemCode": "B-18B",
+    "systemCode": "182B",
     "owners": [
       "Daniel Alvarez"
     ],
@@ -1655,7 +1657,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B183",
-    "systemCode": "B-18C",
+    "systemCode": "183B",
     "owners": [
       "Alida Vivas"
     ],
@@ -1665,9 +1667,9 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B184",
-    "systemCode": "B-18D",
+    "systemCode": "184B",
     "owners": [
-      "MarÃ­a Carolina Jaramillo"
+      "María Carolina Jaramillo"
     ],
     "totalUsd": 61.1,
     "paidUsd": 0,
@@ -1675,7 +1677,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B191",
-    "systemCode": "B-19A",
+    "systemCode": "191B",
     "owners": [
       "Miguel Garcia"
     ],
@@ -1685,7 +1687,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B192",
-    "systemCode": "B-19B",
+    "systemCode": "192B",
     "owners": [
       "Gregorio Hernandez"
     ],
@@ -1695,7 +1697,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B193",
-    "systemCode": "B-19C",
+    "systemCode": "193B",
     "owners": [
       "William Bello"
     ],
@@ -1705,7 +1707,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B194",
-    "systemCode": "B-19D",
+    "systemCode": "194B",
     "owners": [
       "Lilian Figueroa"
     ],
@@ -1715,7 +1717,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B201",
-    "systemCode": "B-20A",
+    "systemCode": "201B",
     "owners": [
       "Hector Michell Sanchez"
     ],
@@ -1725,7 +1727,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B202",
-    "systemCode": "B-20B",
+    "systemCode": "202B",
     "owners": [
       "Pedro Ponce"
     ],
@@ -1735,7 +1737,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B203",
-    "systemCode": "B-20C",
+    "systemCode": "203B",
     "owners": [
       "Zulma Zabala"
     ],
@@ -1745,7 +1747,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B204",
-    "systemCode": "B-20D",
+    "systemCode": "204B",
     "owners": [
       "Guillermo Mogollon"
     ],
@@ -1755,7 +1757,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B211",
-    "systemCode": "B-21A",
+    "systemCode": "211B",
     "owners": [
       "Carlos Araujo"
     ],
@@ -1765,7 +1767,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B212",
-    "systemCode": "B-21B",
+    "systemCode": "212B",
     "owners": [
       "Albertina Cardenas"
     ],
@@ -1775,7 +1777,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B213",
-    "systemCode": "B-21C",
+    "systemCode": "213B",
     "owners": [
       "Beaker Rondon"
     ],
@@ -1785,7 +1787,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B214",
-    "systemCode": "B-21D",
+    "systemCode": "214B",
     "owners": [
       "Sadiz Rojas"
     ],
@@ -1795,7 +1797,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B221",
-    "systemCode": "B-22A",
+    "systemCode": "221B",
     "owners": [
       "Jhonathan Mijares"
     ],
@@ -1805,7 +1807,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B222",
-    "systemCode": "B-22B",
+    "systemCode": "222B",
     "owners": [
       "Francheska Flores"
     ],
@@ -1815,7 +1817,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B223",
-    "systemCode": "B-22C",
+    "systemCode": "223B",
     "owners": [
       "Elsy Echarry"
     ],
@@ -1825,7 +1827,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B224",
-    "systemCode": "B-22D",
+    "systemCode": "224B",
     "owners": [
       "Hamilton Bustamante"
     ],
@@ -1835,7 +1837,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B231",
-    "systemCode": "B-23A",
+    "systemCode": "231B",
     "owners": [
       "Jesus Gonzalez"
     ],
@@ -1845,7 +1847,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B232",
-    "systemCode": "B-23B",
+    "systemCode": "232B",
     "owners": [
       "Allan Berrios"
     ],
@@ -1855,7 +1857,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B233",
-    "systemCode": "B-23C",
+    "systemCode": "233B",
     "owners": [
       "Berlis Camperos"
     ],
@@ -1865,7 +1867,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "B234",
-    "systemCode": "B-23D",
+    "systemCode": "234B",
     "owners": [
       "Roselin Puerta"
     ],
@@ -1875,7 +1877,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "BPH1",
-    "systemCode": "B-24PH1",
+    "systemCode": "PH1B",
     "owners": [
       "Maria Lopez"
     ],
@@ -1885,7 +1887,7 @@ export const ARRAYANES_DATA = [
   },
   {
     "excelCode": "BPH2",
-    "systemCode": "B-24PH2",
+    "systemCode": "PH2B",
     "owners": [
       "Nolida Adrianza"
     ],
