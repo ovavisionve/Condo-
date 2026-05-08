@@ -132,16 +132,41 @@ El endpoint actual está hard-codeado para Los Arrayanes. Para reutilizarlo en o
 **Problema reportado por cliente:**
 > "no pasaste a las deudas como estaban en el archivo"
 
-**Causa raíz:**
-La nomenclatura del Excel del cliente (`A011`, `A012`, `APH1`) **no coincidía** con la nomenclatura del sistema (`A-01A`, `A-01B`, `A-24PH1`). La importación inicial probablemente:
+**Causa raíz (descubierta durante la auditoría):**
+La nomenclatura del Excel del cliente (`A011`, `A012`, `APH1`) NO coincidía con la nomenclatura del sistema. **Y para complicarlo más, la nomenclatura del sistema NO coincidía con la documentada en `CLAUDE.md`.**
+
+| Capa | Formato | Ejemplo |
+|---|---|---|
+| Excel del cliente | `{Tower}{Floor:2}{Apt:1}` | `A011`, `A234`, `APH1` |
+| `CLAUDE.md` (incorrecto) | `{Tower}-{Floor:2}{Letter}` | `A-01A`, `A-23D`, `A-24PH1` |
+| **Sistema real (BD)** | `{Floor}{Apt}{Tower}` | `11A`, `234A`, `PH1A` |
+
+La importación original probablemente:
 - Falló silenciosamente al no encontrar matches
 - O cargó las deudas a unidades equivocadas
 
 **Solución aplicada:**
-1. Mapeo explícito código-Excel → código-sistema con función pura y testeada
-2. Endpoint con dry-run obligatorio antes de ejecutar
-3. Validación que aborta si algún código no mapea
-4. Suma total de deudas validada contra el Excel ($18,411.88)
+1. Mapeo explícito código-Excel → código-sistema con función pura
+   ```ts
+   function excelToSystem(code: string): string {
+     if (code.includes("PH")) {
+       return `PH${code.replace(/^[AB]PH/, "")}${code[0]}`; // APH1 → PH1A
+     }
+     const tower = code[0];
+     const floor = parseInt(code.substring(1, 3));
+     const apt = code[3];
+     return `${floor}${apt}${tower}`; // A011 → 11A
+   }
+   ```
+2. Endpoint con dry-run obligatorio que ABORTA si algún código no mapea
+3. **Diagnostic mode** que devuelve los códigos reales del sistema para comparar
+4. Suma total de deudas validada contra el Excel ($18,411.88) — coincide exactamente
+5. Parser de nombres robusto con varios separadores (`" - "`, `" -"`, `"- "`, `"-"`)
+
+**Resultado del reset (8 mayo 2026):**
+- WIPE: 191 invoices, 12 payments, 199 ownerships, 197 persons, 567 invoiceItems, etc.
+- RECREATE: 202 persons (13 unidades multi-owner), 202 ownerships, 188 invoices, 188 items
+- Total deuda inicial: **$18,411.88** ✅ exacto al Excel
 
 **Lección para futuros clientes:**
 Antes de cargar datos, **siempre confirmar la nomenclatura** con el cliente. Si difiere de la del sistema:

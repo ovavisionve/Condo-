@@ -421,8 +421,10 @@ Visibles:
 Comunidad real del usuario para producción.
 - **Org slug:** `los-arrayanes`
 - **Plan:** PRO
-- **Estructura:** 188 unidades = 2 torres (A, B) × (23 pisos × 4 aptos A/B/C/D + piso 24 con 2 PH) = 94 × 2
-- **Nomenclatura:** `{torre}-{piso}{letra}` (ej. `A-15C`), PHs `{torre}-24PH1` / `{torre}-24PH2`
+- **Estructura:** 188 unidades = 2 torres (A, B) × (23 pisos × 4 aptos + 2 PH) = 94 × 2
+- **Nomenclatura REAL en BD:** `{floor}{aptNum}{tower}` — ej. `11A` (piso 1 apt 1 torre A), `234B` (piso 23 apt 4 torre B), `PH1A`, `PH2B`
+- **Nomenclatura del CLIENTE (Excel):** `{tower}{floor:2}{apt}` — ej. `A011`, `A234`, `APH1`
+- **Mapeo Excel → BD:** ver `src/app/api/admin/reset-arrayanes/route.ts` (función `excelToSystem`)
 - **Cuota mensual:** USD 20
 - **10 propietarios de prueba** (datos reales — NO documentar nombres/emails específicos en este archivo público)
 
