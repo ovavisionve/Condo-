@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "🚀 Dev server (pnpm dev)",
+      "type": "shell",
+      "command": "pnpm dev",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔄 Prisma generate",
+      "type": "shell",
+      "command": "pnpm prisma generate",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔍 TypeScript check (tsc --noEmit)",
+      "type": "shell",
+      "command": "pnpm tsc --noEmit",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "📦 Install deps (pnpm install)",
+      "type": "shell",
+      "command": "pnpm install",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🚢 Deploy producción (vercel --prod)",
+      "type": "shell",
+      "command": "vercel deploy --prod",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🌐 Open Prisma Studio",
+      "type": "shell",
+      "command": "pnpm prisma studio",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    }
+  ]
+}
