@@ -65,10 +65,40 @@ export type CreateExpenseInput = {
   createdById: string;
 };
 
-/** Registra un gasto común. Aplica la tasa del día. */
+/**
+ * Registra un gasto común.
+ *
+ * La tasa de cambio se toma del día del comprobante (`receiptDate`), no del momento
+ * en que el admin lo registra en el sistema. Si no se provee `receiptDate`, se usa hoy.
+ *
+ * Además, bloquea el registro si ya se emitieron facturas para ese período: el admin
+ * debe usar `expenses.issueDirectCharge` (gasto individual) o anular las facturas y
+ * re-emitirlas. Excepción: gastos individuales (`isIndividual=true`) sí se permiten,
+ * porque tienen el flujo de cargo directo.
+ */
 export async function registerExpense(input: CreateExpenseInput) {
+  // Bloqueo #4: no aceptar gastos prorrateables después de emitir el recibo del período.
+  if (!input.isIndividual) {
+    const issued = await db.invoice.findFirst({
+      where: {
+        communityId: input.communityId,
+        periodYear: input.periodYear,
+        periodMonth: input.periodMonth,
+        status: { not: "VOIDED" },
+      },
+      select: { id: true },
+    });
+    if (issued) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. No se pueden añadir gastos comunes a un período cerrado. Marca el gasto como individual o anula las facturas para re-emitirlas.`,
+      });
+    }
+  }
+
   const source = input.exchangeSource ?? "BCV";
-  const rate = await getCurrentRate(source);
+  // La tasa debe ser la del día del gasto (receiptDate), no la del registro.
+  const rate = await getCurrentRate(source, input.receiptDate ?? new Date());
   const { amountBss, amountUsd } = buildBimonetary(input.amount, input.currencyPrimary, rate.vesPerUsd);
 
   return db.expense.create({

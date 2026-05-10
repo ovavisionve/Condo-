@@ -36,6 +36,31 @@ export default function AccountStatementPage() {
   const rate     = trpc.finance.exchange.current.useQuery({ organizationId });
   const todayRate = Number(rate.data?.vesPerUsd ?? 0);
   const unit = units.data?.find((u) => u.id === unitId);
+  const utils = trpc.useUtils();
+  const applyCredit = trpc.finance.applyUnitCredit.useMutation();
+  const creditUsd = Number(balance.data?.creditUsd ?? 0);
+  const debtUsd = Number(balance.data?.usd ?? 0);
+
+  const onApplyCredit = async () => {
+    if (creditUsd <= 0.005) return;
+    if (debtUsd <= 0.005) {
+      window.alert("Esta unidad no tiene deudas pendientes — el saldo a favor permanece como anticipo para recibos futuros.");
+      return;
+    }
+    if (!window.confirm(
+      `Aplicar saldo a favor ($${creditUsd.toFixed(2)}) a las facturas pendientes más antiguas de la unidad ${unit?.code}?`,
+    )) return;
+    try {
+      const r = await applyCredit.mutateAsync({ organizationId, unitId });
+      window.alert(`✅ Saldo aplicado a ${r.applied.length} factura(s):\n\n` +
+        r.applied.map(a => `• ${a.invoiceNumber} — ${a.usd !== "—" ? "$" + a.usd : a.bss + " Bs"}`).join("\n"));
+      void utils.finance.unitBalance.invalidate();
+      void utils.finance.invoices.list.invalidate();
+      void utils.finance.payments.list.invalidate();
+    } catch (e: unknown) {
+      window.alert("Error: " + (e instanceof Error ? e.message : "desconocido"));
+    }
+  };
 
   // Desglose de deuda por mes (solo recibos con pendiente)
   const debtByMonth = (invoices.data ?? [])
@@ -142,14 +167,14 @@ export default function AccountStatementPage() {
           <div className="grid gap-4 md:grid-cols-3">
             <div className="rounded-lg border bg-card p-4">
               <div className="text-sm text-muted-foreground">Saldo pendiente (USD)</div>
-              <div className={`text-3xl font-bold ${Number(balance.data?.usd ?? 0) > 0.005 ? "text-destructive" : "text-green-600"}`}>
-                ${Number(balance.data?.usd ?? 0).toFixed(2)}
+              <div className={`text-3xl font-bold ${debtUsd > 0.005 ? "text-destructive" : "text-green-600"}`}>
+                ${debtUsd.toFixed(2)}
               </div>
             </div>
             <div className="rounded-lg border bg-card p-4">
               <div className="text-sm text-muted-foreground">Equivalente Bs (hoy)</div>
-              <div className={`text-3xl font-bold ${Number(balance.data?.usd ?? 0) > 0.005 ? "text-destructive" : "text-green-600"}`}>
-                Bs {(Number(balance.data?.usd ?? 0) * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
+              <div className={`text-3xl font-bold ${debtUsd > 0.005 ? "text-destructive" : "text-green-600"}`}>
+                Bs {(debtUsd * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
               </div>
               <div className="text-xs text-muted-foreground mt-1">
                 {todayRate > 0 ? `Tasa BCV: ${todayRate.toFixed(2)} Bs/$` : "Cargando tasa..."}
@@ -165,6 +190,32 @@ export default function AccountStatementPage() {
               </div>
             </div>
           </div>
+
+          {/* Banner: Saldo a favor (anticipo) */}
+          {creditUsd > 0.005 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-amber-900">
+                  💰 Saldo a favor: ${creditUsd.toFixed(2)} USD
+                  <span className="ml-2 text-xs font-normal text-amber-700">
+                    (Bs {Number(balance.data?.creditBss ?? 0).toLocaleString("es-VE", { maximumFractionDigits: 2 })} reales)
+                  </span>
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Pagos recibidos de esta unidad sin asignar a recibos. Se pueden aplicar a recibos pendientes ordenados por antigüedad.
+                </p>
+              </div>
+              {debtUsd > 0.005 && (
+                <button
+                  onClick={onApplyCredit}
+                  disabled={applyCredit.isPending}
+                  className="shrink-0 rounded-md bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+                >
+                  {applyCredit.isPending ? "Aplicando…" : "✨ Aplicar a recibos pendientes"}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Vista: Estado de cuenta clásico */}
           {viewMode === "statement" && (

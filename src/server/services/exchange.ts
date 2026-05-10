@@ -27,12 +27,22 @@ const dateOnly = (d: Date): Date => {
   return x;
 };
 
-/** Intenta obtener la tasa más reciente para una fuente; si falta hoy, hace fetch. */
+/**
+ * Obtiene la tasa para una fecha específica.
+ *
+ * Reglas:
+ * - Si `forDate` es hoy o futuro: intenta cache → fetch BCV → fallback a la última disponible.
+ * - Si `forDate` es pasado: solo busca tasa cacheada para esa fecha exacta. Si no hay,
+ *   busca la tasa BCV/MANUAL más cercana ANTERIOR (no usa la tasa actual). Esto evita
+ *   que un pago/gasto retroactivo se registre con una tasa que no existía aún.
+ */
 export async function getCurrentRate(
   source: ExchangeSource = "BCV",
-  today: Date = new Date(),
+  forDate: Date = new Date(),
 ): Promise<RateInfo> {
-  const date = dateOnly(today);
+  const date = dateOnly(forDate);
+  const todayStart = dateOnly(new Date());
+  const isPastDate = date.getTime() < todayStart.getTime();
 
   const cached = await db.exchangeRate.findUnique({
     where: { date_source: { date, source } },
@@ -41,7 +51,9 @@ export async function getCurrentRate(
     return { date: cached.date, source: cached.source, vesPerUsd: new Decimal(cached.vesPerUsd) };
   }
 
-  if (source === "BCV") {
+  // Para fechas pasadas, NO hacemos fetch: la API solo devuelve la tasa actual,
+  // y guardarla bajo una fecha pasada distorsionaría la histórica.
+  if (!isPastDate && source === "BCV") {
     const fetched = await fetchBcvRate();
     if (fetched) {
       const saved = await db.exchangeRate.upsert({
@@ -53,11 +65,14 @@ export async function getCurrentRate(
     }
   }
 
-  // Fallback: la tasa más reciente disponible.
-  // Para BCV, también aceptamos MANUAL como respaldo (el admin pudo haberla ingresado).
+  // Fallback histórico: para fechas pasadas, la tasa más cercana ANTERIOR o IGUAL a esa fecha.
+  // Para fechas presentes/futuras sin cache ni fetch, la última tasa disponible.
   const sourceFallback = source === "BCV" ? { in: ["BCV", "MANUAL"] as ExchangeSource[] } : source;
   const latest = await db.exchangeRate.findFirst({
-    where: { source: sourceFallback },
+    where: {
+      source: sourceFallback,
+      ...(isPastDate ? { date: { lte: date } } : {}),
+    },
     orderBy: { date: "desc" },
   });
   if (latest) {
@@ -65,7 +80,7 @@ export async function getCurrentRate(
   }
 
   throw new Error(
-    `No hay tasa de cambio disponible. Registra una tasa manualmente en Finanzas → Configuración o presiona "Actualizar desde BCV".`,
+    `No hay tasa de cambio disponible para ${date.toISOString().slice(0, 10)}. Registra una tasa manualmente en Finanzas → Configuración o presiona "Actualizar desde BCV".`,
   );
 }
 

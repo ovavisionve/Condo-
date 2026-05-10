@@ -18,10 +18,26 @@ export type RecordPaymentInput = {
   paidAt: Date;
   bankAccountId?: string;
   notes?: string;
-  /** Asignación a facturas. Si está vacío, queda como anticipo (no aplicado). */
+  /**
+   * Asignación a facturas. Si está vacío, se intenta auto-asignar a las facturas
+   * pendientes de la unidad ordenadas por fecha de vencimiento (la más antigua primero).
+   * El sobrante después de cubrir todas las facturas queda como anticipo.
+   * Para forzar que todo el monto quede como anticipo, pasar `[]` y `autoAllocate=false`.
+   */
   allocations?: { invoiceId: string; amount: Decimal.Value }[];
+  /** Si true (default), aplica automáticamente a facturas más antiguas si no se proveen allocations. */
+  autoAllocate?: boolean;
   createdById: string;
 };
+
+/** Métodos de pago bancarios que requieren número de referencia obligatorio. */
+const METHODS_REQUIRING_REFERENCE: PaymentMethod[] = [
+  "TRANSFER_BSS",
+  "TRANSFER_USD",
+  "ZELLE",
+  "PAGO_MOVIL",
+  "CHECK",
+];
 
 /**
  * Registra un pago de una unidad. Si se proveen allocations:
@@ -32,6 +48,17 @@ export type RecordPaymentInput = {
  * Auditado y atómico.
  */
 export async function recordPayment(input: RecordPaymentInput) {
+  // #7: Referencia obligatoria para métodos bancarios.
+  if (METHODS_REQUIRING_REFERENCE.includes(input.method)) {
+    const ref = input.reference?.trim();
+    if (!ref) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `El número de referencia es obligatorio para pagos por ${input.method.replace("_", " ").toLowerCase()}.`,
+      });
+    }
+  }
+
   const source = input.exchangeSource ?? "BCV";
   const rate = await getCurrentRate(source, input.paidAt);
   const { amountBss, amountUsd } = buildBimonetary(
@@ -40,11 +67,44 @@ export async function recordPayment(input: RecordPaymentInput) {
     rate.vesPerUsd,
   );
 
+  // #11: Auto-asignar a las facturas más antiguas si no se proveen allocations explícitas.
+  const autoAllocate = input.autoAllocate ?? true;
+  let allocations = input.allocations;
+  if ((!allocations || allocations.length === 0) && autoAllocate) {
+    const pendingInvoices = await db.invoice.findMany({
+      where: {
+        organizationId: input.organizationId,
+        unitId: input.unitId,
+        status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+      },
+      orderBy: { dueDate: "asc" },
+      select: { id: true, totalBss: true, totalUsd: true, paidBss: true, paidUsd: true },
+    });
+    let remaining = new Decimal(input.amount);
+    const auto: { invoiceId: string; amount: Decimal.Value }[] = [];
+    const isPrimaryUsd = input.currencyPrimary === "USD";
+    for (const inv of pendingInvoices) {
+      if (remaining.lte(0)) break;
+      const total = isPrimaryUsd
+        ? new Decimal(inv.totalUsd.toString())
+        : new Decimal(inv.totalBss.toString());
+      const paid = isPrimaryUsd
+        ? new Decimal(inv.paidUsd.toString())
+        : new Decimal(inv.paidBss.toString());
+      const balance = total.minus(paid);
+      if (balance.lte(0)) continue;
+      const toApply = Decimal.min(remaining, balance);
+      auto.push({ invoiceId: inv.id, amount: toApply.toFixed(2) });
+      remaining = remaining.minus(toApply);
+    }
+    if (auto.length > 0) allocations = auto;
+  }
+
   // Validar que las allocations no excedan el monto total.
   // Si sum < total → el sobrante queda como anticipo (crédito para la unidad). OK.
   // Si sum > total → error, no se puede asignar más de lo recibido.
-  if (input.allocations && input.allocations.length > 0) {
-    const sumAlloc = input.allocations.reduce(
+  if (allocations && allocations.length > 0) {
+    const sumAlloc = allocations.reduce(
       (acc, a) => acc.plus(a.amount),
       new Decimal(0),
     );
@@ -83,8 +143,8 @@ export async function recordPayment(input: RecordPaymentInput) {
       },
     });
 
-    if (input.allocations && input.allocations.length > 0) {
-      for (const alloc of input.allocations) {
+    if (allocations && allocations.length > 0) {
+      for (const alloc of allocations) {
         const inv = await tx.invoice.findFirstOrThrow({
           where: { id: alloc.invoiceId, organizationId: input.organizationId },
         });
@@ -151,7 +211,10 @@ export async function recordPayment(input: RecordPaymentInput) {
           method: input.method,
           amount: new Decimal(input.amount).toString(),
           currency: input.currencyPrimary,
-          allocations: input.allocations?.length ?? 0,
+          allocations: allocations?.length ?? 0,
+          autoAllocated: !input.allocations || input.allocations.length === 0
+            ? (allocations?.length ?? 0) > 0
+            : false,
         },
       },
     });

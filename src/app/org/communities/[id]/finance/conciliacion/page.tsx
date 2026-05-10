@@ -77,6 +77,10 @@ interface PaymentForReconciliation {
   id: string;
   reference: string | null;
   amountUsd: string;
+  /** Bs reales que movió el pago el día de su registro (tasa histórica). */
+  amountBss: string;
+  exchangeRate: string;
+  currencyPrimary: "USD" | "VES";
   unitLabel: string;
   ownerName: string;
   paidAt: string;
@@ -272,6 +276,8 @@ const FORMAT_LABELS: Record<FileFormat, { label: string; icon: string; color: st
 
 // ─── Match engine ─────────────────────────────────────────────────────────────
 const TOLERANCE = 0.05;
+/** Tolerancia para matching por Bs (céntimos de bolívar redondeados). */
+const TOLERANCE_BS = 1;
 
 /**
  * Motor de conciliación venezolano.
@@ -280,7 +286,9 @@ const TOLERANCE = 0.05;
  *  1. Referencia exacta       — máxima confianza
  *  2. Referencia parcial      — dígitos finales/iniciales coinciden (inter-banco)
  *  3. Código de unidad        — "B-15C", "APT304", "304" en desc/ref del banco
- *  4. Por monto (Bs→USD)      — si hay tasa configurada, tolerancia 5%
+ *  4. Por monto en Bs         — compara directamente contra los Bs reales
+ *                               que movió el pago (tasa histórica). Esto evita
+ *                               falsos diff cuando la tasa BCV cambió después.
  *
  * Los débitos (comisiones, IGTF, etc.) NO se concilian contra pagos de residentes.
  *
@@ -351,24 +359,28 @@ function matchPayments(
       }
     }
 
-    // ── Paso 4: Por monto (Bs→USD) — requiere tasa configurada ──────────────
-    // Tolerancia: 5% del monto (cubre diferencias por comisiones, IGTF parcial, etc.)
-    if (!pay && rate > 0) {
-      const montoUsd = br.monto / rate;
+    // ── Paso 4: Por monto — Bs ↔ Bs directo (tasa histórica del pago) ───────
+    // Antes: br.monto/today_rate vs payment.amountUsd. Si el dólar se movió
+    // entre la fecha del pago y hoy, el match daba diff falso o no matcheaba.
+    // Ahora: comparar el Bs real del banco contra el Bs real almacenado del pago.
+    if (!pay) {
       pay = payments.find(p => {
         if (used.has(p.id)) return false;
-        const pUsd = Number(p.amountUsd);
-        const tol = Math.max(TOLERANCE, pUsd * 0.05);
-        return Math.abs(pUsd - montoUsd) <= tol;
+        const pBs = Number(p.amountBss);
+        if (!isFinite(pBs) || pBs <= 0) return false;
+        // Tolerancia: 0.5% del monto o 1 Bs, lo que sea mayor (cubre diferencias
+        // por redondeo del banco y comisiones IGTF de céntimos).
+        const tol = Math.max(TOLERANCE_BS, pBs * 0.005);
+        return Math.abs(pBs - br.monto) <= tol;
       });
       if (pay) matchType = "amount";
     }
 
     if (pay) {
       used.add(pay.id);
-      // diff en USD: si hay tasa se convierte, si no se deja vacío para no confundir
-      const montoUsd = rate > 0 ? br.monto / rate : null;
-      const diff = montoUsd !== null ? Math.abs(Number(pay.amountUsd) - montoUsd) : undefined;
+      // diff en Bs: ambos están en la misma unidad real (Bs que movió el banco
+      // vs Bs que el pago registró). Esto sí es comparable sin tasa de cambio.
+      const diff = Math.abs(Number(pay.amountBss) - br.monto);
       return { bankRow: br, matched: true, matchType, payment: pay, diff };
     }
     return { bankRow: br, matched: false, matchType: "none" };
@@ -837,29 +849,20 @@ export default function ConciliacionPage() {
                               </td>
                               <td className="py-2.5 px-3 text-right text-slate-300 text-xs">
                                 {r.payment ? (
-                                  displayInBs && rate > 0
-                                    ? <span className="text-emerald-300 font-semibold">Bs {formatBs(Number(r.payment.amountUsd) * rate)}</span>
-                                    : displayInBs
-                                      ? <span className="text-slate-300">${Number(r.payment.amountUsd).toFixed(2)} <span className="text-slate-600 text-[10px]">(sin tasa)</span></span>
-                                      : <span>${Number(r.payment.amountUsd).toFixed(2)}</span>
+                                  // Mostrar el Bs REAL del pago (tasa histórica), no la conversión a hoy.
+                                  // Eliminada la discrepancia que aparecía cuando el dólar se movía.
+                                  displayInBs
+                                    ? <span className="text-emerald-300 font-semibold">Bs {formatBs(Number(r.payment.amountBss))}</span>
+                                    : <span>${Number(r.payment.amountUsd).toFixed(2)}</span>
                                 ) : <span className="text-slate-600">—</span>}
                               </td>
                               <td className="py-2.5 px-3 text-right text-xs">
                                 {r.matched && r.diff !== undefined ? (
-                                  (() => {
-                                    if (displayInBs && rate > 0) {
-                                      // diff en Bs: |br.monto - p.amountUsd * rate|
-                                      const diffBs = Math.abs(r.bankRow.monto - Number(r.payment!.amountUsd) * rate);
-                                      return diffBs < 1
-                                        ? <span className="text-emerald-400">✓</span>
-                                        : <span className="text-amber-400">Bs {formatBs(diffBs)}</span>;
-                                    }
-                                    return r.diff < 0.01
-                                      ? <span className="text-emerald-400">✓</span>
-                                      : <span className="text-amber-400">${r.diff.toFixed(2)}</span>;
-                                  })()
-                                ) : r.matched && rate === 0 ? (
-                                  <span className="text-slate-500 text-[10px]">sin tasa</span>
+                                  // Diff en Bs: ambos son Bs reales (banco vs pago histórico).
+                                  // Sin conversión por tasa actual = sin distorsión.
+                                  r.diff < TOLERANCE_BS
+                                    ? <span className="text-emerald-400">✓</span>
+                                    : <span className="text-amber-400">Bs {formatBs(r.diff)}</span>
                                 ) : <span className="text-slate-600">—</span>}
                               </td>
                               {/* Feature 2 + 3: acciones */}
@@ -943,7 +946,12 @@ export default function ConciliacionPage() {
                               <td className="py-2 px-3 text-slate-300 text-xs font-mono">{p.reference ?? "—"}</td>
                               <td className="py-2 px-3 text-slate-300 text-xs">{p.ownerName}</td>
                               <td className="py-2 px-3 text-slate-400 text-xs">{p.unitLabel}</td>
-                              <td className="py-2 px-3 text-right text-white text-xs font-semibold">${Number(p.amountUsd).toFixed(2)}</td>
+                              <td className="py-2 px-3 text-right text-white text-xs font-semibold">
+                                {displayInBs
+                                  ? <>Bs {formatBs(Number(p.amountBss))}</>
+                                  : <>${Number(p.amountUsd).toFixed(2)}</>
+                                }
+                              </td>
                             </tr>
                           ))}
                         </tbody>

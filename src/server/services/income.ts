@@ -15,6 +15,8 @@ interface RegisterIncomeInput {
   exchangeSource: ExchangeSource;
   reference?: string;
   notes?: string;
+  /** Fecha real del ingreso (para tasa histórica). Default: hoy. */
+  receivedAt?: Date;
   /**
    * Si true, este ingreso reduce el total de gastos antes del prorrateo mensual.
    * Aparece como descuento en los recibos del período.
@@ -24,7 +26,9 @@ interface RegisterIncomeInput {
 }
 
 export async function registerIncome(input: RegisterIncomeInput) {
-  const rate = await getCurrentRate(input.exchangeSource === "MANUAL" ? "MANUAL" : "BCV");
+  const source = input.exchangeSource === "MANUAL" ? "MANUAL" : "BCV";
+  // Tasa del día del ingreso, no del registro.
+  const rate = await getCurrentRate(source, input.receivedAt ?? new Date());
   const vesPerUsd = Number(rate.vesPerUsd.toString());
 
   let amountUsd: number;

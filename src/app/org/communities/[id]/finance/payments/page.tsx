@@ -571,11 +571,19 @@ function NewPaymentDialog({
               </select>
             </div>
             <div>
-              <Label>Referencia (opcional)</Label>
+              <Label>
+                Referencia
+                {["TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CHECK"].includes(form.method) ? (
+                  <span className="text-destructive"> *</span>
+                ) : (
+                  <span className="text-muted-foreground"> (opcional)</span>
+                )}
+              </Label>
               <Input
                 value={form.reference}
                 onChange={(e) => setForm({ ...form, reference: e.target.value })}
                 placeholder="N° de transacción"
+                required={["TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CHECK"].includes(form.method)}
               />
             </div>
           </div>
