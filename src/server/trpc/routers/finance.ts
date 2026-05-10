@@ -498,8 +498,11 @@ export const financeRouter = router({
           paymentsApplied: inv.payments.map((pa) => ({
             paidAt: pa.payment.paidAt,
             method: pa.payment.method,
-            amountUsd: pa.payment.amountUsd.toString(),
-            amountBss: pa.payment.amountBss.toString(),
+            // Importante: el monto de la asignación (lo aplicado a ESTE recibo),
+            // no el monto total del pago. Si un pago de $100 se reparte como
+            // $30 a abril y $70 a mayo, en cada recibo aparece su porción.
+            amountUsd: pa.amountUsd.toString(),
+            amountBss: pa.amountBss.toString(),
             reference: pa.payment.reference,
           })),
           bankAccounts: bankAccounts.map((b) => ({
@@ -849,18 +852,27 @@ export const financeRouter = router({
         month: z.number().int().min(1).max(12),
       }))
       .query(async ({ ctx, input }) => {
-        const [expenses, units, existing] = await Promise.all([
+        const { prorate } = await import("@/lib/proration");
+
+        const [expenses, units, existing, community, deductibleIncomes] = await Promise.all([
           ctx.db.expense.findMany({
             where: {
               communityId: input.communityId,
               periodYear: input.year,
               periodMonth: input.month,
+              invoicedAt: null,
+              voidedAt: null,
             },
-            select: { id: true, description: true, category: true, customCategory: true, amountUsd: true, amountBss: true },
+            select: {
+              id: true, description: true, category: true, customCategory: true,
+              amountUsd: true, amountBss: true,
+              isIndividual: true, targetUnitId: true, towerScope: true,
+            },
           }),
           ctx.db.unit.findMany({
             where: { communityId: input.communityId, active: true, deletedAt: null },
-            select: { id: true, code: true, aliquot: true },
+            select: { id: true, code: true, aliquot: true, tower: true },
+            orderBy: { code: "asc" },
           }),
           ctx.db.invoice.count({
             where: {
@@ -870,28 +882,124 @@ export const financeRouter = router({
               status: { not: "VOIDED" },
             },
           }),
+          ctx.db.community.findFirstOrThrow({
+            where: { id: input.communityId, organizationId: input.organizationId },
+            select: { monthlyFeeUsd: true },
+          }),
+          ctx.db.income.findMany({
+            where: {
+              communityId: input.communityId,
+              periodYear: input.year,
+              periodMonth: input.month,
+              affectsInvoice: true,
+              voidedAt: null,
+            },
+            select: { amountUsd: true, amountBss: true, description: true, customCategory: true, category: true },
+          }),
         ]);
 
         const totalExpensesUsd = expenses.reduce((s, e) => s + Number(e.amountUsd), 0);
         const totalExpensesBss = expenses.reduce((s, e) => s + Number(e.amountBss), 0);
+        const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s + Number(i.amountUsd), 0);
 
-        // Muestra solo una distribución simple (alícuota × total)
-        const unitPreviews = units.slice(0, 20).map((u) => ({
-          unitCode: u.code,
-          aliquot: Number(u.aliquot).toFixed(4),
-          estimatedUsd: (totalExpensesUsd * Number(u.aliquot) / 100).toFixed(2),
-        }));
+        // Replicar el cálculo real de issueMonthlyInvoices para que el preview
+        // coincida exactamente con lo que se va a emitir.
+        const individualExpenses = expenses.filter((e) => e.isIndividual && e.targetUnitId);
+        const towerExpenses = expenses.filter((e) => !e.isIndividual && e.towerScope);
+        const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+        const generalUsd = generalExpenses.reduce((s, e) => s + Number(e.amountUsd), 0);
+        const deductionFactor = generalUsd > 0
+          ? Math.min(totalIncomeDeductionUsd / generalUsd, 1)
+          : 0;
+
+        const feeUsd = community.monthlyFeeUsd ? Number(community.monthlyFeeUsd) : 0;
+
+        const unitTotals = new Map<string, { usd: number; bss: number; lines: { desc: string; usd: number }[] }>();
+        for (const u of units) unitTotals.set(u.id, { usd: 0, bss: 0, lines: [] });
+
+        // 1. Individuales
+        for (const exp of individualExpenses) {
+          if (!exp.targetUnitId) continue;
+          const t = unitTotals.get(exp.targetUnitId);
+          if (!t) continue;
+          const u = Number(exp.amountUsd);
+          const b = Number(exp.amountBss);
+          t.usd += u; t.bss += b;
+          t.lines.push({ desc: `${exp.customCategory ?? exp.description} (individual)`, usd: u });
+        }
+
+        // 2. Por torre
+        for (const exp of towerExpenses) {
+          const towerUnits = units.filter((u) => u.tower === exp.towerScope);
+          if (towerUnits.length === 0) continue;
+          const participants = towerUnits.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
+          const usdDist = prorate(Number(exp.amountUsd).toFixed(2), participants);
+          const bssDist = prorate(Number(exp.amountBss).toFixed(2), participants);
+          for (const u of towerUnits) {
+            const t = unitTotals.get(u.id)!;
+            const uu = Number(usdDist.get(u.id)?.toString() ?? 0);
+            const bb = Number(bssDist.get(u.id)?.toString() ?? 0);
+            t.usd += uu; t.bss += bb;
+            t.lines.push({ desc: `${exp.customCategory ?? exp.description} (Torre ${exp.towerScope})`, usd: uu });
+          }
+        }
+
+        // 3. Generales (con descuento por ingresos)
+        const participants = units.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
+        for (const exp of generalExpenses) {
+          const adjUsd = Number(exp.amountUsd) * (1 - deductionFactor);
+          const adjBss = Number(exp.amountBss) * (1 - deductionFactor);
+          const usdDist = prorate(adjUsd.toFixed(2), participants);
+          const bssDist = prorate(adjBss.toFixed(2), participants);
+          for (const u of units) {
+            const t = unitTotals.get(u.id)!;
+            const uu = Number(usdDist.get(u.id)?.toString() ?? 0);
+            const bb = Number(bssDist.get(u.id)?.toString() ?? 0);
+            t.usd += uu; t.bss += bb;
+            if (uu > 0) t.lines.push({ desc: exp.customCategory ?? exp.description, usd: uu });
+          }
+        }
+
+        // 4. Cuota mensual
+        if (feeUsd > 0) {
+          for (const u of units) {
+            const t = unitTotals.get(u.id)!;
+            t.usd += feeUsd;
+            t.lines.push({ desc: "Cuota de condominio mensual", usd: feeUsd });
+          }
+        }
+
+        const unitPreviews = units.map((u) => {
+          const t = unitTotals.get(u.id)!;
+          return {
+            unitCode: u.code,
+            tower: u.tower,
+            aliquot: Number(u.aliquot).toFixed(4),
+            totalUsd: t.usd.toFixed(2),
+            totalBss: t.bss.toFixed(2),
+            lineCount: t.lines.length,
+          };
+        });
+
+        const grandTotalUsd = unitPreviews.reduce((s, u) => s + Number(u.totalUsd), 0);
 
         return {
           expenses: expenses.map(e => ({
             description: e.customCategory ?? e.description,
             amountUsd: Number(e.amountUsd).toFixed(2),
             amountBss: Number(e.amountBss).toFixed(2),
+            scope: e.isIndividual ? "individual" : e.towerScope ? `torre ${e.towerScope}` : "general",
           })),
           totalExpensesUsd: totalExpensesUsd.toFixed(2),
           totalExpensesBss: totalExpensesBss.toFixed(2),
+          incomeDeduction: {
+            totalUsd: totalIncomeDeductionUsd.toFixed(2),
+            count: deductibleIncomes.length,
+          },
+          monthlyFeeUsd: feeUsd.toFixed(2),
           unitCount: units.length,
           unitPreviews,
+          grandTotalUsd: grandTotalUsd.toFixed(2),
           alreadyIssued: existing > 0,
         };
       }),
@@ -1034,6 +1142,12 @@ export const financeRouter = router({
           id: p.id,
           reference: p.reference,
           amountUsd: p.amountUsd.toString(),
+          // Bs reales que movió el pago en su momento (tasa histórica), para
+          // conciliar contra el extracto bancario sin distorsión por movimientos
+          // posteriores del dólar.
+          amountBss: p.amountBss.toString(),
+          exchangeRate: p.exchangeRate.toString(),
+          currencyPrimary: p.currencyPrimary,
           paidAt: p.paidAt.toISOString(),
           unitLabel: p.unit.code,
           ownerName: p.unit.ownerships[0]
@@ -1603,7 +1717,158 @@ export const financeRouter = router({
         }),
         { bss: new Decimal(0), usd: new Decimal(0) },
       );
-      return { bss: balance.bss.toFixed(2), usd: balance.usd.toFixed(2) };
+
+      // Saldo a favor (anticipo): sumas de pagos no asignados a ninguna factura.
+      // Para cada pago no anulado: amount - sum(allocations) = porción no aplicada.
+      const payments = await ctx.db.payment.findMany({
+        where: { unitId: input.unitId, voidedAt: null },
+        select: {
+          amountBss: true, amountUsd: true,
+          allocations: { select: { amountBss: true, amountUsd: true } },
+        },
+      });
+      const credit = payments.reduce(
+        (acc, p) => {
+          const allocBss = p.allocations.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+          const allocUsd = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const remBss = new Decimal(p.amountBss.toString()).minus(allocBss);
+          const remUsd = new Decimal(p.amountUsd.toString()).minus(allocUsd);
+          return {
+            bss: acc.bss.plus(Decimal.max(remBss, 0)),
+            usd: acc.usd.plus(Decimal.max(remUsd, 0)),
+          };
+        },
+        { bss: new Decimal(0), usd: new Decimal(0) },
+      );
+
+      return {
+        bss: balance.bss.toFixed(2),
+        usd: balance.usd.toFixed(2),
+        creditBss: credit.bss.toFixed(2),
+        creditUsd: credit.usd.toFixed(2),
+      };
+    }),
+
+  /**
+   * Aplica el saldo a favor de una unidad a sus facturas pendientes
+   * más antiguas (FIFO por dueDate). Genera un PaymentAllocation por
+   * cada factura cubierta. No mueve dinero — solo asigna el anticipo
+   * existente. Retorna el detalle de lo aplicado.
+   */
+  applyUnitCredit: orgProcedure
+    .input(orgIdInput.extend({ unitId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.$transaction(async (tx) => {
+        // 1. Encontrar pagos con porción no asignada (anticipo)
+        const payments = await tx.payment.findMany({
+          where: { unitId: input.unitId, voidedAt: null, organizationId: input.organizationId },
+          include: { allocations: { select: { amountBss: true, amountUsd: true } } },
+          orderBy: { paidAt: "asc" },
+        });
+
+        const creditByPayment: { id: string; remBss: Decimal; remUsd: Decimal; currencyPrimary: "USD" | "VES" }[] = [];
+        for (const p of payments) {
+          const allocBss = p.allocations.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+          const allocUsd = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const remBss = new Decimal(p.amountBss.toString()).minus(allocBss);
+          const remUsd = new Decimal(p.amountUsd.toString()).minus(allocUsd);
+          if (remUsd.gt(0.005)) {
+            creditByPayment.push({ id: p.id, remBss, remUsd, currencyPrimary: p.currencyPrimary as "USD" | "VES" });
+          }
+        }
+
+        if (creditByPayment.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Esta unidad no tiene saldo a favor." });
+        }
+
+        // 2. Encontrar facturas pendientes ordenadas por dueDate ASC (FIFO)
+        const pending = await tx.invoice.findMany({
+          where: {
+            unitId: input.unitId,
+            organizationId: input.organizationId,
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+          },
+          orderBy: { dueDate: "asc" },
+          select: { id: true, invoiceNumber: true, currencyPrimary: true, totalBss: true, totalUsd: true, paidBss: true, paidUsd: true },
+        });
+
+        const applied: { invoiceNumber: string; usd: string; bss: string }[] = [];
+
+        for (const inv of pending) {
+          const invIsUsd = inv.currencyPrimary === "USD";
+          const totalPrim = new Decimal((invIsUsd ? inv.totalUsd : inv.totalBss).toString());
+          const paidPrim = new Decimal((invIsUsd ? inv.paidUsd : inv.paidBss).toString());
+          let invBalance = totalPrim.minus(paidPrim);
+          if (invBalance.lte(0)) continue;
+
+          // Consumir crédito por orden
+          for (const c of creditByPayment) {
+            if (invBalance.lte(0)) break;
+            const cAmount = invIsUsd ? c.remUsd : c.remBss;
+            if (cAmount.lte(0.005)) continue;
+            const toApply = Decimal.min(cAmount, invBalance);
+            // Calcular bss/usd a partir del que estamos consumiendo (proporcional)
+            const ratio = toApply.div(cAmount);
+            const allocUsd = c.remUsd.mul(ratio);
+            const allocBss = c.remBss.mul(ratio);
+
+            await tx.paymentAllocation.create({
+              data: {
+                paymentId: c.id,
+                invoiceId: inv.id,
+                amountBss: allocBss.toFixed(2),
+                amountUsd: allocUsd.toFixed(2),
+              },
+            });
+
+            c.remUsd = c.remUsd.minus(allocUsd);
+            c.remBss = c.remBss.minus(allocBss);
+            invBalance = invBalance.minus(toApply);
+          }
+
+          // Recalcular paid del invoice y status
+          const updatedAllocs = await tx.paymentAllocation.findMany({
+            where: { invoiceId: inv.id }, select: { amountBss: true, amountUsd: true },
+          });
+          const newPaidBss = updatedAllocs.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+          const newPaidUsd = updatedAllocs.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const newPaidPrim = invIsUsd ? newPaidUsd : newPaidBss;
+          const status = newPaidPrim.gte(totalPrim) ? "PAID" : newPaidPrim.gt(0) ? "PARTIAL" : "ISSUED";
+
+          await tx.invoice.update({
+            where: { id: inv.id },
+            data: {
+              paidBss: newPaidBss.toFixed(2),
+              paidUsd: newPaidUsd.toFixed(2),
+              status,
+            },
+          });
+
+          const appliedAmount = totalPrim.minus(paidPrim).minus(invBalance);
+          applied.push({
+            invoiceNumber: inv.invoiceNumber,
+            usd: invIsUsd ? appliedAmount.toFixed(2) : "—",
+            bss: invIsUsd ? "—" : appliedAmount.toFixed(2),
+          });
+        }
+
+        if (applied.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No hay facturas pendientes a las que aplicar el saldo." });
+        }
+
+        await tx.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Unit",
+            entityId: input.unitId,
+            after: { event: "CREDIT_APPLIED", invoicesAffected: applied.length, applied },
+          },
+        });
+
+        return { applied };
+      });
     }),
 
   // ─── Importación masiva ────────────────────────────────────────────────────
