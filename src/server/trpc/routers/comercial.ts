@@ -4,7 +4,9 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { Decimal } from "@prisma/client/runtime/library";
 import { router, orgProcedure, publicProcedure } from "@/server/trpc/init";
+import { getCurrentRate } from "@/server/services/exchange";
 
 const orgIdInput = z.object({ organizationId: z.string() });
 
@@ -466,26 +468,61 @@ export const comercialRouter = router({
             "HVAC", "ASCENSORES", "MARKETING", "ADMINISTRACION", "MANTENIMIENTO",
             "SEGUROS", "NOMINA_STAFF", "IMPUESTOS", "FONDO_RESERVA", "OTHER",
           ]),
-          customCategory: z.string().optional(),
-          description: z.string().min(2),
+          customCategory: z.string().max(100).optional(),
+          description: z.string().min(2).max(500),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          amountUsd: z.coerce.number().positive(),
-          amountBss: z.coerce.number().positive(),
-          exchangeRate: z.coerce.number().positive(),
+          /** Monto en la moneda primaria. La tasa y conversión se calculan en el server. */
+          amount: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
-          supplierName: z.string().optional(),
-          invoiceNumber: z.string().optional(),
+          supplierName: z.string().max(200).optional(),
+          invoiceNumber: z.string().max(50).optional(),
+          /** Fecha del comprobante. Se usa para tomar la tasa de cambio correcta. */
           receiptDate: z.coerce.date().optional(),
-          notes: z.string().optional(),
+          notes: z.string().max(500).optional(),
           isIndividual: z.boolean().default(false),
           targetLocalId: z.string().optional(),
         }),
       )
-      .mutation(({ ctx, input }) => {
-        const { organizationId, ...data } = input;
-        return ctx.db.ccExpense.create({ data: { ...data, organizationId } });
+      .mutation(async ({ ctx, input }) => {
+        // #4 — Bloqueo: si ya hay facturas no anuladas del período, no permitir gastos prorrateables.
+        if (!input.isIndividual) {
+          const issued = await ctx.db.ccInvoice.findFirst({
+            where: {
+              mallId: input.mallId,
+              organizationId: input.organizationId,
+              periodYear: input.periodYear,
+              periodMonth: input.periodMonth,
+              status: { not: "VOIDED" },
+            },
+            select: { id: true },
+          });
+          if (issued) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. No se pueden añadir gastos comunes a un período cerrado. Marca el gasto como individual o anula las facturas para re-emitirlas.`,
+            });
+          }
+        }
+
+        // #2 — Tasa de cambio según la fecha del comprobante, no del registro.
+        const rate = await getCurrentRate(input.exchangeSource, input.receiptDate ?? new Date());
+        const amount = new Decimal(input.amount);
+        const isPrimaryUsd = input.currencyPrimary === "USD";
+        const amountUsd = isPrimaryUsd ? amount : amount.div(rate.vesPerUsd);
+        const amountBss = isPrimaryUsd ? amount.mul(rate.vesPerUsd) : amount;
+
+        const { organizationId, amount: _a, ...rest } = input;
+        return ctx.db.ccExpense.create({
+          data: {
+            ...rest,
+            organizationId,
+            amountUsd: amountUsd.toFixed(2),
+            amountBss: amountBss.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
+          },
+        });
       }),
 
     void: orgProcedure
@@ -529,23 +566,39 @@ export const comercialRouter = router({
             "PUBLICIDAD_INTERNA", "ALQUILER_ESPACIO", "ESTACIONAMIENTO",
             "PATROCINIOS", "INTERESES", "PENALIDADES", "OTHER",
           ]),
-          customCategory: z.string().optional(),
-          description: z.string().min(2),
+          customCategory: z.string().max(100).optional(),
+          description: z.string().min(2).max(500),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          amountUsd: z.coerce.number().positive(),
-          amountBss: z.coerce.number().positive(),
-          exchangeRate: z.coerce.number().positive(),
+          /** Monto en la moneda primaria. Tasa calculada server-side. */
+          amount: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
-          reference: z.string().optional(),
+          /** Fecha real del hecho económico (cobro recibido). Se usa para la tasa. */
+          receivedAt: z.coerce.date().optional(),
+          reference: z.string().max(100).optional(),
           affectsInvoice: z.boolean().default(false),
-          notes: z.string().optional(),
+          notes: z.string().max(500).optional(),
         }),
       )
-      .mutation(({ ctx, input }) => {
-        const { organizationId, ...data } = input;
-        return ctx.db.ccIncome.create({ data: { ...data, organizationId } });
+      .mutation(async ({ ctx, input }) => {
+        // #2 — Tasa según la fecha del cobro recibido, no del registro.
+        const rate = await getCurrentRate(input.exchangeSource, input.receivedAt ?? new Date());
+        const amount = new Decimal(input.amount);
+        const isPrimaryUsd = input.currencyPrimary === "USD";
+        const amountUsd = isPrimaryUsd ? amount : amount.div(rate.vesPerUsd);
+        const amountBss = isPrimaryUsd ? amount.mul(rate.vesPerUsd) : amount;
+
+        const { organizationId, amount: _a, ...rest } = input;
+        return ctx.db.ccIncome.create({
+          data: {
+            ...rest,
+            organizationId,
+            amountUsd: amountUsd.toFixed(2),
+            amountBss: amountBss.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
+          },
+        });
       }),
 
     void: orgProcedure
@@ -596,20 +649,27 @@ export const comercialRouter = router({
           localId: z.string(),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          amountUsd: z.coerce.number().positive(),
-          amountBss: z.coerce.number().positive(),
-          exchangeRate: z.coerce.number().positive(),
+          /** Monto en moneda primaria. Tasa calculada server-side. */
+          amount: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
           type: z.enum(["CANON", "CANON_SALES", "ALIQUOT", "EXTRA_FEE", "FINE", "OTHER"]).default("CANON"),
           description: z.string().default("Canon de arrendamiento"),
           dueDaysAfterIssue: z.number().int().min(1).default(5),
-          notes: z.string().optional(),
+          notes: z.string().max(500).optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
         const now = new Date();
         const dueDate = new Date(now.getTime() + input.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
+
+        // #2 — Tasa según fecha de emisión (hoy).
+        const rate = await getCurrentRate(input.exchangeSource, now);
+        const amount = new Decimal(input.amount);
+        const isPrimaryUsd = input.currencyPrimary === "USD";
+        const amountUsd = isPrimaryUsd ? amount : amount.div(rate.vesPerUsd);
+        const amountBss = isPrimaryUsd ? amount.mul(rate.vesPerUsd) : amount;
+
         const count = await ctx.db.ccInvoice.count({ where: { mallId: input.mallId } });
         const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
 
@@ -624,17 +684,17 @@ export const comercialRouter = router({
             periodMonth: input.periodMonth,
             issuedAt: now,
             dueDate,
-            totalBss: input.amountBss,
-            totalUsd: input.amountUsd,
-            exchangeRate: input.exchangeRate,
+            totalBss: amountBss.toFixed(2),
+            totalUsd: amountUsd.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
             exchangeSource: input.exchangeSource,
             currencyPrimary: input.currencyPrimary,
             notes: input.notes,
             items: {
               create: {
                 description: input.description,
-                amountBss: input.amountBss,
-                amountUsd: input.amountUsd,
+                amountBss: amountBss.toFixed(2),
+                amountUsd: amountUsd.toFixed(2),
               },
             },
           },
@@ -647,18 +707,119 @@ export const comercialRouter = router({
       }),
 
     // Emitir canon a TODOS los locales activos del mall de un período
+    /**
+     * #3 — Vista previa de emisión: lista cada local con canon activo y su monto
+     * a facturar para el período, sin crear nada. Usado por el wizard antes de
+     * confirmar la emisión masiva.
+     */
+    previewMonth: orgProcedure
+      .input(orgIdInput.extend({
+        mallId: z.string(),
+        periodYear: z.number().int(),
+        periodMonth: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        // 1. Detectar si ya hay facturas no anuladas del período (bloqueo)
+        const existing = await ctx.db.ccInvoice.count({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            periodYear: input.periodYear,
+            periodMonth: input.periodMonth,
+            type: { in: ["CANON", "CANON_SALES"] },
+            status: { not: "VOIDED" },
+          },
+        });
+        const alreadyIssued = existing > 0;
+
+        // 2. Locales con tenancy activa y canon fijo/mixto
+        const locales = await ctx.db.ccLocal.findMany({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            active: true,
+            deletedAt: null,
+            canonType: { in: ["FIXED", "MIXED"] },
+            tenancies: { some: { endDate: null } },
+          },
+          include: {
+            tenancies: {
+              where: { endDate: null },
+              take: 1,
+              select: { tenantName: true, tenantEmail: true },
+            },
+          },
+          orderBy: [{ floor: "asc" }, { code: "asc" }],
+        });
+
+        // 3. Tasa para hoy (sirve como referencia visual; la real se aplica al emitir)
+        const rate = await getCurrentRate("BCV", new Date());
+
+        const rows = locales
+          .filter((l) => l.canonUsd && Number(l.canonUsd) > 0)
+          .map((l) => {
+            const canonUsd = new Decimal(l.canonUsd!.toString());
+            const canonBss = canonUsd.mul(rate.vesPerUsd);
+            return {
+              localId: l.id,
+              code: l.code,
+              name: l.name ?? null,
+              floor: l.floor ?? null,
+              tenantName: l.tenancies[0]?.tenantName ?? "(sin contrato activo)",
+              canonUsd: canonUsd.toFixed(2),
+              canonBss: canonBss.toFixed(2),
+            };
+          });
+
+        const totalUsd = rows.reduce((s, r) => s.plus(r.canonUsd), new Decimal(0));
+        const totalBss = rows.reduce((s, r) => s.plus(r.canonBss), new Decimal(0));
+
+        return {
+          period: { year: input.periodYear, month: input.periodMonth },
+          alreadyIssued,
+          rate: rate.vesPerUsd.toFixed(4),
+          rateDate: rate.date.toISOString().slice(0, 10),
+          rows,
+          summary: {
+            localesToInvoice: rows.length,
+            totalUsd: totalUsd.toFixed(2),
+            totalBss: totalBss.toFixed(2),
+          },
+        };
+      }),
+
     bulkIssueCanon: orgProcedure
       .input(
         orgIdInput.extend({
           mallId: z.string(),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          exchangeRate: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           dueDaysAfterIssue: z.number().int().min(1).default(5),
         }),
       )
       .mutation(async ({ ctx, input }) => {
+        // #3 — Bloquear si ya hay facturas no anuladas del período.
+        const existingCount = await ctx.db.ccInvoice.count({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            periodYear: input.periodYear,
+            periodMonth: input.periodMonth,
+            type: { in: ["CANON", "CANON_SALES"] },
+            status: { not: "VOIDED" },
+          },
+        });
+        if (existingCount > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. Anula las facturas existentes para re-emitirlas.`,
+          });
+        }
+
+        // #2 — Tasa según la fecha de emisión (hoy), calculada server-side.
+        const issuedAtRate = await getCurrentRate(input.exchangeSource, new Date());
+        const exchangeRateNum = Number(issuedAtRate.vesPerUsd.toString());
         // Obtener locales con arrendatario activo y canon fijo o mixto
         const locales = await ctx.db.ccLocal.findMany({
           where: {
@@ -700,7 +861,7 @@ export const comercialRouter = router({
             const count = await ctx.db.ccInvoice.count({ where: { mallId: input.mallId } });
             const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
             const amountUsd = Number(local.canonUsd);
-            const amountBss = amountUsd * input.exchangeRate;
+            const amountBss = amountUsd * exchangeRateNum;
             const description = `Canon de arrendamiento — ${new Date(input.periodYear, input.periodMonth - 1).toLocaleDateString("es-VE", { month: "long", year: "numeric" })}`;
 
             const createdInvoice = await ctx.db.ccInvoice.create({
@@ -716,7 +877,7 @@ export const comercialRouter = router({
                 dueDate,
                 totalBss: amountBss,
                 totalUsd: amountUsd,
-                exchangeRate: input.exchangeRate,
+                exchangeRate: exchangeRateNum,
                 exchangeSource: input.exchangeSource,
                 currencyPrimary: "USD",
                 items: {
@@ -751,7 +912,7 @@ export const comercialRouter = router({
                   totalUsd: String(amountUsd),
                   totalBss: String(amountBss),
                   paidUsd: "0",
-                  exchangeRate: String(input.exchangeRate),
+                  exchangeRate: String(exchangeRateNum),
                   status: "ISSUED",
                 });
                 await sendEmail({ to: tenancy.tenantEmail, subject: emailData.subject, html: emailData.html, text: emailData.text });
@@ -769,7 +930,10 @@ export const comercialRouter = router({
       }),
 
     void: orgProcedure
-      .input(orgIdInput.extend({ invoiceId: z.string(), voidReason: z.string().max(500).optional() }))
+      .input(orgIdInput.extend({
+        invoiceId: z.string(),
+        voidReason: z.string().min(3, "El motivo debe tener al menos 3 caracteres").max(500),
+      }))
       .mutation(async ({ ctx, input }) => {
         // Aislamiento multi-tenant: validar que la factura pertenece a la org del actor.
         const invoice = await ctx.db.ccInvoice.findFirst({
@@ -985,56 +1149,87 @@ export const comercialRouter = router({
         orgIdInput.extend({
           mallId: z.string(),
           localId: z.string(),
-          amountUsd: z.coerce.number().positive(),
-          amountBss: z.coerce.number().positive(),
-          exchangeRate: z.coerce.number().positive(),
+          /** Monto en la moneda primaria. Tasa y conversión se calculan server-side desde paidAt. */
+          amount: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
           method: z.enum(["CASH_BSS", "CASH_USD", "TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CRYPTO", "CHECK", "OTHER"]),
-          reference: z.string().optional(),
+          reference: z.string().max(100).optional(),
           paidAt: z.coerce.date(),
-          notes: z.string().optional(),
+          notes: z.string().max(500).optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const { organizationId, ...data } = input;
+        // #7 — Referencia obligatoria para métodos bancarios.
+        const METHODS_REQUIRING_REFERENCE = ["TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CHECK"] as const;
+        if ((METHODS_REQUIRING_REFERENCE as readonly string[]).includes(input.method)) {
+          const ref = input.reference?.trim();
+          if (!ref) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `El número de referencia es obligatorio para pagos por ${input.method.replace("_", " ").toLowerCase()}.`,
+            });
+          }
+        }
 
+        // #2 — Tasa de cambio según la fecha real del pago.
+        const rate = await getCurrentRate(input.exchangeSource, input.paidAt);
+        const amount = new Decimal(input.amount);
+        const isPrimaryUsd = input.currencyPrimary === "USD";
+        const amountUsd = isPrimaryUsd ? amount : amount.div(rate.vesPerUsd);
+        const amountBss = isPrimaryUsd ? amount.mul(rate.vesPerUsd) : amount;
+
+        // #11 — Auto-asignación FIFO por fecha de vencimiento (la más antigua primero).
         const pendingInvoices = await ctx.db.ccInvoice.findMany({
           where: {
+            organizationId: input.organizationId,
             localId: input.localId,
             status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
           },
           orderBy: { dueDate: "asc" },
         });
 
-        let remaining = input.amountUsd;
-        const allocations: Array<{ invoiceId: string; localId: string; amountBss: number; amountUsd: number }> = [];
-
+        let remaining = amountUsd;
+        const allocations: Array<{ invoiceId: string; localId: string; amountBss: string; amountUsd: string }> = [];
         for (const inv of pendingInvoices) {
-          if (remaining <= 0) break;
-          const pendingUsd = Number(inv.totalUsd) - Number(inv.paidUsd);
-          if (pendingUsd <= 0) continue;
-          const apply = Math.min(remaining, pendingUsd);
-          allocations.push({ invoiceId: inv.id, localId: input.localId, amountBss: apply * input.exchangeRate, amountUsd: apply });
-          remaining -= apply;
+          if (remaining.lte(0)) break;
+          const pendingUsd = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+          if (pendingUsd.lte(0)) continue;
+          const apply = Decimal.min(remaining, pendingUsd);
+          const applyBss = apply.mul(rate.vesPerUsd);
+          allocations.push({
+            invoiceId: inv.id,
+            localId: input.localId,
+            amountUsd: apply.toFixed(2),
+            amountBss: applyBss.toFixed(2),
+          });
+          remaining = remaining.minus(apply);
         }
 
+        const { organizationId, amount: _a, ...rest } = input;
         const payment = await ctx.db.ccPayment.create({
-          data: { ...data, organizationId, allocations: { create: allocations } },
+          data: {
+            ...rest,
+            organizationId,
+            amountUsd: amountUsd.toFixed(2),
+            amountBss: amountBss.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
+            allocations: { create: allocations },
+          },
           include: { local: { select: { code: true, name: true } } },
         });
 
         for (const alloc of allocations) {
           const inv = pendingInvoices.find((i) => i.id === alloc.invoiceId)!;
-          const newPaidUsd = Number(inv.paidUsd) + alloc.amountUsd;
-          const newPaidBss = Number(inv.paidBss) + alloc.amountBss;
+          const newPaidUsd = new Decimal(inv.paidUsd.toString()).plus(alloc.amountUsd);
+          const newPaidBss = new Decimal(inv.paidBss.toString()).plus(alloc.amountBss);
           const newStatus =
-            newPaidUsd >= Number(inv.totalUsd) - 0.001 ? "PAID"
-            : newPaidUsd > 0 ? "PARTIAL"
+            newPaidUsd.gte(new Decimal(inv.totalUsd.toString()).minus("0.001")) ? "PAID"
+            : newPaidUsd.gt(0) ? "PARTIAL"
             : "ISSUED";
           await ctx.db.ccInvoice.update({
             where: { id: inv.id },
-            data: { paidUsd: newPaidUsd, paidBss: newPaidBss, status: newStatus },
+            data: { paidUsd: newPaidUsd.toFixed(2), paidBss: newPaidBss.toFixed(2), status: newStatus },
           });
         }
 
@@ -1071,6 +1266,146 @@ export const comercialRouter = router({
           where: { id: input.paymentId },
           data: { voidedAt: new Date(), voidReason: input.voidReason },
         });
+      }),
+
+    /** #9 — Saldo a favor (anticipo) del local: suma de pagos no asignados a facturas. */
+    localBalance: orgProcedure
+      .input(orgIdInput.extend({ localId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const payments = await ctx.db.ccPayment.findMany({
+          where: {
+            organizationId: input.organizationId,
+            localId: input.localId,
+            voidedAt: null,
+          },
+          select: {
+            amountUsd: true,
+            amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        let creditUsd = new Decimal(0);
+        let creditBss = new Decimal(0);
+        for (const p of payments) {
+          const allocUsd = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const allocBss = p.allocations.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+          const remUsd = new Decimal(p.amountUsd.toString()).minus(allocUsd);
+          const remBss = new Decimal(p.amountBss.toString()).minus(allocBss);
+          if (remUsd.gt(0)) creditUsd = creditUsd.plus(remUsd);
+          if (remBss.gt(0)) creditBss = creditBss.plus(remBss);
+        }
+        return {
+          creditUsd: creditUsd.toFixed(2),
+          creditBss: creditBss.toFixed(2),
+        };
+      }),
+
+    /**
+     * #9 — Aplicar el saldo a favor (anticipos no asignados) a las facturas pendientes
+     * más antiguas del local (FIFO por dueDate). Genera PaymentAllocation por cada match.
+     */
+    applyLocalCredit: orgProcedure
+      .input(orgIdInput.extend({ localId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        // 1. Pagos del local con saldo no asignado
+        const payments = await ctx.db.ccPayment.findMany({
+          where: {
+            organizationId: input.organizationId,
+            localId: input.localId,
+            voidedAt: null,
+          },
+          include: { allocations: { select: { amountBss: true, amountUsd: true } } },
+          orderBy: { paidAt: "asc" },
+        });
+
+        // 2. Facturas pendientes ordenadas por dueDate ASC (FIFO)
+        const pendingInvoices = await ctx.db.ccInvoice.findMany({
+          where: {
+            organizationId: input.organizationId,
+            localId: input.localId,
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+          },
+          orderBy: { dueDate: "asc" },
+        });
+
+        let creditUsd = new Decimal(0);
+        const paymentsWithCredit: Array<{ id: string; creditUsd: Decimal; rate: Decimal }> = [];
+        for (const p of payments) {
+          const allocUsd = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const rem = new Decimal(p.amountUsd.toString()).minus(allocUsd);
+          if (rem.gt(0)) {
+            paymentsWithCredit.push({
+              id: p.id,
+              creditUsd: rem,
+              rate: new Decimal(p.exchangeRate.toString()),
+            });
+            creditUsd = creditUsd.plus(rem);
+          }
+        }
+
+        if (creditUsd.lte(0) || pendingInvoices.length === 0) {
+          return { applied: 0, totalAppliedUsd: "0.00", invoicesUpdated: 0 };
+        }
+
+        let appliedCount = 0;
+        let totalApplied = new Decimal(0);
+        const invoicesUpdated = new Set<string>();
+
+        for (const pay of paymentsWithCredit) {
+          let remaining = pay.creditUsd;
+          for (const inv of pendingInvoices) {
+            if (remaining.lte(0)) break;
+            const pendingUsd = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+            if (pendingUsd.lte(0)) continue;
+            const toApply = Decimal.min(remaining, pendingUsd);
+            const toApplyBss = toApply.mul(pay.rate);
+
+            await ctx.db.ccPaymentAllocation.create({
+              data: {
+                paymentId: pay.id,
+                invoiceId: inv.id,
+                localId: input.localId,
+                amountUsd: toApply.toFixed(2),
+                amountBss: toApplyBss.toFixed(2),
+              },
+            });
+
+            // Actualizar paidUsd/paidBss/status de la factura
+            const updatedAllocs = await ctx.db.ccPaymentAllocation.findMany({
+              where: { invoiceId: inv.id },
+              select: { amountUsd: true, amountBss: true },
+            });
+            const newPaidUsd = updatedAllocs.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+            const newPaidBss = updatedAllocs.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+            const newStatus =
+              newPaidUsd.gte(new Decimal(inv.totalUsd.toString()).minus("0.001")) ? "PAID"
+              : newPaidUsd.gt(0) ? "PARTIAL"
+              : "ISSUED";
+            await ctx.db.ccInvoice.update({
+              where: { id: inv.id },
+              data: {
+                paidUsd: newPaidUsd.toFixed(2),
+                paidBss: newPaidBss.toFixed(2),
+                status: newStatus,
+              },
+            });
+
+            // Reflejar en memoria para próxima iteración del mismo `pendingInvoices`
+            inv.paidUsd = newPaidUsd as never;
+            inv.paidBss = newPaidBss as never;
+
+            appliedCount++;
+            invoicesUpdated.add(inv.id);
+            totalApplied = totalApplied.plus(toApply);
+            remaining = remaining.minus(toApply);
+          }
+        }
+
+        return {
+          applied: appliedCount,
+          totalAppliedUsd: totalApplied.toFixed(2),
+          invoicesUpdated: invoicesUpdated.size,
+        };
       }),
   }),
 

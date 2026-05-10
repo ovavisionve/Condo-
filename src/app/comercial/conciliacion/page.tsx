@@ -21,11 +21,18 @@ interface CcPaymentMin {
   id: string;
   reference: string | null;
   amountUsd: string;
+  /** #10/#13 — Bs reales del pago (tasa histórica, no la de hoy). */
+  amountBss: string;
+  exchangeRate: string;
+  currencyPrimary: string;
   localCode: string;
   localName: string | null;
   method: string;
   paidAt: string;
 }
+
+/** Tolerancia mínima de match por Bs (1 bolívar). Para montos grandes se usa 0.5%. */
+const TOLERANCE_BS = 1;
 
 interface MatchResult {
   bankRow: BankRow;
@@ -167,7 +174,15 @@ function matchPayments(bankRows: BankRow[], payments: CcPaymentMin[]): MatchResu
     }
 
     if (!p) {
-      p = payments.find((x) => !used.has(x.id) && Math.abs(Number(x.amountUsd) - br.monto) <= 0.05);
+      // #10/#13 — Match por monto comparando Bs↔Bs directo (tasa histórica del pago).
+      // El extracto bancario viene en Bs reales; el pago almacena los Bs reales que movió.
+      p = payments.find((x) => {
+        if (used.has(x.id)) return false;
+        const pBs = Number(x.amountBss);
+        if (!isFinite(pBs) || pBs <= 0) return false;
+        const tol = Math.max(TOLERANCE_BS, pBs * 0.005);
+        return Math.abs(pBs - br.monto) <= tol;
+      });
       if (p) mt = "amount";
     }
 
@@ -211,6 +226,9 @@ export default function ConciliacionCcPage() {
     id: p.id,
     reference: p.reference,
     amountUsd: p.amountUsd.toString(),
+    amountBss: p.amountBss.toString(),
+    exchangeRate: p.exchangeRate.toString(),
+    currencyPrimary: p.currencyPrimary,
     localCode: p.local?.code ?? "—",
     localName: p.local?.name ?? null,
     method: p.method,
