@@ -47,7 +47,7 @@ export default function PagosPage() {
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const [pendingNotifId, setPendingNotifId] = useState<string | null>(null);
   const [form, setForm] = useState({
-    localId: "", amountUsd: "", exchangeRate: "",
+    localId: "", amountUsd: "",
     method: "TRANSFER_USD", reference: "", paidAt: new Date().toISOString().split("T")[0]!, notes: "",
   });
 
@@ -64,7 +64,7 @@ export default function PagosPage() {
         setPendingNotifId(null);
       }
       setShowNew(false);
-      setForm({ localId: "", amountUsd: "", exchangeRate: "", method: "TRANSFER_USD", reference: "", paidAt: new Date().toISOString().split("T")[0]!, notes: "" });
+      setForm({ localId: "", amountUsd: "", method: "TRANSFER_USD", reference: "", paidAt: new Date().toISOString().split("T")[0]!, notes: "" });
     },
   });
 
@@ -72,16 +72,17 @@ export default function PagosPage() {
     onSuccess: () => { void paymentsQ.refetch(); setVoidingId(null); },
   });
 
+  /** #7 — Métodos que requieren referencia bancaria obligatoria. */
+  const REQUIRES_REF = ["TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CHECK"];
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const rate = parseFloat(form.exchangeRate) || rateToday;
+    // #2 — Tasa y conversión las calcula el server según paidAt.
     await recordMut.mutateAsync({
       organizationId: selectedOrgId,
       mallId,
       localId: form.localId,
-      amountUsd: parseFloat(form.amountUsd),
-      amountBss: parseFloat(form.amountUsd) * rate,
-      exchangeRate: rate,
+      amount: parseFloat(form.amountUsd),
       exchangeSource: "BCV",
       currencyPrimary: "USD",
       method: form.method as "TRANSFER_USD",
@@ -97,7 +98,6 @@ export default function PagosPage() {
     setForm({
       localId: n.localId,
       amountUsd: String(n.amountUsd),
-      exchangeRate: "",
       method: n.method,
       reference: n.reference ?? "",
       paidAt: new Date(n.fechaPago).toISOString().split("T")[0]!,
@@ -258,8 +258,9 @@ export default function PagosPage() {
                   <Input type="number" value={form.amountUsd} onChange={(e) => setForm({ ...form, amountUsd: e.target.value })} placeholder="500.00" required />
                 </div>
                 <div className="space-y-1">
-                  <Label>Tasa BCV</Label>
-                  <Input type="number" value={form.exchangeRate || rateToday.toFixed(2)} onChange={(e) => setForm({ ...form, exchangeRate: e.target.value })} step="0.01" />
+                  <Label>Fecha de pago *</Label>
+                  <Input type="date" value={form.paidAt} onChange={(e) => setForm({ ...form, paidAt: e.target.value })} required />
+                  <p className="text-xs text-muted-foreground">Tasa BCV de la fecha (hoy: {rateToday.toFixed(2)}).</p>
                 </div>
                 <div className="space-y-1">
                   <Label>Método *</Label>
@@ -268,14 +269,18 @@ export default function PagosPage() {
                     {Object.entries(METHOD_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                   </select>
                 </div>
-                <div className="space-y-1">
-                  <Label>Fecha de pago *</Label>
-                  <Input type="date" value={form.paidAt} onChange={(e) => setForm({ ...form, paidAt: e.target.value })} required />
-                </div>
               </div>
               <div className="space-y-1">
-                <Label>Referencia / Comprobante</Label>
-                <Input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} placeholder="N° de transferencia" />
+                <Label>
+                  Referencia / Comprobante
+                  {REQUIRES_REF.includes(form.method) && <span className="text-destructive"> *</span>}
+                </Label>
+                <Input
+                  value={form.reference}
+                  onChange={(e) => setForm({ ...form, reference: e.target.value })}
+                  placeholder="N° de transferencia"
+                  required={REQUIRES_REF.includes(form.method)}
+                />
               </div>
               <div className="space-y-1">
                 <Label>Notas</Label>

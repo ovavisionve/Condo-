@@ -39,21 +39,21 @@ export default function GastosPage() {
 
   const [form, setForm] = useState({
     category: "ELECTRICIDAD", customCategory: "", description: "",
-    amountUsd: "", exchangeRate: "", supplierName: "", invoiceNumber: "", notes: "",
+    amountUsd: "", receiptDate: "", supplierName: "", invoiceNumber: "", notes: "",
   });
 
   const createMut = trpc.comercial.expenses.create.useMutation({
     onSuccess: () => {
       void gastosQ.refetch();
       setShowNew(false);
-      setForm({ category: "ELECTRICIDAD", customCategory: "", description: "", amountUsd: "", exchangeRate: "", supplierName: "", invoiceNumber: "", notes: "" });
+      setForm({ category: "ELECTRICIDAD", customCategory: "", description: "", amountUsd: "", receiptDate: "", supplierName: "", invoiceNumber: "", notes: "" });
     },
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const rate = parseFloat(form.exchangeRate) || rateToday;
     const amtUsd = parseFloat(form.amountUsd);
+    // #2 — La tasa la calcula el server según receiptDate. Aquí solo enviamos el monto.
     await createMut.mutateAsync({
       organizationId: selectedOrgId,
       mallId,
@@ -62,11 +62,10 @@ export default function GastosPage() {
       description: form.description,
       periodYear,
       periodMonth,
-      amountUsd: amtUsd,
-      amountBss: amtUsd * rate,
-      exchangeRate: rate,
+      amount: amtUsd,
       exchangeSource: "BCV",
       currencyPrimary: "USD",
+      receiptDate: form.receiptDate ? new Date(form.receiptDate) : undefined,
       supplierName: form.supplierName || undefined,
       invoiceNumber: form.invoiceNumber || undefined,
       notes: form.notes || undefined,
@@ -167,8 +166,9 @@ export default function GastosPage() {
                   <Input type="number" value={form.amountUsd} onChange={(e) => setForm({ ...form, amountUsd: e.target.value })} placeholder="1200.00" required />
                 </div>
                 <div className="space-y-1">
-                  <Label>Tasa BCV</Label>
-                  <Input type="number" value={form.exchangeRate || rateToday.toFixed(2)} onChange={(e) => setForm({ ...form, exchangeRate: e.target.value })} step="0.01" />
+                  <Label>Fecha del comprobante</Label>
+                  <Input type="date" value={form.receiptDate} onChange={(e) => setForm({ ...form, receiptDate: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">La tasa BCV se toma de esta fecha (tasa de hoy: {rateToday.toFixed(2)}).</p>
                 </div>
                 <div className="space-y-1">
                   <Label>Proveedor</Label>
