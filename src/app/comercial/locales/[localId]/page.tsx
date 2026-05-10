@@ -44,6 +44,24 @@ export default function LocalDetailPage({ params }: { params: { localId: string 
   const exchangeQ = trpc.finance.exchange.current.useQuery({ organizationId: selectedOrgId });
   const rateToday = exchangeQ.data?.vesPerUsd ? Number(exchangeQ.data.vesPerUsd) : 1;
 
+  // #9 — Saldo a favor del local
+  const balanceQ = trpc.comercial.payments.localBalance.useQuery({ organizationId: selectedOrgId, localId });
+  const creditUsd = Number(balanceQ.data?.creditUsd ?? 0);
+  const creditBss = Number(balanceQ.data?.creditBss ?? 0);
+
+  const applyCreditMut = trpc.comercial.payments.applyLocalCredit.useMutation({
+    onSuccess: (r) => {
+      void localQ.refetch();
+      void balanceQ.refetch();
+      alert(`Saldo a favor aplicado: $${r.totalAppliedUsd} en ${r.invoicesUpdated} factura(s).`);
+    },
+  });
+  const onApplyCredit = () => {
+    if (creditUsd <= 0.005) return;
+    if (!confirm(`Aplicar saldo a favor ($${creditUsd.toFixed(2)}) a las facturas pendientes más antiguas del local ${local?.code}?`)) return;
+    applyCreditMut.mutate({ organizationId: selectedOrgId, localId });
+  };
+
   const terminateMut = trpc.comercial.tenancies.terminate.useMutation({
     onSuccess: () => { void localQ.refetch(); setShowTerminate(false); },
   });
@@ -202,6 +220,28 @@ export default function LocalDetailPage({ params }: { params: { localId: string 
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* #9 — Banner saldo a favor */}
+      {creditUsd > 0.005 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-amber-900">
+              💰 Saldo a favor: ${creditUsd.toFixed(2)} USD
+              <span className="ml-2 text-xs text-amber-700">(Bs {creditBss.toFixed(2)} reales)</span>
+            </p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Pagos recibidos sin asignar a facturas. Se pueden aplicar a facturas pendientes ordenadas por antigüedad.
+            </p>
+          </div>
+          <button
+            onClick={onApplyCredit}
+            disabled={applyCreditMut.isPending}
+            className="rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-3 py-2 disabled:opacity-50 whitespace-nowrap"
+          >
+            {applyCreditMut.isPending ? "Aplicando…" : "✨ Aplicar a facturas"}
+          </button>
+        </div>
       )}
 
       {/* Tabs */}
