@@ -649,20 +649,27 @@ export const comercialRouter = router({
           localId: z.string(),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          amountUsd: z.coerce.number().positive(),
-          amountBss: z.coerce.number().positive(),
-          exchangeRate: z.coerce.number().positive(),
+          /** Monto en moneda primaria. Tasa calculada server-side. */
+          amount: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
           type: z.enum(["CANON", "CANON_SALES", "ALIQUOT", "EXTRA_FEE", "FINE", "OTHER"]).default("CANON"),
           description: z.string().default("Canon de arrendamiento"),
           dueDaysAfterIssue: z.number().int().min(1).default(5),
-          notes: z.string().optional(),
+          notes: z.string().max(500).optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
         const now = new Date();
         const dueDate = new Date(now.getTime() + input.dueDaysAfterIssue * 24 * 60 * 60 * 1000);
+
+        // #2 — Tasa según fecha de emisión (hoy).
+        const rate = await getCurrentRate(input.exchangeSource, now);
+        const amount = new Decimal(input.amount);
+        const isPrimaryUsd = input.currencyPrimary === "USD";
+        const amountUsd = isPrimaryUsd ? amount : amount.div(rate.vesPerUsd);
+        const amountBss = isPrimaryUsd ? amount.mul(rate.vesPerUsd) : amount;
+
         const count = await ctx.db.ccInvoice.count({ where: { mallId: input.mallId } });
         const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
 
@@ -677,17 +684,17 @@ export const comercialRouter = router({
             periodMonth: input.periodMonth,
             issuedAt: now,
             dueDate,
-            totalBss: input.amountBss,
-            totalUsd: input.amountUsd,
-            exchangeRate: input.exchangeRate,
+            totalBss: amountBss.toFixed(2),
+            totalUsd: amountUsd.toFixed(2),
+            exchangeRate: rate.vesPerUsd.toFixed(8),
             exchangeSource: input.exchangeSource,
             currencyPrimary: input.currencyPrimary,
             notes: input.notes,
             items: {
               create: {
                 description: input.description,
-                amountBss: input.amountBss,
-                amountUsd: input.amountUsd,
+                amountBss: amountBss.toFixed(2),
+                amountUsd: amountUsd.toFixed(2),
               },
             },
           },
@@ -700,18 +707,119 @@ export const comercialRouter = router({
       }),
 
     // Emitir canon a TODOS los locales activos del mall de un período
+    /**
+     * #3 — Vista previa de emisión: lista cada local con canon activo y su monto
+     * a facturar para el período, sin crear nada. Usado por el wizard antes de
+     * confirmar la emisión masiva.
+     */
+    previewMonth: orgProcedure
+      .input(orgIdInput.extend({
+        mallId: z.string(),
+        periodYear: z.number().int(),
+        periodMonth: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        // 1. Detectar si ya hay facturas no anuladas del período (bloqueo)
+        const existing = await ctx.db.ccInvoice.count({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            periodYear: input.periodYear,
+            periodMonth: input.periodMonth,
+            type: { in: ["CANON", "CANON_SALES"] },
+            status: { not: "VOIDED" },
+          },
+        });
+        const alreadyIssued = existing > 0;
+
+        // 2. Locales con tenancy activa y canon fijo/mixto
+        const locales = await ctx.db.ccLocal.findMany({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            active: true,
+            deletedAt: null,
+            canonType: { in: ["FIXED", "MIXED"] },
+            tenancies: { some: { endDate: null } },
+          },
+          include: {
+            tenancies: {
+              where: { endDate: null },
+              take: 1,
+              select: { tenantName: true, tenantEmail: true },
+            },
+          },
+          orderBy: [{ floor: "asc" }, { code: "asc" }],
+        });
+
+        // 3. Tasa para hoy (sirve como referencia visual; la real se aplica al emitir)
+        const rate = await getCurrentRate("BCV", new Date());
+
+        const rows = locales
+          .filter((l) => l.canonUsd && Number(l.canonUsd) > 0)
+          .map((l) => {
+            const canonUsd = new Decimal(l.canonUsd!.toString());
+            const canonBss = canonUsd.mul(rate.vesPerUsd);
+            return {
+              localId: l.id,
+              code: l.code,
+              name: l.name ?? null,
+              floor: l.floor ?? null,
+              tenantName: l.tenancies[0]?.tenantName ?? "(sin contrato activo)",
+              canonUsd: canonUsd.toFixed(2),
+              canonBss: canonBss.toFixed(2),
+            };
+          });
+
+        const totalUsd = rows.reduce((s, r) => s.plus(r.canonUsd), new Decimal(0));
+        const totalBss = rows.reduce((s, r) => s.plus(r.canonBss), new Decimal(0));
+
+        return {
+          period: { year: input.periodYear, month: input.periodMonth },
+          alreadyIssued,
+          rate: rate.vesPerUsd.toFixed(4),
+          rateDate: rate.date.toISOString().slice(0, 10),
+          rows,
+          summary: {
+            localesToInvoice: rows.length,
+            totalUsd: totalUsd.toFixed(2),
+            totalBss: totalBss.toFixed(2),
+          },
+        };
+      }),
+
     bulkIssueCanon: orgProcedure
       .input(
         orgIdInput.extend({
           mallId: z.string(),
           periodYear: z.number().int(),
           periodMonth: z.number().int().min(1).max(12),
-          exchangeRate: z.coerce.number().positive(),
           exchangeSource: z.enum(["BCV", "BINANCE_P2P", "MANUAL"]).default("BCV"),
           dueDaysAfterIssue: z.number().int().min(1).default(5),
         }),
       )
       .mutation(async ({ ctx, input }) => {
+        // #3 — Bloquear si ya hay facturas no anuladas del período.
+        const existingCount = await ctx.db.ccInvoice.count({
+          where: {
+            mallId: input.mallId,
+            organizationId: input.organizationId,
+            periodYear: input.periodYear,
+            periodMonth: input.periodMonth,
+            type: { in: ["CANON", "CANON_SALES"] },
+            status: { not: "VOIDED" },
+          },
+        });
+        if (existingCount > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. Anula las facturas existentes para re-emitirlas.`,
+          });
+        }
+
+        // #2 — Tasa según la fecha de emisión (hoy), calculada server-side.
+        const issuedAtRate = await getCurrentRate(input.exchangeSource, new Date());
+        const exchangeRateNum = Number(issuedAtRate.vesPerUsd.toString());
         // Obtener locales con arrendatario activo y canon fijo o mixto
         const locales = await ctx.db.ccLocal.findMany({
           where: {
@@ -753,7 +861,7 @@ export const comercialRouter = router({
             const count = await ctx.db.ccInvoice.count({ where: { mallId: input.mallId } });
             const invoiceNumber = `${input.periodYear}-${String(input.periodMonth).padStart(2, "0")}-${String(count + 1).padStart(4, "0")}`;
             const amountUsd = Number(local.canonUsd);
-            const amountBss = amountUsd * input.exchangeRate;
+            const amountBss = amountUsd * exchangeRateNum;
             const description = `Canon de arrendamiento — ${new Date(input.periodYear, input.periodMonth - 1).toLocaleDateString("es-VE", { month: "long", year: "numeric" })}`;
 
             const createdInvoice = await ctx.db.ccInvoice.create({
@@ -769,7 +877,7 @@ export const comercialRouter = router({
                 dueDate,
                 totalBss: amountBss,
                 totalUsd: amountUsd,
-                exchangeRate: input.exchangeRate,
+                exchangeRate: exchangeRateNum,
                 exchangeSource: input.exchangeSource,
                 currencyPrimary: "USD",
                 items: {
@@ -804,7 +912,7 @@ export const comercialRouter = router({
                   totalUsd: String(amountUsd),
                   totalBss: String(amountBss),
                   paidUsd: "0",
-                  exchangeRate: String(input.exchangeRate),
+                  exchangeRate: String(exchangeRateNum),
                   status: "ISSUED",
                 });
                 await sendEmail({ to: tenancy.tenantEmail, subject: emailData.subject, html: emailData.html, text: emailData.text });

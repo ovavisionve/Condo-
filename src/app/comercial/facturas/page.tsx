@@ -97,16 +97,14 @@ export default function FacturasPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const rate = parseFloat(form.exchangeRate) || rateToday;
+    // #2 — Tasa calculada server-side desde la fecha de emisión.
     await issueMut.mutateAsync({
       organizationId: selectedOrgId,
       mallId,
       localId: form.localId,
       periodYear,
       periodMonth,
-      amountUsd: parseFloat(form.amountUsd),
-      amountBss: parseFloat(form.amountUsd) * rate,
-      exchangeRate: rate,
+      amount: parseFloat(form.amountUsd),
       type: form.type as "CANON",
       description: form.description,
       dueDaysAfterIssue: parseInt(form.dueDaysAfterIssue),
@@ -339,7 +337,6 @@ export default function FacturasPage() {
                   mallId,
                   periodYear,
                   periodMonth,
-                  exchangeRate: rateToday,
                   dueDaysAfterIssue: parseInt(bulkDueDays) || 5,
                 })}>
                 {bulkMut.isPending ? "Emitiendo..." : "✓ Confirmar emisión"}
