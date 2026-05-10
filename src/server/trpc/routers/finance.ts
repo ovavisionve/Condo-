@@ -1893,10 +1893,6 @@ export const financeRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const rate = await getCurrentRate("BCV");
-      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
-      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
-
       let created = 0;
       let skipped = 0;
       const errors: string[] = [];
@@ -1905,17 +1901,29 @@ export const financeRouter = router({
         const row = input.rows[i]!;
         try {
           const amountUsd = new Decimal(row.amountUsd);
-          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
-          const amountBss = row.amountBss != null
-            ? new Decimal(row.amountBss)
-            : amountUsd.mul(effectiveRate);
-          const effectiveSrc: import("@prisma/client").ExchangeSource = row.exchangeRate ? "MANUAL" : src;
 
           let receiptDate: Date | null = null;
           if (row.receiptDate) {
             const d = new Date(row.receiptDate);
             if (!isNaN(d.getTime())) receiptDate = d;
           }
+
+          // #2 — Tasa según la fecha del comprobante de cada fila, no la de hoy.
+          // Si la fila trae exchangeRate explícito (override manual), usar ése.
+          let effectiveRate: Decimal;
+          let effectiveSrc: import("@prisma/client").ExchangeSource;
+          if (row.exchangeRate) {
+            effectiveRate = new Decimal(row.exchangeRate);
+            effectiveSrc = "MANUAL";
+          } else {
+            const r = await getCurrentRate("BCV", receiptDate ?? new Date());
+            effectiveRate = new Decimal(r?.vesPerUsd ?? "1");
+            effectiveSrc = (r?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+          }
+
+          const amountBss = row.amountBss != null
+            ? new Decimal(row.amountBss)
+            : amountUsd.mul(effectiveRate);
 
           await ctx.db.expense.create({
             data: {
@@ -1963,10 +1971,6 @@ export const financeRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const rate = await getCurrentRate("BCV");
-      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
-      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
-
       const units = await ctx.db.unit.findMany({
         where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
         select: { id: true, code: true },
@@ -2007,8 +2011,18 @@ export const financeRouter = router({
           seqBase++;
           const invoiceNumber = `IMP-${String(seqBase).padStart(6, "0")}`;
           const totalUsd = new Decimal(row.totalUsd);
-          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
-          const effectiveSrc: import("@prisma/client").ExchangeSource = row.exchangeRate ? "MANUAL" : src;
+
+          // #2 — Tasa según fecha de emisión de cada factura, no la de hoy.
+          let effectiveRate: Decimal;
+          let effectiveSrc: import("@prisma/client").ExchangeSource;
+          if (row.exchangeRate) {
+            effectiveRate = new Decimal(row.exchangeRate);
+            effectiveSrc = "MANUAL";
+          } else {
+            const r = await getCurrentRate("BCV", issuedAt);
+            effectiveRate = new Decimal(r?.vesPerUsd ?? "1");
+            effectiveSrc = (r?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+          }
           const totalBss = row.totalBss != null
             ? new Decimal(row.totalBss)
             : totalUsd.mul(effectiveRate);
@@ -2080,10 +2094,6 @@ export const financeRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const rate = await getCurrentRate("BCV");
-      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
-      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
-
       const units = await ctx.db.unit.findMany({
         where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
         select: { id: true, code: true },
@@ -2111,7 +2121,18 @@ export const financeRouter = router({
           }
 
           const amountUsd = new Decimal(row.amountUsd);
-          const effectiveRate = row.exchangeRate ? new Decimal(row.exchangeRate) : rateVal;
+
+          // #2 — Tasa según paidAt de cada fila, no la de hoy.
+          let effectiveRate: Decimal;
+          let effectiveSrc: import("@prisma/client").ExchangeSource;
+          if (row.exchangeRate) {
+            effectiveRate = new Decimal(row.exchangeRate);
+            effectiveSrc = "MANUAL";
+          } else {
+            const r = await getCurrentRate("BCV", paidAt);
+            effectiveRate = new Decimal(r?.vesPerUsd ?? "1");
+            effectiveSrc = (r?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+          }
           const amountBss = row.amountBss != null ? new Decimal(row.amountBss) : amountUsd.mul(effectiveRate);
 
           // Inserción directa (importación histórica — sin notificaciones)
@@ -2123,7 +2144,7 @@ export const financeRouter = router({
               amountUsd: amountUsd.toFixed(2),
               amountBss: amountBss.toFixed(2),
               exchangeRate: effectiveRate.toFixed(8),
-              exchangeSource: (row.exchangeRate ? "MANUAL" : src) as import("@prisma/client").ExchangeSource,
+              exchangeSource: effectiveSrc,
               currencyPrimary: "USD",
               method: row.method,
               reference: row.reference ?? null,
@@ -2174,10 +2195,6 @@ export const financeRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const rate = await getCurrentRate("BCV");
-      const rateVal = new Decimal(rate?.vesPerUsd ?? "1");
-      const src = (rate?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
-
       // Cargar mapa de unidades
       const units = await ctx.db.unit.findMany({
         where: { communityId: input.communityId, organizationId: input.organizationId, deletedAt: null },
@@ -2280,17 +2297,28 @@ export const financeRouter = router({
           if (row.deudaUsd > 0) {
             const totalUsd = new Decimal(row.deudaUsd);
             const paidUsd  = new Decimal(row.pagadoUsd);
-            const effectiveRate = row.tasa ? new Decimal(row.tasa) : rateVal;
-            const effectiveSrc: import("@prisma/client").ExchangeSource = row.tasa ? "MANUAL" : src;
-            const totalBss = row.deudaBs != null
-              ? new Decimal(row.deudaBs)
-              : totalUsd.mul(effectiveRate);
-            const paidBss  = paidUsd.mul(effectiveRate);
 
             // Fecha de vencimiento: la indicada o hace 1 mes (ya vencida por ser histórica)
             const dueDate = row.fechaVence
               ? new Date(row.fechaVence)
               : (() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d; })();
+
+            // #2 — Tasa según fecha de la deuda (dueDate), no la de hoy.
+            let effectiveRate: Decimal;
+            let effectiveSrc: import("@prisma/client").ExchangeSource;
+            if (row.tasa) {
+              effectiveRate = new Decimal(row.tasa);
+              effectiveSrc = "MANUAL";
+            } else {
+              const r = await getCurrentRate("BCV", dueDate);
+              effectiveRate = new Decimal(r?.vesPerUsd ?? "1");
+              effectiveSrc = (r?.source ?? "MANUAL") as import("@prisma/client").ExchangeSource;
+            }
+
+            const totalBss = row.deudaBs != null
+              ? new Decimal(row.deudaBs)
+              : totalUsd.mul(effectiveRate);
+            const paidBss  = paidUsd.mul(effectiveRate);
 
             const pending = totalUsd.minus(paidUsd);
             const status: import("@prisma/client").InvoiceStatus =

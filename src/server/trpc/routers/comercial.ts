@@ -2306,7 +2306,17 @@ export const comercialRouter = router({
             });
             if (!local) { errors.push(`Local "${row.localCode}": no encontrado`); continue; }
 
-            const rate = row.exchangeRate ?? 1;
+            // #2 — Tasa según paidAt de cada fila (no fallback a 1).
+            let rate: number;
+            let rateSource: "BCV" | "MANUAL";
+            if (row.exchangeRate) {
+              rate = row.exchangeRate;
+              rateSource = "MANUAL";
+            } else {
+              const r = await getCurrentRate("BCV", row.paidAt);
+              rate = Number(r.vesPerUsd.toString());
+              rateSource = r.source === "BINANCE_P2P" ? "BCV" : (r.source as "BCV" | "MANUAL");
+            }
             const amountBss = row.amountUsd * rate;
 
             // Buscar facturas pendientes oldest-first
@@ -2335,7 +2345,7 @@ export const comercialRouter = router({
                 amountUsd: row.amountUsd,
                 amountBss,
                 exchangeRate: rate,
-                exchangeSource: "MANUAL",
+                exchangeSource: rateSource,
                 currencyPrimary: "USD",
                 method: row.method,
                 reference: row.reference,
@@ -2414,9 +2424,19 @@ export const comercialRouter = router({
             });
             if (existing) { skipped++; continue; }
 
-            const rate = row.exchangeRate ?? 1;
-            const amountBss = row.amountUsd * rate;
+            // #2 — Tasa según issuedAt de cada factura (no fallback a 1).
             const issuedAt = row.issuedAt ?? new Date();
+            let rate: number;
+            let rateSource: "BCV" | "MANUAL";
+            if (row.exchangeRate) {
+              rate = row.exchangeRate;
+              rateSource = "MANUAL";
+            } else {
+              const r = await getCurrentRate("BCV", issuedAt);
+              rate = Number(r.vesPerUsd.toString());
+              rateSource = r.source === "BINANCE_P2P" ? "BCV" : (r.source as "BCV" | "MANUAL");
+            }
+            const amountBss = row.amountUsd * rate;
             const dueDate = row.dueDate ?? new Date(issuedAt.getTime() + 5 * 24 * 60 * 60 * 1000);
 
             const count = await ctx.db.ccInvoice.count({ where: { mallId } });
@@ -2447,7 +2467,7 @@ export const comercialRouter = router({
                 paidUsd,
                 paidBss,
                 exchangeRate: rate,
-                exchangeSource: "MANUAL",
+                exchangeSource: rateSource,
                 currencyPrimary: "USD",
                 status,
                 items: { create: { description, amountBss, amountUsd: row.amountUsd } },
@@ -2491,7 +2511,15 @@ export const comercialRouter = router({
             });
             if (!local) { errors.push(`Local "${row.localCode}": no encontrado`); continue; }
 
-            const rate = row.exchangeRate ?? 1;
+            // #2 — Tasa según el fin del período declarado (no fallback a 1).
+            let rate: number;
+            if (row.exchangeRate) {
+              rate = row.exchangeRate;
+            } else {
+              const periodEnd = new Date(row.periodYear, row.periodMonth, 0); // último día del mes
+              const r = await getCurrentRate("BCV", periodEnd);
+              rate = Number(r.vesPerUsd.toString());
+            }
             const salesAmountBss = row.salesAmountBss ?? row.salesAmountUsd * rate;
 
             const existing = await ctx.db.ccSalesDeclaration.findUnique({
@@ -2558,7 +2586,18 @@ export const comercialRouter = router({
 
         for (const row of rows) {
           try {
-            const rate = row.exchangeRate ?? 1;
+            // #2 — Tasa según el período de ingreso (último día del mes), no fallback a 1.
+            let rate: number;
+            let rateSource: "BCV" | "MANUAL";
+            if (row.exchangeRate) {
+              rate = row.exchangeRate;
+              rateSource = "MANUAL";
+            } else {
+              const periodEnd = new Date(row.periodYear, row.periodMonth, 0);
+              const r = await getCurrentRate("BCV", periodEnd);
+              rate = Number(r.vesPerUsd.toString());
+              rateSource = r.source === "BINANCE_P2P" ? "BCV" : (r.source as "BCV" | "MANUAL");
+            }
             const amountBss = row.amountUsd * rate;
 
             await ctx.db.ccIncome.create({
@@ -2570,7 +2609,7 @@ export const comercialRouter = router({
                 amountUsd: row.amountUsd,
                 amountBss,
                 exchangeRate: rate,
-                exchangeSource: "MANUAL",
+                exchangeSource: rateSource,
                 currencyPrimary: "USD",
                 periodYear: row.periodYear,
                 periodMonth: row.periodMonth,
