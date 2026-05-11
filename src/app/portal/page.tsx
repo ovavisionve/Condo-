@@ -974,8 +974,15 @@ function NotificarPagoTab({ unit, token, todayRate }: { unit: UnitData; token?: 
           </div>
           <div>
             <Label>Número de referencia / comprobante *</Label>
-            <Input placeholder="Ej: 00123456789" required
-              value={form.referencia} onChange={(e) => setForm(f => ({ ...f, referencia: e.target.value }))} />
+            <Input
+              placeholder="Ej: 00123456789 (solo números)"
+              required
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.referencia}
+              // Solo dígitos — pedido del cliente
+              onChange={(e) => setForm(f => ({ ...f, referencia: e.target.value.replace(/\D/g, "") }))}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

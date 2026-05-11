@@ -70,9 +70,16 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
 
   const reports = (reportsQ.data ?? []) as Report[];
   const [confirmRep, setConfirmRep] = useState<Report | null>(null);
-  const [confirmMethod, setConfirmMethod] = useState("TRANSFER_USD");
+  const [confirmMethod, setConfirmMethod] = useState("TRANSFER_BSS");
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [registered, setRegistered] = useState<Set<string>>(new Set());
+  // Campos editables antes de aprobar (pedido cliente: "antes de aprobar, poder editar
+  // cualquier dato, tipo la referencia, el monto, el banco, etc.")
+  const [editAmount, setEditAmount] = useState<string>("");
+  const [editCurrency, setEditCurrency] = useState<"USD" | "VES">("VES");
+  const [editReference, setEditReference] = useState<string>("");
+  const [editBanco, setEditBanco] = useState<string>("");
+  const [editPaidAt, setEditPaidAt] = useState<string>("");
 
   const pending = reports.filter(r => !registered.has(r.id));
   if (pending.length === 0) return null;
@@ -121,6 +128,12 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                       setConfirmRep(r);
                       setConfirmMethod(guessMethodFromBanco(r.banco));
                       setConfirmErr(null);
+                      // Pre-cargar campos editables con lo que reportó el residente
+                      setEditAmount(r.monto.toString());
+                      setEditCurrency((r.moneda as "USD" | "VES") || "VES");
+                      setEditReference(r.referencia);
+                      setEditBanco(r.banco);
+                      setEditPaidAt(new Date(r.fechaPago).toISOString().slice(0, 10));
                     }}
                   >
                     ✅ Aprobar
@@ -135,36 +148,90 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
         Verifica en el banco que el depósito exista antes de aprobar. El saldo del residente se actualizará al instante.
       </p>
 
-      {/* Dialog confirmación */}
+      {/* Dialog confirmación — TODOS los campos son editables antes de aprobar */}
       {confirmRep && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl space-y-4 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-semibold">✅ Aprobar pago reportado</h3>
-            <div className="rounded-lg border bg-slate-50 p-3 text-sm space-y-1">
-              <div><span className="font-medium">Unidad:</span> {confirmRep.unitCode} — {confirmRep.personName}</div>
-              <div><span className="font-medium">Monto:</span> {confirmRep.moneda === "USD" ? "$" : "Bs."}{confirmRep.monto.toFixed(2)} {confirmRep.moneda}</div>
-              <div><span className="font-medium">Referencia:</span> {confirmRep.referencia}</div>
-              <div><span className="font-medium">Banco:</span> {confirmRep.banco}</div>
-              <div><span className="font-medium">Fecha pago:</span> {new Date(confirmRep.fechaPago).toLocaleDateString("es-VE")}</div>
-              {confirmRep.tipoPago === "ANTICIPO" && (
-                <p className="mt-2 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
-                  💰 Se registrará como <strong>anticipo</strong> — quedará como crédito disponible para el residente.
-                </p>
-              )}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-xs text-blue-900">
+              <strong>Unidad:</strong> {confirmRep.unitCode} — {confirmRep.personName}<br />
+              <strong>Reportado por residente.</strong> Verifica y corrige cualquier dato antes de aprobar.
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Monto *</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={editAmount}
+                  onChange={(e) => setEditAmount(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Moneda</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={editCurrency}
+                  onChange={(e) => setEditCurrency(e.target.value as "USD" | "VES")}
+                >
+                  <option value="VES">Bs — Bolívares</option>
+                  <option value="USD">USD — Dólares</option>
+                </select>
+              </div>
+            </div>
+
             <div>
-              <Label className="text-xs">Método de pago</Label>
-              <select
-                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={confirmMethod}
-                onChange={(e) => setConfirmMethod(e.target.value)}
-              >
-                {METHODS_PAY.map(m => (
-                  <option key={m} value={m}>{METHOD_LABEL[m]}</option>
-                ))}
-              </select>
+              <Label className="text-xs">Referencia (solo números)</Label>
+              <Input
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={editReference}
+                onChange={(e) => setEditReference(e.target.value.replace(/\D/g, ""))}
+              />
             </div>
+
+            <div>
+              <Label className="text-xs">Banco / Origen</Label>
+              <Input
+                value={editBanco}
+                onChange={(e) => setEditBanco(e.target.value)}
+                placeholder="Ej: Banesco, Mercantil, Zelle..."
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Fecha del pago</Label>
+                <Input
+                  type="date"
+                  value={editPaidAt}
+                  onChange={(e) => setEditPaidAt(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Método de pago</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={confirmMethod}
+                  onChange={(e) => setConfirmMethod(e.target.value)}
+                >
+                  {METHODS_PAY.map(m => (
+                    <option key={m} value={m}>{METHOD_LABEL[m]}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {confirmRep.tipoPago === "ANTICIPO" && (
+              <p className="rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
+                💰 El residente eligió ANTICIPO — pero si tiene deuda, se aplicará FIFO a la más antigua.
+              </p>
+            )}
+
             {confirmErr && <p className="text-sm text-destructive">{confirmErr}</p>}
+
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={() => setConfirmRep(null)}>Cancelar</Button>
               <Button
@@ -172,18 +239,27 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                 className="bg-green-600 hover:bg-green-700"
                 onClick={async () => {
                   setConfirmErr(null);
+                  const amount = Number(editAmount);
+                  if (!amount || amount <= 0) {
+                    setConfirmErr("El monto debe ser mayor a 0");
+                    return;
+                  }
+                  if (!editPaidAt) {
+                    setConfirmErr("La fecha del pago es obligatoria");
+                    return;
+                  }
                   try {
                     await approvePayment.mutateAsync({
                       organizationId,
                       communityId,
                       unitId: confirmRep.unitId,
                       notificationId: confirmRep.id,
-                      amount: confirmRep.monto,
-                      currencyPrimary: confirmRep.moneda as "USD" | "VES",
+                      amount,
+                      currencyPrimary: editCurrency,
                       method: confirmMethod as typeof METHODS_PAY[number],
-                      reference: confirmRep.referencia,
-                      paidAt: new Date(confirmRep.fechaPago),
-                      notes: `Pago notificado por residente${confirmRep.notas ? ` — ${confirmRep.notas}` : ""}`,
+                      reference: editReference,
+                      paidAt: new Date(editPaidAt + "T12:00:00"),
+                      notes: `Pago notificado por residente · Banco: ${editBanco}${confirmRep.notas ? ` · ${confirmRep.notas}` : ""}`,
                     });
                     setRegistered(prev => new Set([...prev, confirmRep.id]));
                     setConfirmRep(null);
@@ -618,8 +694,11 @@ function NewPaymentDialog({
               </Label>
               <Input
                 value={form.reference}
-                onChange={(e) => setForm({ ...form, reference: e.target.value })}
-                placeholder="N° de transacción"
+                // Solo dígitos: el cliente pidió "En referencia o comprobante solo número"
+                onChange={(e) => setForm({ ...form, reference: e.target.value.replace(/\D/g, "") })}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="Ej: 00123456789 (solo números)"
                 required={["TRANSFER_BSS", "TRANSFER_USD", "ZELLE", "PAGO_MOVIL", "CHECK"].includes(form.method)}
               />
             </div>
