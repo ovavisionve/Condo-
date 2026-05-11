@@ -311,6 +311,7 @@ export default function PaymentsPage() {
   const [showNew, setShowNew] = useState(false);
 
   const totalUsd = list.data?.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountUsd.toString())), 0) ?? 0;
+  const totalBss = list.data?.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountBss.toString())), 0) ?? 0;
 
   return (
     <div className="space-y-4">
@@ -320,7 +321,11 @@ export default function PaymentsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Pagos recibidos</h2>
-          <p className="text-sm text-muted-foreground">Total recibido: ${totalUsd.toFixed(2)}</p>
+          <p className="text-sm text-muted-foreground">
+            Total recibido:{" "}
+            <span className="font-semibold text-foreground">Bs {totalBss.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <span className="ml-2 text-xs">(≈ ${totalUsd.toFixed(2)})</span>
+          </p>
         </div>
         <Button onClick={() => setShowNew(true)}>+ Registrar pago</Button>
       </div>
@@ -333,8 +338,8 @@ export default function PaymentsPage() {
               <th className="px-3 py-2">Unidad</th>
               <th className="px-3 py-2">Método</th>
               <th className="px-3 py-2">Referencia</th>
-              <th className="px-3 py-2 text-right">USD</th>
               <th className="px-3 py-2 text-right">Bs</th>
+              <th className="px-3 py-2 text-right">USD</th>
               <th className="px-3 py-2">Aplicado a</th>
               <th className="px-3 py-2"></th>
             </tr>
@@ -407,9 +412,11 @@ function PaymentRow({
       <td className="px-3 py-2">{payment.unit.code}</td>
       <td className="px-3 py-2 text-xs">{METHOD_LABEL[payment.method] ?? payment.method}</td>
       <td className="px-3 py-2 text-muted-foreground">{payment.reference ?? "—"}</td>
-      <td className="px-3 py-2 text-right">${Number(payment.amountUsd.toString()).toFixed(2)}</td>
-      <td className="px-3 py-2 text-right">
+      <td className="px-3 py-2 text-right font-medium">
         {Number(payment.amountBss.toString()).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </td>
+      <td className="px-3 py-2 text-right text-muted-foreground text-xs">
+        ${Number(payment.amountUsd.toString()).toFixed(2)}
       </td>
       <td className="px-3 py-2 text-xs">
         {payment.allocations.length > 0
