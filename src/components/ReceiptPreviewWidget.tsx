@@ -59,11 +59,15 @@ export function ReceiptPreviewWidget() {
           organizationId, communityId, year, month, unitId: uid,
         });
         if (cancelled) return;
-        // Convertir base64 → blob URL para iframe
-        const bytes = Uint8Array.from(atob(res.base64), (c) => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: "application/pdf" });
-        const url = URL.createObjectURL(blob);
-        setPdfUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+        // data: URI es más compatible que blob: URL en algunos browsers/contextos
+        // (algunos bloquean blob URLs en iframes por CSP/sandbox). Usamos data URI
+        // que renderiza el PDF inline sin depender del PDF viewer del browser
+        // sobre un blob.
+        const dataUrl = `data:application/pdf;base64,${res.base64}`;
+        setPdfUrl((prev) => {
+          if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+          return dataUrl;
+        });
         setPreviewMeta({ unitCode: res.unitCode, totalUsd: res.totalUsd, totalBss: res.totalBss });
       } catch {
         // El componente maneja los errores abajo
@@ -195,6 +199,17 @@ export function ReceiptPreviewWidget() {
               <div className="text-muted-foreground">≈ ${previewMeta.totalUsd}</div>
             </div>
           )}
+          {pdfUrl && (
+            <a
+              href={pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              download={`Preview-Recibo-${previewMeta?.unitCode ?? "X"}.pdf`}
+              className="block w-full mb-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white text-center hover:bg-emerald-700"
+            >
+              ⬇️ Abrir / descargar PDF
+            </a>
+          )}
           <button
             onClick={() => setOpen(false)}
             className="w-full rounded bg-slate-200 px-2 py-1 text-xs hover:bg-slate-300"
@@ -220,15 +235,31 @@ export function ReceiptPreviewWidget() {
           </div>
         )}
         {pdfUrl && !previewMut.isPending && (
-          <iframe
-            src={pdfUrl}
-            className="w-full h-full border-0"
-            title="Preview del Recibo"
-          />
+          // object da mejor compatibilidad que iframe con data:URLs en algunos
+          // navegadores (especialmente con visor PDF interno de Chrome/Edge).
+          // Si no funciona, fallback a iframe.
+          <object
+            data={pdfUrl}
+            type="application/pdf"
+            className="w-full h-full"
+            aria-label="Preview del Recibo"
+          >
+            <iframe
+              src={pdfUrl}
+              className="w-full h-full border-0"
+              title="Preview del Recibo"
+            />
+          </object>
         )}
         {!pdfUrl && !previewMut.isPending && !previewMut.error && (
           <div className="p-6 text-center text-sm text-muted-foreground">
             Seleccioná una unidad de la lista para ver su recibo.
+          </div>
+        )}
+        {pdfUrl && previewMeta && Number(previewMeta.totalUsd) === 0 && (
+          <div className="absolute top-3 right-3 bg-amber-50 border border-amber-300 rounded-md px-3 py-1.5 text-xs text-amber-800 max-w-[260px]">
+            ⚠️ Sin gastos cargados para {MONTHS[month - 1]} {year}. El recibo aparece vacío.
+            Cargá gastos en <strong>Finanzas → Gastos</strong> o aplicá plantillas.
           </div>
         )}
       </div>

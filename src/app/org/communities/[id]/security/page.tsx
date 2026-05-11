@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
@@ -74,7 +74,25 @@ export default function SecurityPage() {
   const resolve  = trpc.security.violations.resolve.useMutation({ onSuccess: () => void utils.security.violations.list.invalidate() });
 
   const pendingVisitors = visitors.data?.filter((v) => v.status === "PENDING") ?? [];
-  const allVisitors     = visitors.data ?? [];
+  // Orden para el vigilante: PENDING primero (los que están por llegar), después
+  // CHECKED_IN (los que están adentro), después el resto. Dentro de cada grupo,
+  // por fecha de creación descendente (más recientes arriba).
+  const allVisitors = (visitors.data ?? []).slice().sort((a, b) => {
+    const order: Record<string, number> = { PENDING: 0, CHECKED_IN: 1, CHECKED_OUT: 2, DENIED: 3, EXPIRED: 4 };
+    const oa = order[a.status] ?? 9;
+    const ob = order[b.status] ?? 9;
+    if (oa !== ob) return oa - ob;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+
+  // Reloj en tiempo real para el vigilante (pedido del cliente)
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const clockTime = now.toLocaleTimeString("es-VE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const clockDate = now.toLocaleDateString("es-VE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   // Visitas del día sin pre-autorización (walk-ins con unidad asignada)
   const todayWalkIns    = todayLog.data?.filter((l) => !l.visitor && l.direction === "IN") ?? [];
 
@@ -85,6 +103,18 @@ export default function SecurityPage() {
 
   return (
     <div className="space-y-4">
+      {/* Reloj en tiempo real para el vigilante */}
+      <div className="rounded-lg border bg-gradient-to-r from-slate-900 to-slate-700 text-white px-4 py-3 flex items-center justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-wide opacity-80">Hora actual del servidor</p>
+          <p className="text-2xl font-mono font-bold tabular-nums">{clockTime}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs uppercase tracking-wide opacity-80">Fecha</p>
+          <p className="text-sm font-medium capitalize">{clockDate}</p>
+        </div>
+      </div>
+
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Seguridad y Acceso</h2>
         <div className="flex gap-2">
@@ -195,9 +225,21 @@ export default function SecurityPage() {
             </div>
           )}
 
-          {/* Visitantes pre-autorizados */}
+          {/* Visitantes pre-autorizados — PENDING primero para el vigilante */}
           <div className="space-y-2">
-            <p className="text-sm font-semibold text-muted-foreground">Pre-autorizados</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-muted-foreground">
+                Pre-autorizados — Solicitados por residentes
+              </p>
+              {pendingVisitors.length > 0 && (
+                <span className="rounded-full bg-amber-500 text-white text-[10px] font-bold px-2 py-0.5">
+                  {pendingVisitors.length} POR LLEGAR
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              💡 Cuando el visitante llegue, preguntá su nombre, buscalo abajo y apretá <strong>✓ Ingreso</strong>.
+            </p>
             {visitors.isLoading ? (
               <div className="text-center py-6 text-muted-foreground text-sm">Cargando...</div>
             ) : allVisitors.length === 0 ? (
@@ -207,7 +249,16 @@ export default function SecurityPage() {
             ) : (
               <div className="space-y-2">
                 {allVisitors.map((v) => (
-                  <div key={v.id} className="rounded-xl border bg-card p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                  <div
+                    key={v.id}
+                    className={`rounded-xl border p-3 flex flex-col sm:flex-row sm:items-center gap-3 ${
+                      v.status === "PENDING"
+                        ? "bg-amber-50 border-amber-300 shadow-sm"
+                        : v.status === "CHECKED_IN"
+                        ? "bg-emerald-50/40 border-emerald-200"
+                        : "bg-card"
+                    }`}
+                  >
                     {/* Info visitante */}
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
