@@ -3048,12 +3048,17 @@ export const financeRouter = router({
         let adjustments = 0;
 
         for (const tpl of templates) {
-          // Verificar si ya existe la provisión base de esta plantilla en este período
+          // Verificar si ya existe un gasto generado por esta plantilla en este período.
+          // - Plantilla isProvision=true → buscar PROVISION_BASE
+          // - Plantilla isProvision=false → buscar REGULAR
+          // Esto evita duplicados al re-aplicar applyToMonth (bug encontrado el 11/may/2026
+          // donde plantillas regulares creaban duplicados porque solo se chequeaba PROVISION_BASE).
+          const expectedKind = tpl.isProvision ? "PROVISION_BASE" : "REGULAR";
           const existsBase = await ctx.db.expense.findFirst({
             where: {
               communityId, periodYear: year, periodMonth: month,
               recurringTemplateId: tpl.id,
-              kind: "PROVISION_BASE",
+              kind: expectedKind,
               voidedAt: null,
             },
           });
