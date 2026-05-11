@@ -874,6 +874,12 @@ model RecurringExpenseTemplate {
   supplierName    String?
   /// Monto de referencia en USD (se usa como base al aplicar la plantilla)
   amountUsd       Decimal         @db.Decimal(18, 2)
+  /// Monto fijo en Bs si la plantilla es VES (sino se calcula desde amountUsd × tasa al aplicar)
+  amountBss       Decimal?        @db.Decimal(18, 2)
+  /// Moneda primaria de la plantilla. Si VES, amountBss es autoritativo; si USD, amountUsd lo es.
+  /// Permite plantillas con monto fijo en Bs (ej. "Servicios Generales: Bs 5000") que no varíen
+  /// al fluctuar la tasa. Pedido del cliente: "permite los 2, elegir cual colocar".
+  currencyPrimary Currency        @default(USD)
   towerScope      String?         // null=general, "A","B"=torre específica
   notes           String?
   active          Boolean         @default(true)

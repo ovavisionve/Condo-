@@ -2997,15 +2997,32 @@ export const financeRouter = router({
           customCategory: z.string().max(80).optional(),
           description: z.string().min(2),
           supplierName: z.string().optional(),
-          amountUsd: z.coerce.number().positive(),
+          /** Monto en la moneda primaria de la plantilla. Si VES → almacenamos en amountBss
+           *  (autoritativo). Si USD → almacenamos en amountUsd (autoritativo). */
+          amount: z.coerce.number().positive(),
+          currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
           towerScope: z.string().max(20).optional().nullable(),
           notes: z.string().optional(),
           /** Si true, es provisión: agrupa gastos reales y calcula AJUSTE PROVISION mes anterior. */
           isProvision: z.boolean().default(false),
         }),
       )
-      .mutation(({ ctx, input }) =>
-        ctx.db.recurringExpenseTemplate.create({
+      .mutation(async ({ ctx, input }) => {
+        // Cuando primary=USD: amountUsd autoritativo, amountBss=null (se deriva en apply).
+        // Cuando primary=VES: amountBss autoritativo, amountUsd se guarda como referencia
+        // (calculado con tasa actual; al aplicar la plantilla la conversión se rehace).
+        let amountUsd: number;
+        let amountBss: number | null;
+        if (input.currencyPrimary === "VES") {
+          const rate = await getCurrentRate("BCV");
+          const rateNum = Number(rate.vesPerUsd);
+          amountBss = input.amount;
+          amountUsd = rateNum > 0 ? input.amount / rateNum : 0;
+        } else {
+          amountUsd = input.amount;
+          amountBss = null;
+        }
+        return ctx.db.recurringExpenseTemplate.create({
           data: {
             organizationId: input.organizationId,
             communityId: input.communityId,
@@ -3013,14 +3030,16 @@ export const financeRouter = router({
             customCategory: input.customCategory ?? null,
             description: input.description,
             supplierName: input.supplierName ?? null,
-            amountUsd: input.amountUsd.toFixed(2),
+            amountUsd: amountUsd.toFixed(2),
+            amountBss: amountBss !== null ? amountBss.toFixed(2) : null,
+            currencyPrimary: input.currencyPrimary,
             towerScope: input.towerScope ?? null,
             notes: input.notes ?? null,
             isProvision: input.isProvision,
             active: true,
           },
-        }),
-      ),
+        });
+      }),
 
     update: orgProcedure
       .input(
@@ -3028,21 +3047,40 @@ export const financeRouter = router({
           id: z.string(),
           description: z.string().min(2).optional(),
           supplierName: z.string().optional(),
-          amountUsd: z.coerce.number().positive().optional(),
+          amount: z.coerce.number().positive().optional(),
+          currencyPrimary: z.enum(["USD", "VES"]).optional(),
           towerScope: z.string().max(20).optional().nullable(),
           notes: z.string().optional(),
           active: z.boolean().optional(),
           isProvision: z.boolean().optional(),
         }),
       )
-      .mutation(({ ctx, input }) => {
-        const { id, organizationId, ...data } = input;
+      .mutation(async ({ ctx, input }) => {
+        const { id, organizationId, amount, currencyPrimary, ...rest } = input;
+        let amountUpdate: { amountUsd?: string; amountBss?: string | null; currencyPrimary?: "USD" | "VES" } = {};
+        if (amount != null) {
+          const cp = currencyPrimary ?? "USD";
+          if (cp === "VES") {
+            const rate = await getCurrentRate("BCV");
+            const rateNum = Number(rate.vesPerUsd);
+            amountUpdate = {
+              amountBss: amount.toFixed(2),
+              amountUsd: (rateNum > 0 ? amount / rateNum : 0).toFixed(2),
+              currencyPrimary: "VES",
+            };
+          } else {
+            amountUpdate = {
+              amountUsd: amount.toFixed(2),
+              amountBss: null,
+              currencyPrimary: "USD",
+            };
+          }
+        } else if (currencyPrimary) {
+          amountUpdate.currencyPrimary = currencyPrimary;
+        }
         return ctx.db.recurringExpenseTemplate.update({
           where: { id },
-          data: {
-            ...data,
-            amountUsd: data.amountUsd != null ? data.amountUsd.toFixed(2) : undefined,
-          },
+          data: { ...rest, ...amountUpdate },
         });
       }),
 
@@ -3101,7 +3139,17 @@ export const financeRouter = router({
           });
           if (existsBase) continue;
 
-          const tplAmountUsd = new Decimal(tpl.amountUsd.toString());
+          // Calcular monto del gasto según la moneda primaria de la plantilla.
+          // Si la plantilla es VES (monto fijo en Bs), usar amountBss como autoritativo
+          // y derivar USD con la tasa del período. Si es USD, mantener el monto USD fijo
+          // y derivar Bs con la tasa.
+          const tplIsVes = tpl.currencyPrimary === "VES" && tpl.amountBss != null;
+          const tplAmountUsd = tplIsVes
+            ? new Decimal(tpl.amountBss!.toString()).div(usdRate)
+            : new Decimal(tpl.amountUsd.toString());
+          const tplAmountBss = tplIsVes
+            ? new Decimal(tpl.amountBss!.toString())
+            : new Decimal(tpl.amountUsd.toString()).mul(usdRate);
 
           // — AJUSTE PROVISIÓN MES ANTERIOR (solo si tpl.isProvision) —
           if (tpl.isProvision) {
@@ -3162,7 +3210,6 @@ export const financeRouter = router({
           }
 
           // — Provisión / Plantilla del mes corriente —
-          const baseAmountBss = tplAmountUsd.mul(usdRate);
           await ctx.db.expense.create({
             data: {
               organizationId,
@@ -3174,10 +3221,11 @@ export const financeRouter = router({
               periodYear: year,
               periodMonth: month,
               amountUsd: tplAmountUsd.toFixed(2),
-              amountBss: baseAmountBss.toFixed(2),
+              amountBss: tplAmountBss.toFixed(2),
               exchangeRate: usdRate.toFixed(8),
               exchangeSource: rate.source,
-              currencyPrimary: "USD",
+              // Preserva la moneda primaria de la plantilla en el gasto generado.
+              currencyPrimary: tpl.currencyPrimary,
               towerScope: tpl.towerScope ?? null,
               isIndividual: false,
               recurringTemplateId: tpl.id,

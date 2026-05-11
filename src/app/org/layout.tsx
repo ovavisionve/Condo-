@@ -4,6 +4,7 @@ import { canManageOrganization, isPlatform } from "@/server/auth/permissions";
 import { OrgContextProvider } from "./OrgContext";
 import { AppSidebar } from "@/components/admin/AppSidebar";
 import { OrgAiChat } from "@/components/OrgAiChat";
+import { ReceiptPreviewWidget } from "@/components/ReceiptPreviewWidget";
 import { InactivityGuard } from "@/components/InactivityGuard";
 import { db } from "@/server/db/client";
 
@@ -52,6 +53,7 @@ export default async function OrgLayout({ children }: { children: React.ReactNod
         </main>
       </div>
       <OrgAiChat />
+      <ReceiptPreviewWidget />
       <InactivityGuard />
     </OrgContextProvider>
   );

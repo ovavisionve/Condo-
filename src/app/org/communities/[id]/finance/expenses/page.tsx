@@ -402,7 +402,9 @@ function RecurringTemplatesPanel({
     customCategory: "",
     description: "",
     supplierName: "",
+    // Renombrado: ahora "amount" puede ser USD o VES según currencyPrimary.
     amountUsd: "",
+    currencyPrimary: "VES" as "USD" | "VES",
     towerScope: "",
     notes: "",
     isProvision: false,
@@ -419,12 +421,13 @@ function RecurringTemplatesPanel({
         customCategory: form.customCategory.trim() || undefined,
         description: form.description,
         supplierName: form.supplierName || undefined,
-        amountUsd: Number(form.amountUsd),
+        amount: Number(form.amountUsd),
+        currencyPrimary: form.currencyPrimary,
         towerScope: form.towerScope || null,
         notes: form.notes || undefined,
         isProvision: form.isProvision,
       });
-      setForm({ category: "ELECTRICITY", customCategory: "", description: "", supplierName: "", amountUsd: "", towerScope: "", notes: "", isProvision: false });
+      setForm({ category: "ELECTRICITY", customCategory: "", description: "", supplierName: "", amountUsd: "", currencyPrimary: "VES", towerScope: "", notes: "", isProvision: false });
       setShowNew(false);
       onMutated();
     } catch (err: unknown) {
@@ -575,11 +578,22 @@ function RecurringTemplatesPanel({
                 <Label>Descripción</Label>
                 <Input required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <Label>Monto USD de referencia</Label>
+                  <Label>Monto</Label>
                   <Input type="number" step="0.01" required value={form.amountUsd}
                     onChange={(e) => setForm((f) => ({ ...f, amountUsd: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Moneda</Label>
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={form.currencyPrimary}
+                    onChange={(e) => setForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+                  >
+                    <option value="VES">Bs — Bolívares (fijo)</option>
+                    <option value="USD">USD — Dólares</option>
+                  </select>
                 </div>
                 <div>
                   <Label>Alcance</Label>
@@ -588,12 +602,16 @@ function RecurringTemplatesPanel({
                     value={form.towerScope}
                     onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
                   >
-                    <option value="">General (todas las unidades)</option>
+                    <option value="">General</option>
                     <option value="A">Torre A</option>
                     <option value="B">Torre B</option>
                   </select>
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground -mt-1">
+                💡 Si elegís <strong>Bs</strong>, el monto se mantiene fijo en bolívares cada mes
+                (sin variar con la tasa). Si elegís <strong>USD</strong>, se convierte a Bs con la tasa del mes.
+              </p>
 
               {/* Toggle: Provisión — agrupa gastos reales y calcula ajuste mes anterior */}
               <div className="rounded-lg border border-dashed bg-amber-50/50 p-3 space-y-2">
