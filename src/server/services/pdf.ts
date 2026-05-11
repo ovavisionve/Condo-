@@ -361,6 +361,37 @@ export type InvoicePdfData = {
   ownerIdNumber?: string | null;
   // Ítems de la factura
   items: { description: string; aliquot?: string | null; amountUsd: string; amountBss: string }[];
+  /**
+   * Items con desglose extendido (estilo Arrayanes): cada ítem expone el monto BASE
+   * del gasto (lo que costó al condominio) y la CUOTA (parte que toca a la unidad).
+   * Se agrupan por sección (común / torre / individual). Opcional.
+   */
+  sections?: {
+    title: string;            // ej: "GASTOS COMUNES" o "GASTOS TORRE A"
+    aliquotPercent?: string;  // ej: "0.5319"
+    baseTotalBss?: string;    // monto total de la sección antes del prorrateo
+    items: {
+      description: string;
+      baseBss: string;        // monto total del gasto en Bs (lo que costó)
+      cuotaUsd: string;       // parte que le toca a la unidad en USD
+      cuotaBss: string;       // parte en Bs
+    }[];
+    subtotalUsd: string;
+    subtotalBss: string;
+  }[];
+  /**
+   * Fondo de reserva acumulado por la unidad (cliente Arrayanes lo muestra en su recibo).
+   * Si está presente, el PDF agrega una sección al final.
+   */
+  reserveFund?: {
+    previousBalanceUsd: string;  // saldo acumulado anterior
+    previousBalanceBss: string;
+    contributionUsd: string;     // aporte del mes
+    contributionBss: string;
+    period: string;              // ej: "04/2026"
+    totalUsd: string;            // saldo nuevo
+    totalBss: string;
+  };
   // Totales
   totalUsd: string;
   totalBss: string;
@@ -487,23 +518,81 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
         ),
       ),
 
-      // ── Gastos comunes ─────────────────────────────────────────
-      React.createElement(View, { style: inv.tableSection },
-        React.createElement(Text, { style: inv.tableSectionTitle }, "GASTOS COMUNES"),
+      // ── Items: layout Arrayanes (sections con base/cuota) o legacy ──────────
+      data.sections && data.sections.length > 0
+        ? React.createElement(View, {},
+            ...data.sections.map((sec, sIdx) =>
+              React.createElement(View, { key: sIdx, style: inv.tableSection },
+                React.createElement(Text, { style: inv.tableSectionTitle }, sec.title),
+                React.createElement(View, { style: inv.tableHead },
+                  React.createElement(Text, { style: inv.thDesc }, "Concepto / Descripción"),
+                  React.createElement(Text, { style: inv.thAliq }, "Total Bs"),
+                  React.createElement(Text, { style: inv.thUsd }, "Cuota USD"),
+                  React.createElement(Text, { style: inv.thBss }, "Cuota Bs"),
+                ),
+                ...sec.items.map((it, i) =>
+                  React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
+                    React.createElement(Text, { style: inv.tdDesc }, it.description),
+                    React.createElement(Text, { style: inv.tdAliq }, fmtBss(it.baseBss)),
+                    React.createElement(Text, { style: inv.tdUsd }, fmtUsd(it.cuotaUsd)),
+                    React.createElement(Text, { style: inv.tdBss }, fmtBss(it.cuotaBss)),
+                  ),
+                ),
+                // Subtotal de la sección con porcentaje aplicado
+                React.createElement(View, { style: inv.totalLineRow },
+                  React.createElement(Text, { style: inv.totalLineLabel },
+                    `Total ${sec.title}${sec.aliquotPercent ? ` (${Number(sec.aliquotPercent).toFixed(4)}%${sec.baseTotalBss ? ` de Bs ${fmtBss(sec.baseTotalBss)}` : ""})` : ""}`,
+                  ),
+                  React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(sec.subtotalUsd)),
+                  React.createElement(Text, { style: inv.totalLineBss }, fmtBss(sec.subtotalBss)),
+                ),
+              ),
+            ),
+          )
+        : React.createElement(View, { style: inv.tableSection },
+            React.createElement(Text, { style: inv.tableSectionTitle }, "GASTOS COMUNES"),
+            React.createElement(View, { style: inv.tableHead },
+              React.createElement(Text, { style: inv.thDesc }, "Concepto / Descripción"),
+              React.createElement(Text, { style: inv.thAliq }, "Cuota Part."),
+              React.createElement(Text, { style: inv.thUsd }, "USD"),
+              React.createElement(Text, { style: inv.thBss }, "Bs.S"),
+            ),
+            ...data.items.map((item, i) =>
+              React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
+                React.createElement(Text, { style: inv.tdDesc }, item.description),
+                React.createElement(Text, { style: inv.tdAliq },
+                  item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"),
+                React.createElement(Text, { style: inv.tdUsd }, fmtUsd(item.amountUsd)),
+                React.createElement(Text, { style: inv.tdBss }, fmtBss(item.amountBss)),
+              ),
+            ),
+          ),
+
+      // ── Fondo de Reserva (estilo Arrayanes) ─────────────────────
+      data.reserveFund && React.createElement(View, { style: inv.tableSection },
+        React.createElement(Text, { style: inv.tableSectionTitle }, "FONDO DE RESERVA"),
         React.createElement(View, { style: inv.tableHead },
-          React.createElement(Text, { style: inv.thDesc }, "Concepto / Descripción"),
-          React.createElement(Text, { style: inv.thAliq }, "Cuota Part."),
+          React.createElement(Text, { style: inv.thDesc }, "Concepto"),
+          React.createElement(Text, { style: inv.thAliq }, ""),
           React.createElement(Text, { style: inv.thUsd }, "USD"),
           React.createElement(Text, { style: inv.thBss }, "Bs.S"),
         ),
-        ...data.items.map((item, i) =>
-          React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
-            React.createElement(Text, { style: inv.tdDesc }, item.description),
-            React.createElement(Text, { style: inv.tdAliq },
-              item.aliquot ? `${Number(item.aliquot).toFixed(4)}%` : "—"),
-            React.createElement(Text, { style: inv.tdUsd }, fmtUsd(item.amountUsd)),
-            React.createElement(Text, { style: inv.tdBss }, fmtBss(item.amountBss)),
-          )
+        React.createElement(View, { style: inv.tableRow },
+          React.createElement(Text, { style: inv.tdDesc }, "Saldo Anterior"),
+          React.createElement(Text, { style: inv.tdAliq }, ""),
+          React.createElement(Text, { style: inv.tdUsd }, fmtUsd(data.reserveFund.previousBalanceUsd)),
+          React.createElement(Text, { style: inv.tdBss }, fmtBss(data.reserveFund.previousBalanceBss)),
+        ),
+        React.createElement(View, { style: inv.tableRowAlt },
+          React.createElement(Text, { style: inv.tdDesc }, `Aporte ${data.reserveFund.period}`),
+          React.createElement(Text, { style: inv.tdAliq }, ""),
+          React.createElement(Text, { style: inv.tdUsd }, fmtUsd(data.reserveFund.contributionUsd)),
+          React.createElement(Text, { style: inv.tdBss }, fmtBss(data.reserveFund.contributionBss)),
+        ),
+        React.createElement(View, { style: inv.totalLineRow },
+          React.createElement(Text, { style: inv.totalLineLabel }, "Total Fondo de Reserva acumulado"),
+          React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(data.reserveFund.totalUsd)),
+          React.createElement(Text, { style: inv.totalLineBss }, fmtBss(data.reserveFund.totalBss)),
         ),
       ),
 

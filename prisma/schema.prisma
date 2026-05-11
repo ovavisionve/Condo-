@@ -565,6 +565,11 @@ model Expense {
   /// Plantilla recurrente que originó este gasto (para agrupar items en el recibo)
   recurringTemplateId String?
   recurringTemplate   RecurringExpenseTemplate? @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
+  /// Tipo de gasto para lógica de provisiones:
+  /// - REGULAR: gasto normal (default)
+  /// - PROVISION_BASE: la provisión del mes generada al aplicar plantilla isProvision=true
+  /// - PROVISION_ADJUSTMENT: línea de "Ajuste provisión mes anterior" (real - provisión)
+  kind            ExpenseKind     @default(REGULAR)
   // Estado
   invoicedAt      DateTime? // si null, todavía no se ha prorrateado
   voidedAt        DateTime?
@@ -589,6 +594,12 @@ enum InvoiceStatus {
   PAID
   OVERDUE
   VOIDED
+}
+
+enum ExpenseKind {
+  REGULAR
+  PROVISION_BASE
+  PROVISION_ADJUSTMENT
 }
 
 enum InvoiceType {

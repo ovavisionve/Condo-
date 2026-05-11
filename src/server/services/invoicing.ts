@@ -178,10 +178,17 @@ export async function issueMonthlyInvoices(params: {
     });
   }
 
-  const expenses = await db.expense.findMany({
+  const allExpenses = await db.expense.findMany({
     where: { communityId, periodYear: year, periodMonth: month, invoicedAt: null, voidedAt: null },
     include: { recurringTemplate: { select: { id: true, description: true, isProvision: true } } },
   });
+  // Excluir gastos REGULAR vinculados a plantilla isProvision: esos son trackeo del real
+  // del mes, no se facturan al residente. Solo se usan para calcular AJUSTE el mes siguiente.
+  // El residente paga la PROVISION_BASE (estimación fija) + PROVISION_ADJUSTMENT (correción
+  // del mes anterior).
+  const expenses = allExpenses.filter(
+    (e) => !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true),
+  );
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
   const deductibleIncomes = await db.income.findMany({
@@ -214,24 +221,26 @@ export async function issueMonthlyInvoices(params: {
   type ExpenseLike = typeof expenses[number];
   function groupByTemplate(rows: ExpenseLike[], scope: string | null): ExpenseLike[] {
     const byTpl = new Map<string, ExpenseLike[]>();
-    const noTpl: ExpenseLike[] = [];
+    const standalone: ExpenseLike[] = []; // sin templateId o son PROVISION_BASE / PROVISION_ADJUSTMENT
     for (const e of rows) {
+      // Provisiones y ajustes NO se agrupan — cada uno es su propia línea con su descripción
+      if (e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT") {
+        standalone.push(e);
+        continue;
+      }
       if (e.recurringTemplateId) {
-        // Las plantillas se agrupan por (templateId, towerScope) para no mezclar torres.
+        // Plantillas NO-provisión: agrupar por (templateId, scope)
         const key = `${e.recurringTemplateId}|${scope ?? ""}`;
         const arr = byTpl.get(key) ?? [];
         arr.push(e);
         byTpl.set(key, arr);
       } else {
-        noTpl.push(e);
+        standalone.push(e);
       }
     }
-    // Por cada grupo: sumar montos y construir un expense compuesto que conserva
-    // el id del primero (para el FK del InvoiceItem) y usa la descripción de la plantilla.
     const aggregated: ExpenseLike[] = [];
     for (const [, group] of byTpl) {
       if (group.length === 1) {
-        // Solo uno: igual usar la descripción de la plantilla para consistencia
         const e = group[0]!;
         aggregated.push({ ...e, description: e.recurringTemplate?.description ?? e.description });
         continue;
@@ -246,7 +255,7 @@ export async function issueMonthlyInvoices(params: {
         description: head.recurringTemplate?.description ?? head.description,
       });
     }
-    return [...aggregated, ...noTpl];
+    return [...aggregated, ...standalone];
   }
   const towerExpenses = groupByTemplate(towerExpensesRaw, "tower");
   const generalExpenses = groupByTemplate(generalExpensesRaw, null);

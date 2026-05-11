@@ -45,6 +45,18 @@ export async function GET(req: Request) {
     `ALTER TABLE "RecurringExpenseTemplate" ADD COLUMN IF NOT EXISTS "isProvision" BOOLEAN NOT NULL DEFAULT false;`,
   );
   await run(
+    "ExpenseKind enum",
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ExpenseKind') THEN
+         CREATE TYPE "ExpenseKind" AS ENUM ('REGULAR', 'PROVISION_BASE', 'PROVISION_ADJUSTMENT');
+       END IF;
+     END; $$;`,
+  );
+  await run(
+    "Expense.kind column",
+    `ALTER TABLE "Expense" ADD COLUMN IF NOT EXISTS "kind" "ExpenseKind" NOT NULL DEFAULT 'REGULAR';`,
+  );
+  await run(
     "Expense_recurringTemplateId_idx",
     `CREATE INDEX IF NOT EXISTS "Expense_recurringTemplateId_idx" ON "Expense"("recurringTemplateId");`,
   );

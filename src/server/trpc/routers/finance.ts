@@ -451,7 +451,18 @@ export const financeRouter = router({
           where: { id: input.id, organizationId: input.organizationId },
           include: {
             unit: true,
-            items: { orderBy: { description: "asc" } },
+            items: {
+              orderBy: { description: "asc" },
+              include: {
+                expense: {
+                  select: {
+                    id: true, category: true, amountBss: true, amountUsd: true,
+                    towerScope: true, isIndividual: true, kind: true,
+                    recurringTemplateId: true,
+                  },
+                },
+              },
+            },
             payments: {
               include: {
                 payment: {
@@ -477,6 +488,100 @@ export const financeRouter = router({
         ]);
 
         const { generateInvoicePdf } = await import("@/server/services/pdf");
+
+        // ── Construir secciones agrupadas (estilo Arrayanes) ───────────────────
+        type SectionItem = {
+          description: string;
+          baseBss: string;
+          cuotaUsd: string;
+          cuotaBss: string;
+        };
+        const aliquotPct = inv.unit.aliquot.toString();
+        const sectionMap = new Map<string, { title: string; items: SectionItem[] }>();
+        const ensureSection = (key: string, title: string) => {
+          if (!sectionMap.has(key)) sectionMap.set(key, { title, items: [] });
+          return sectionMap.get(key)!;
+        };
+        for (const it of inv.items) {
+          const exp = it.expense;
+          let sectionKey: string;
+          let sectionTitle: string;
+          if (exp?.isIndividual) {
+            sectionKey = "individual";
+            sectionTitle = "CARGOS INDIVIDUALES";
+          } else if (exp?.towerScope) {
+            sectionKey = `tower-${exp.towerScope}`;
+            sectionTitle = `GASTOS TORRE ${exp.towerScope}`;
+          } else {
+            sectionKey = "common";
+            sectionTitle = "GASTOS COMUNES";
+          }
+          const section = ensureSection(sectionKey, sectionTitle);
+          section.items.push({
+            description: it.description,
+            baseBss: exp ? exp.amountBss.toString() : it.amountBss.toString(),
+            cuotaUsd: it.amountUsd.toString(),
+            cuotaBss: it.amountBss.toString(),
+          });
+        }
+        // Ordenar secciones: common, tower-A, tower-B, individual
+        const sortKey = (k: string) => k === "common" ? 0 : k.startsWith("tower") ? 1 : 2;
+        const sections = Array.from(sectionMap.entries())
+          .sort(([a], [b]) => sortKey(a) - sortKey(b))
+          .map(([, s]) => {
+            const subtotalUsd = s.items.reduce((sum, i) => sum + Number(i.cuotaUsd), 0);
+            const subtotalBss = s.items.reduce((sum, i) => sum + Number(i.cuotaBss), 0);
+            const baseTotalBss = s.items.reduce((sum, i) => sum + Number(i.baseBss), 0);
+            return {
+              title: s.title,
+              aliquotPercent: aliquotPct,
+              baseTotalBss: baseTotalBss.toFixed(2),
+              items: s.items,
+              subtotalUsd: subtotalUsd.toFixed(2),
+              subtotalBss: subtotalBss.toFixed(2),
+            };
+          });
+
+        // ── Fondo de Reserva (saldo acumulado por unidad) ─────────────────────
+        // Sumar TODOS los InvoiceItem con categoría RESERVE_FUND de esta unidad
+        // hasta el mes anterior, y aportar del mes corriente por separado.
+        const reserveItems = await ctx.db.invoiceItem.findMany({
+          where: {
+            invoice: {
+              unitId: inv.unitId,
+              status: { not: "VOIDED" },
+            },
+            expense: { category: "RESERVE_FUND" },
+          },
+          include: {
+            invoice: { select: { id: true, periodYear: true, periodMonth: true } },
+          },
+        });
+        let prevUsd = 0, prevBss = 0, currUsd = 0, currBss = 0;
+        for (const ri of reserveItems) {
+          const isCurrent = ri.invoice.periodYear === inv.periodYear && ri.invoice.periodMonth === inv.periodMonth;
+          if (isCurrent) {
+            currUsd += Number(ri.amountUsd);
+            currBss += Number(ri.amountBss);
+          } else if (
+            ri.invoice.periodYear < inv.periodYear ||
+            (ri.invoice.periodYear === inv.periodYear && ri.invoice.periodMonth < inv.periodMonth)
+          ) {
+            prevUsd += Number(ri.amountUsd);
+            prevBss += Number(ri.amountBss);
+          }
+        }
+        const reserveFund = (prevUsd > 0 || currUsd > 0)
+          ? {
+              previousBalanceUsd: prevUsd.toFixed(2),
+              previousBalanceBss: prevBss.toFixed(2),
+              contributionUsd: currUsd.toFixed(2),
+              contributionBss: currBss.toFixed(2),
+              period: `${String(inv.periodMonth).padStart(2, "0")}/${inv.periodYear}`,
+              totalUsd: (prevUsd + currUsd).toFixed(2),
+              totalBss: (prevBss + currBss).toFixed(2),
+            }
+          : undefined;
 
         const data = {
           communityName: community.name,
@@ -504,6 +609,8 @@ export const financeRouter = router({
             amountUsd: it.amountUsd.toString(),
             amountBss: it.amountBss.toString(),
           })),
+          sections,
+          reserveFund,
           totalUsd: inv.totalUsd.toString(),
           totalBss: inv.totalBss.toString(),
           paidUsd: inv.paidUsd.toString(),
@@ -2525,51 +2632,119 @@ export const financeRouter = router({
         const templates = await ctx.db.recurringExpenseTemplate.findMany({
           where: { organizationId, communityId, active: true },
         });
-        if (templates.length === 0) return { created: 0 };
+        if (templates.length === 0) return { created: 0, adjustments: 0 };
 
         // #2 — Tasa según el mes del período (último día del mes), no la de hoy.
         const periodEnd = new Date(year, month, 0);
         const rate = await getCurrentRate("BCV", periodEnd);
         const usdRate = new Decimal(rate.vesPerUsd.toString());
 
+        // Período anterior
+        const prevMonth = month === 1 ? 12 : month - 1;
+        const prevYear = month === 1 ? year - 1 : year;
+
         let created = 0;
+        let adjustments = 0;
+
         for (const tpl of templates) {
-          // Verificar si ya existe un gasto de esta plantilla en este período
-          const exists = await ctx.db.expense.findFirst({
+          // Verificar si ya existe la provisión base de esta plantilla en este período
+          const existsBase = await ctx.db.expense.findFirst({
             where: {
               communityId, periodYear: year, periodMonth: month,
-              recurringTemplateId: tpl.id, voidedAt: null,
+              recurringTemplateId: tpl.id,
+              kind: "PROVISION_BASE",
+              voidedAt: null,
             },
           });
-          if (exists) continue;
+          if (existsBase) continue;
 
-          const amountUsd = new Decimal(tpl.amountUsd.toString());
-          const amountBss = amountUsd.mul(usdRate);
+          const tplAmountUsd = new Decimal(tpl.amountUsd.toString());
 
+          // — AJUSTE PROVISIÓN MES ANTERIOR (solo si tpl.isProvision) —
+          if (tpl.isProvision) {
+            // 1. Provisión base del mes anterior
+            const prevBase = await ctx.db.expense.findFirst({
+              where: {
+                communityId, periodYear: prevYear, periodMonth: prevMonth,
+                recurringTemplateId: tpl.id,
+                kind: "PROVISION_BASE",
+                voidedAt: null,
+              },
+              select: { amountUsd: true, amountBss: true },
+            });
+            // 2. Gastos reales del mes anterior con esta plantilla
+            const prevReal = await ctx.db.expense.findMany({
+              where: {
+                communityId, periodYear: prevYear, periodMonth: prevMonth,
+                recurringTemplateId: tpl.id,
+                kind: "REGULAR",
+                voidedAt: null,
+              },
+              select: { amountUsd: true, amountBss: true },
+            });
+            if (prevBase) {
+              const realSumUsd = prevReal.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+              const realSumBss = prevReal.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+              const baseUsd = new Decimal(prevBase.amountUsd.toString());
+              const baseBss = new Decimal(prevBase.amountBss.toString());
+              const adjUsd = realSumUsd.minus(baseUsd);
+              const adjBss = realSumBss.minus(baseBss);
+              // Solo crear ajuste si != 0 (>$0.01 de diferencia)
+              if (adjUsd.abs().gt("0.01")) {
+                await ctx.db.expense.create({
+                  data: {
+                    organizationId,
+                    communityId,
+                    category: tpl.category,
+                    customCategory: tpl.customCategory ?? null,
+                    description: `Ajuste Provisión ${tpl.description} — mes anterior`,
+                    supplierName: tpl.supplierName ?? null,
+                    periodYear: year,
+                    periodMonth: month,
+                    amountUsd: adjUsd.toFixed(2),
+                    amountBss: adjBss.toFixed(2),
+                    exchangeRate: usdRate.toFixed(8),
+                    exchangeSource: rate.source,
+                    currencyPrimary: "USD",
+                    towerScope: tpl.towerScope ?? null,
+                    isIndividual: false,
+                    recurringTemplateId: tpl.id,
+                    kind: "PROVISION_ADJUSTMENT",
+                    createdById: ctx.user.id,
+                  },
+                });
+                adjustments++;
+              }
+            }
+          }
+
+          // — Provisión / Plantilla del mes corriente —
+          const baseAmountBss = tplAmountUsd.mul(usdRate);
           await ctx.db.expense.create({
             data: {
               organizationId,
               communityId,
               category: tpl.category,
               customCategory: tpl.customCategory ?? null,
-              description: tpl.description,
+              description: tpl.isProvision ? `Provisión ${tpl.description}` : tpl.description,
               supplierName: tpl.supplierName ?? null,
               periodYear: year,
               periodMonth: month,
-              amountUsd: amountUsd.toFixed(2),
-              amountBss: amountBss.toFixed(2),
+              amountUsd: tplAmountUsd.toFixed(2),
+              amountBss: baseAmountBss.toFixed(2),
               exchangeRate: usdRate.toFixed(8),
               exchangeSource: rate.source,
               currencyPrimary: "USD",
               towerScope: tpl.towerScope ?? null,
               isIndividual: false,
-              recurringTemplateId: tpl.id, // agrupación en recibo
+              recurringTemplateId: tpl.id,
+              kind: tpl.isProvision ? "PROVISION_BASE" : "REGULAR",
               createdById: ctx.user.id,
             },
           });
           created++;
         }
-        return { created };
+        return { created, adjustments };
       }),
   }),
 
