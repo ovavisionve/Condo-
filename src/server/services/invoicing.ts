@@ -283,13 +283,28 @@ export async function issueMonthlyInvoices(params: {
     });
   }
 
+  /** Helper: prorratea respetando signo. Necesario para PROVISION_ADJUSTMENT
+   *  donde el ajuste puede ser negativo (real < provisión = crédito al residente). */
+  function prorateSigned<K extends string>(
+    total: Decimal.Value,
+    parts: ReadonlyArray<{ key: K; aliquot: Decimal.Value }>,
+  ): Map<K, Decimal> {
+    const d = new Decimal(total);
+    if (d.gte(0)) return prorate(d.toFixed(2), parts);
+    // Negativo: prorratear el valor absoluto y negar el resultado de cada participante
+    const abs = prorate(d.abs().toFixed(2), parts);
+    const out = new Map<K, Decimal>();
+    for (const [k, v] of abs) out.set(k, v.neg());
+    return out;
+  }
+
   // 2. Gastos por torre → se prorratean solo entre unidades de esa torre
   for (const exp of towerExpenses) {
     const towerUnits = units.filter((u) => u.tower === exp.towerScope);
     if (towerUnits.length === 0) continue;
     const towerParticipants = towerUnits.map((u) => ({ key: u.id as string, aliquot: u.aliquot.toString() }));
-    const bssDistribution = prorate(exp.amountBss.toString(), towerParticipants);
-    const usdDistribution = prorate(exp.amountUsd.toString(), towerParticipants);
+    const bssDistribution = prorateSigned(exp.amountBss.toString(), towerParticipants);
+    const usdDistribution = prorateSigned(exp.amountUsd.toString(), towerParticipants);
     for (const u of towerUnits) {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
@@ -309,8 +324,8 @@ export async function issueMonthlyInvoices(params: {
     const adjUsd = new Decimal(exp.amountUsd.toString()).mul(new Decimal(1).minus(deductionFactor));
     const adjBss = new Decimal(exp.amountBss.toString()).mul(new Decimal(1).minus(deductionFactor));
     // Si el ajuste deja el gasto en 0, igual creamos las líneas (puede pasar con deducción total)
-    const bssDistribution = prorate(adjBss.toFixed(2), participants);
-    const usdDistribution = prorate(adjUsd.toFixed(2), participants);
+    const bssDistribution = prorateSigned(adjBss.toFixed(2), participants);
+    const usdDistribution = prorateSigned(adjUsd.toFixed(2), participants);
     for (const u of units) {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
