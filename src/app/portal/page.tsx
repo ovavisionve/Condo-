@@ -892,6 +892,25 @@ function NotificarPagoTab({ unit, token, todayRate }: { unit: UnitData; token?: 
     notas: "",
   });
   const [done, setDone] = useState(false);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+
+  const onScreenshotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setScreenshotError(null);
+    const file = e.target.files?.[0];
+    if (!file) { setScreenshot(null); return; }
+    if (!file.type.startsWith("image/")) {
+      setScreenshotError("Solo se aceptan imágenes (JPG, PNG, WebP).");
+      return;
+    }
+    if (file.size > 2_500_000) {
+      setScreenshotError("La imagen es muy grande (máx 2.5 MB). Comprimila antes de subir.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setScreenshot(reader.result as string);
+    reader.readAsDataURL(file);
+  };
 
   const pendingUsd  = Number(unit.pendingUsd);
   const hasPending  = pendingUsd > 0.005;
@@ -910,6 +929,7 @@ function NotificarPagoTab({ unit, token, todayRate }: { unit: UnitData; token?: 
       fechaPago: new Date(form.fechaPago + "T12:00:00"),
       tipoPago,
       notas: form.notas || undefined,
+      screenshot: screenshot ?? undefined,
     });
     setDone(true);
   };
@@ -1009,6 +1029,31 @@ function NotificarPagoTab({ unit, token, todayRate }: { unit: UnitData; token?: 
             <textarea className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" rows={2}
               placeholder="Ej: pago de mayo y junio, transferencia en dos partes..."
               value={form.notas} onChange={(e) => setForm(f => ({ ...f, notas: e.target.value }))} />
+          </div>
+
+          {/* Subir captura de pantalla del comprobante */}
+          <div>
+            <Label>Captura del comprobante (opcional)</Label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={onScreenshotChange}
+              className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-[#1e7a5f]/10 file:text-[#1e7a5f] hover:file:bg-[#1e7a5f]/20"
+            />
+            {screenshotError && <p className="mt-1 text-xs text-destructive">{screenshotError}</p>}
+            {screenshot && (
+              <div className="mt-2 inline-block rounded border border-emerald-300 bg-emerald-50 p-1">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={screenshot} alt="Comprobante" className="max-h-40 rounded" />
+                <button
+                  type="button"
+                  onClick={() => setScreenshot(null)}
+                  className="block w-full text-[10px] text-red-600 mt-1 hover:underline"
+                >
+                  ✕ Quitar captura
+                </button>
+              </div>
+            )}
           </div>
 
           {notify.isError && (
@@ -1346,21 +1391,93 @@ const VISITOR_STATUS_COLOR_PORTAL: Record<string, string> = {
 
 function SeguridadTab({ unit, token }: { unit: UnitData; token?: string }) {
   const [qrVisitor, setQrVisitor] = useState<{ accessCode: string; name: string } | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const utils = trpc.useUtils();
+  const requestVisitor = trpc.portal.requestVisitor.useMutation();
+
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    firstName: "", lastName: "", idNumber: "", phone: "", vehiclePlate: "",
+    validFrom: today, validUntil: tomorrow, purpose: "", notes: "",
+  });
 
   const { data: visitors, isLoading } = trpc.portal.myVisitors.useQuery({
     unitId: unit.unitId,
     token,
   });
 
+  const onSubmitVisitor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.firstName.trim() || !form.lastName.trim()) return;
+    await requestVisitor.mutateAsync({
+      token,
+      unitId: unit.unitId,
+      firstName: form.firstName.trim(),
+      lastName: form.lastName.trim(),
+      idNumber: form.idNumber || undefined,
+      idType: "V",
+      phone: form.phone || undefined,
+      vehiclePlate: form.vehiclePlate || undefined,
+      validFrom: new Date(form.validFrom + "T00:00:00"),
+      validUntil: new Date(form.validUntil + "T23:59:59"),
+      purpose: form.purpose || undefined,
+      notes: form.notes || undefined,
+    });
+    setForm({ firstName: "", lastName: "", idNumber: "", phone: "", vehiclePlate: "", validFrom: today, validUntil: tomorrow, purpose: "", notes: "" });
+    setShowForm(false);
+    void utils.portal.myVisitors.invalidate();
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold">Mis Visitantes Pre-autorizados</h2>
-        <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
-        <p className="text-sm text-muted-foreground mt-1">
-          Visitantes que autorizaste para acceder al condominio. Muéstrale el código QR al guardia al llegar.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Mis Visitantes Pre-autorizados</h2>
+          <div className="mt-1 h-0.5 w-16 bg-[#1e7a5f]" />
+          <p className="text-sm text-muted-foreground mt-1">
+            Visitantes que autorizaste para acceder al condominio. Muéstrale el código QR al guardia al llegar.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm(true)}
+          className="rounded-md bg-[#1e7a5f] hover:bg-[#15604a] text-white px-4 py-2 text-sm font-medium whitespace-nowrap"
+        >
+          + Solicitar visitante
+        </button>
       </div>
+
+      {showForm && (
+        <div className="rounded-xl border bg-white shadow-sm p-5">
+          <h3 className="font-semibold mb-3">Nuevo visitante</h3>
+          <form onSubmit={onSubmitVisitor} className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Nombre *</Label><Input required value={form.firstName} onChange={(e) => setForm(f => ({ ...f, firstName: e.target.value }))} /></div>
+              <div><Label>Apellido *</Label><Input required value={form.lastName} onChange={(e) => setForm(f => ({ ...f, lastName: e.target.value }))} /></div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div><Label>Cédula</Label><Input value={form.idNumber} onChange={(e) => setForm(f => ({ ...f, idNumber: e.target.value }))} placeholder="V-12345678" /></div>
+              <div><Label>Teléfono</Label><Input value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))} /></div>
+              <div><Label>Placa vehículo</Label><Input value={form.vehiclePlate} onChange={(e) => setForm(f => ({ ...f, vehiclePlate: e.target.value }))} /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Válido desde *</Label><Input type="date" required value={form.validFrom} onChange={(e) => setForm(f => ({ ...f, validFrom: e.target.value }))} /></div>
+              <div><Label>Válido hasta *</Label><Input type="date" required value={form.validUntil} onChange={(e) => setForm(f => ({ ...f, validUntil: e.target.value }))} /></div>
+            </div>
+            <div><Label>Motivo</Label><Input value={form.purpose} onChange={(e) => setForm(f => ({ ...f, purpose: e.target.value }))} placeholder="Ej: cena familiar, mudanza, mantenimiento..." /></div>
+            <div><Label>Notas (opcional)</Label><textarea rows={2} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={form.notes} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} /></div>
+            {requestVisitor.isError && (
+              <p className="text-sm text-destructive">{requestVisitor.error.message}</p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button>
+              <Button type="submit" disabled={requestVisitor.isPending} className="bg-[#1e7a5f] hover:bg-[#15604a]">
+                {requestVisitor.isPending ? "Solicitando..." : "Solicitar"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {isLoading && <div className="py-8 text-center text-muted-foreground">Cargando visitantes...</div>}
 

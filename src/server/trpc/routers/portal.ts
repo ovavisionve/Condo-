@@ -1144,6 +1144,9 @@ export const portalRouter = router({
         tipoPago: z.enum(["ANTICIPO", "CUOTA_ESPECIFICA", "GENERAL"]).default("GENERAL"),
         invoiceId: z.string().optional(), // si tipoPago === "CUOTA_ESPECIFICA"
         notas: z.string().optional(),
+        // Captura de pantalla en data URL base64 (image/jpeg|png|webp). Max ~2.5MB.
+        // Pedido cliente: "colocar para poder subir cap de pantalla".
+        screenshot: z.string().max(3_500_000).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1297,6 +1300,9 @@ export const portalRouter = router({
         tipoPagoLabel: TIPO_PAGO_LABELS[input.tipoPago] ?? input.tipoPago,
         invoiceId: input.invoiceId ?? null,
         notas: input.notas ?? null,
+        // La captura va en el JSON estructurado del cuerpo de la notificación.
+        // El admin la ve al aprobar el pago (preview en el dialog de aprobación).
+        screenshot: input.screenshot ?? null,
         estado: "PENDIENTE",
         createdAt: new Date().toISOString(),
       });
@@ -1409,5 +1415,89 @@ export const portalRouter = router({
         take: 50,
       });
       return visitors;
+    }),
+
+  /**
+   * Pre-autoriza un visitante desde el portal del residente.
+   * El residente provee datos del visitante, fechas válidas y motivo.
+   * Se crea un Visitor con status PENDING + accessCode único (para QR).
+   * Pedido del cliente: "poder solicitar visitantes desde el portal de residente".
+   */
+  requestVisitor: publicProcedure
+    .input(z.object({
+      token: z.string().optional(),
+      unitId: z.string(),
+      firstName: z.string().min(1).max(80),
+      lastName: z.string().min(1).max(80),
+      idNumber: z.string().max(20).optional(),
+      idType: z.enum(["V", "E", "P", "J"]).default("V"),
+      phone: z.string().max(20).optional(),
+      vehiclePlate: z.string().max(20).optional(),
+      validFrom: z.coerce.date(),
+      validUntil: z.coerce.date(),
+      purpose: z.string().max(200).optional(),
+      notes: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const personId = await resolvePersonId(ctx.db, input.token, ctx.session?.user?.id);
+      if (!personId) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Sin acceso" });
+      }
+
+      // Verificar que la unidad pertenezca al residente
+      const [ownerships, tenancies] = await Promise.all([
+        ctx.db.ownership.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+        ctx.db.tenancy.findMany({ where: { personId, endDate: null }, select: { unitId: true } }),
+      ]);
+      const unitIds = new Set([
+        ...ownerships.map((o) => o.unitId),
+        ...tenancies.map((t) => t.unitId),
+      ]);
+      if (!unitIds.has(input.unitId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a esta unidad" });
+      }
+
+      // Validar fechas
+      if (input.validUntil <= input.validFrom) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "La fecha final debe ser posterior a la inicial" });
+      }
+
+      const unit = await ctx.db.unit.findFirstOrThrow({
+        where: { id: input.unitId },
+        select: { organizationId: true, communityId: true, code: true },
+      });
+
+      // Buscar el User asociado al residente (para authorizedById)
+      const person = await ctx.db.person.findUnique({
+        where: { id: personId },
+        select: { userId: true, firstName: true, lastName: true },
+      });
+
+      const visitor = await ctx.db.visitor.create({
+        data: {
+          organizationId: unit.organizationId,
+          communityId: unit.communityId,
+          unitId: input.unitId,
+          authorizedById: person?.userId ?? null,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          idNumber: input.idNumber ?? null,
+          idType: input.idType,
+          phone: input.phone ?? null,
+          vehiclePlate: input.vehiclePlate ?? null,
+          validFrom: input.validFrom,
+          validUntil: input.validUntil,
+          purpose: input.purpose ?? null,
+          notes: input.notes ?? null,
+          status: "PENDING",
+        },
+        select: { id: true, accessCode: true, firstName: true, lastName: true },
+      });
+
+      return {
+        ok: true,
+        visitorId: visitor.id,
+        accessCode: visitor.accessCode,
+      };
     }),
 });

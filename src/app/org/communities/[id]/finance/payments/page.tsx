@@ -66,6 +66,7 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
     id: string; unitCode: string; unitId: string; personName: string; banco: string;
     referencia: string; monto: number; moneda: string; fechaPago: string;
     tipoPago: string; notas: string | null; notifiedAt: Date; communityId: string;
+    screenshot?: string | null;
   };
 
   const reports = (reportsQ.data ?? []) as Report[];
@@ -228,6 +229,28 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
               <p className="rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
                 💰 El residente eligió ANTICIPO — pero si tiene deuda, se aplicará FIFO a la más antigua.
               </p>
+            )}
+
+            {/* Captura del comprobante subida por el residente */}
+            {confirmRep.screenshot && (
+              <details className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+                <summary className="cursor-pointer font-medium">📎 Ver captura del comprobante</summary>
+                <div className="mt-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={confirmRep.screenshot}
+                    alt="Comprobante del residente"
+                    className="max-h-96 rounded border"
+                  />
+                  <a
+                    href={confirmRep.screenshot}
+                    download={`comprobante-${confirmRep.referencia || confirmRep.id.slice(-6)}.png`}
+                    className="block mt-1 text-blue-600 hover:underline text-[11px]"
+                  >
+                    ⬇️ Descargar
+                  </a>
+                </div>
+              </details>
             )}
 
             {confirmErr && <p className="text-sm text-destructive">{confirmErr}</p>}

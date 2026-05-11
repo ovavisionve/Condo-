@@ -292,6 +292,7 @@ export const notificationsRouter = router({
         monto: number; moneda: string; fechaPago: string; notas: string | null;
         estado: string; createdAt: string;
         tipoPago: string; tipoPagoLabel: string; invoiceId: string | null;
+        screenshot?: string | null;
       };
 
       return notifications.map((n) => {
