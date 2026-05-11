@@ -474,18 +474,26 @@ function NewPaymentDialog({
         <h3 className="mb-4 text-lg font-semibold">Registrar pago</h3>
         <form onSubmit={onSubmit} className="space-y-4">
 
-          {/* ── Tasa de cambio vigente ── */}
-          {rate && (
+          {/* ── Tasa de cambio según fecha del pago ── */}
+          {rate ? (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-              💱 Tasa BCV:{" "}
+              💱 Tasa BCV de la fecha del pago:{" "}
               <span className="font-semibold">
                 Bs {rate.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / USD
               </span>
               {exchangeRate.data?.date && (
                 <span className="ml-2 text-blue-600 text-xs">
-                  ({new Date(exchangeRate.data.date).toLocaleDateString("es-VE")})
+                  (cotización del {new Date(exchangeRate.data.date).toLocaleDateString("es-VE")})
                 </span>
               )}
+            </div>
+          ) : exchangeRate.error ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              ⚠️ No hay tasa BCV disponible para esta fecha del pago. Ve a <strong>Finanzas → General</strong> y registra una tasa manual, o presiona "Actualizar BCV", antes de continuar.
+            </div>
+          ) : (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              Cargando tasa de la fecha…
             </div>
           )}
 
