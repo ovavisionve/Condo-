@@ -1360,12 +1360,21 @@ export const portalRouter = router({
       const totalInvoiced  = Number(invoiceAgg._sum.totalUsd ?? 0);
       const totalCollected = Number(paymentAgg._sum.amountUsd ?? 0);
 
+      // Tasa BCV del día para mostrar Bs primario en el portal (pedido cliente).
+      const { getCurrentRate } = await import("@/server/services/exchange");
+      const rateRec = await getCurrentRate("BCV");
+      const rate = Number(rateRec.vesPerUsd);
+
       return {
         year: input.year,
         month: input.month,
         totalInvoicedUsd:  totalInvoiced.toFixed(2),
         totalCollectedUsd: totalCollected.toFixed(2),
         pendingUsd:        Math.max(0, totalInvoiced - totalCollected).toFixed(2),
+        totalInvoicedBss:  (totalInvoiced * rate).toFixed(2),
+        totalCollectedBss: (totalCollected * rate).toFixed(2),
+        pendingBss:        (Math.max(0, totalInvoiced - totalCollected) * rate).toFixed(2),
+        rate:              rate.toFixed(8),
         invoiceCount:      invoiceAgg._count,
         paymentCount:      paymentAgg._count,
         totalUnits,

@@ -268,6 +268,13 @@ export async function POST(req: NextRequest) {
     let createdInvoices = 0;
     let createdItems = 0;
 
+    // Tasa BCV del día — necesaria para que las facturas tengan totalBss correcto.
+    // Antes se guardaba totalBss=0 → al pagar en VES la auto-asignación fallaba
+    // (balance Bs = 0) y todo el monto caía como anticipo.
+    const { getCurrentRate } = await import("@/server/services/exchange");
+    const rateRecord = await getCurrentRate("BCV", today);
+    const todayRate = Number(rateRecord.vesPerUsd);
+
     for (const row of ARRAYANES_DATA) {
       const unitId = unitByCode.get(row.systemCode)!;
       const sharePercent = (100 / row.owners.length).toFixed(2);
@@ -301,6 +308,7 @@ export async function POST(req: NextRequest) {
 
       // Crear factura SALDO ANTERIOR si hay deuda
       if (row.pendUsd > 0) {
+        const totalBssNum = row.pendUsd * todayRate;
         const inv = await db.invoice.create({
           data: {
             organizationId: oid,
@@ -313,11 +321,11 @@ export async function POST(req: NextRequest) {
             issuedAt: today,
             dueDate: today, // ya vencida
             totalUsd: row.pendUsd.toFixed(2),
-            totalBss: "0",
+            totalBss: totalBssNum.toFixed(2),
             paidUsd: "0",
             paidBss: "0",
-            exchangeRate: "1",
-            exchangeSource: "MANUAL",
+            exchangeRate: todayRate.toFixed(8),
+            exchangeSource: "BCV",
             currencyPrimary: "USD",
             status: "OVERDUE",
           },
@@ -329,7 +337,7 @@ export async function POST(req: NextRequest) {
             invoiceId: inv.id,
             description: `Saldo anterior al ${today.toLocaleDateString("es-VE")} (${row.excelCode})`,
             amountUsd: row.pendUsd.toFixed(2),
-            amountBss: "0",
+            amountBss: totalBssNum.toFixed(2),
             aliquot: "0",
           },
         });

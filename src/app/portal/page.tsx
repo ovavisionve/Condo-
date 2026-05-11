@@ -852,15 +852,18 @@ function CommunityMonthSummary({ communityId }: { communityId: string }) {
       <div className="grid grid-cols-3 gap-3 text-center">
         <div>
           <p className="text-[10px] text-muted-foreground">A cobrar</p>
-          <p className="font-bold text-[#1e3a5f] text-sm">${Number(data.totalInvoicedUsd).toFixed(0)}</p>
+          <p className="font-bold text-[#1e3a5f] text-sm">Bs {Number(data.totalInvoicedBss ?? 0).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</p>
+          <p className="text-[9px] text-muted-foreground">${Number(data.totalInvoicedUsd).toFixed(0)}</p>
         </div>
         <div>
           <p className="text-[10px] text-muted-foreground">Cobrado</p>
-          <p className="font-bold text-green-700 text-sm">${Number(data.totalCollectedUsd).toFixed(0)}</p>
+          <p className="font-bold text-green-700 text-sm">Bs {Number(data.totalCollectedBss ?? 0).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</p>
+          <p className="text-[9px] text-muted-foreground">${Number(data.totalCollectedUsd).toFixed(0)}</p>
         </div>
         <div>
           <p className="text-[10px] text-muted-foreground">Pendiente</p>
-          <p className="font-bold text-amber-700 text-sm">${Number(data.pendingUsd).toFixed(0)}</p>
+          <p className="font-bold text-amber-700 text-sm">Bs {Number(data.pendingBss ?? 0).toLocaleString("es-VE", { maximumFractionDigits: 0 })}</p>
+          <p className="text-[9px] text-muted-foreground">${Number(data.pendingUsd).toFixed(0)}</p>
         </div>
       </div>
       <div className="space-y-1">
@@ -880,10 +883,11 @@ function CommunityMonthSummary({ communityId }: { communityId: string }) {
 }
 
 // ─── NOTIFICAR PAGO TAB ───────────────────────────────────────────────────────
-function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
+function NotificarPagoTab({ unit, token, todayRate }: { unit: UnitData; token?: string; todayRate: string }) {
   const notify = trpc.portal.notificarPago.useMutation();
   const [form, setForm] = useState({
-    banco: "", referencia: "", monto: "", moneda: "USD" as "USD" | "VES",
+    // Bs por defecto (pedido cliente: "Por defecto TODO en bolivares")
+    banco: "", referencia: "", monto: "", moneda: "VES" as "USD" | "VES",
     fechaPago: new Date().toISOString().split("T")[0]!,
     notas: "",
   });
@@ -912,7 +916,7 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
 
   const resetForm = () => {
     setDone(false);
-    setForm({ banco: "", referencia: "", monto: "", moneda: "USD", fechaPago: new Date().toISOString().split("T")[0]!, notas: "" });
+    setForm({ banco: "", referencia: "", monto: "", moneda: "VES", fechaPago: new Date().toISOString().split("T")[0]!, notas: "" });
   };
 
   if (done) return (
@@ -942,12 +946,16 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
       {/* Estado del condominio */}
       <CommunityMonthSummary communityId={unit.communityId} />
 
-      {/* Contexto según estado de cuenta */}
+      {/* Contexto según estado de cuenta — Bs primario */}
       <div className={`rounded-lg border px-4 py-3 text-sm ${hasPending ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-green-50 border-green-200 text-green-800"}`}>
         {hasPending ? (
           <>
-            <span className="font-semibold">Deuda actual: US$ {pendingUsd.toFixed(2)}</span>
-            <span className="text-amber-700"> — Tu pago se aplicará a las cuotas pendientes más antiguas.</span>
+            <span className="font-semibold">
+              Deuda actual: Bs {(pendingUsd * Number(todayRate)).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+            <span className="text-amber-700 text-xs"> (≈ US$ {pendingUsd.toFixed(2)})</span>
+            <br />
+            <span className="text-amber-700">Tu pago se aplicará a las cuotas pendientes más antiguas.</span>
           </>
         ) : (
           <>
@@ -979,8 +987,8 @@ function NotificarPagoTab({ unit, token }: { unit: UnitData; token?: string }) {
               <Label>Moneda</Label>
               <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
                 value={form.moneda} onChange={(e) => setForm(f => ({ ...f, moneda: e.target.value as "USD" | "VES" }))}>
-                <option value="USD">USD — Dólares</option>
                 <option value="VES">Bs — Bolívares</option>
+                <option value="USD">USD — Dólares</option>
               </select>
             </div>
           </div>
@@ -1467,7 +1475,7 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
         {tab === "pendientes" && <PendientesTab unit={unit} todayRate={data.todayRate} />}
         {tab === "pagos"      && <PagosTab      unit={unit} token={token} />}
         {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
-        {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} />}
+        {tab === "notificar"  && <NotificarPagoTab unit={unit} token={token} todayRate={data.todayRate} />}
         {tab === "deuda"      && <DeudaGeneralTab communityId={unit.communityId} token={token} unit={unit} />}
         {tab === "reservas"   && <ReservasTab communityId={unit.communityId} />}
         {tab === "seguridad"  && <SeguridadTab unit={unit} token={token} />}

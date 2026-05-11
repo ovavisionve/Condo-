@@ -1492,12 +1492,14 @@ export const financeRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        // Buscar facturas pendientes de la unidad en orden de vencimiento (más antigua primero)
+        // CRÍTICO: incluir OVERDUE. Las facturas SALDO ANTERIOR del reset están en
+        // status OVERDUE; antes el filtro solo aceptaba ISSUED/PARTIAL → allocations
+        // quedaban vacías → pago caía como anticipo (bug "no descuenta la deuda").
         const pendingInvoices = await ctx.db.invoice.findMany({
           where: {
             organizationId: input.organizationId,
             unitId: input.unitId,
-            status: { in: ["ISSUED", "PARTIAL"] },
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
           },
           orderBy: { dueDate: "asc" },
           select: {
@@ -1510,6 +1512,11 @@ export const financeRouter = router({
           },
         });
 
+        // Tasa de la fecha del pago (para convertir facturas con totalBss=0
+        // cuando se paga en VES, p.ej. SALDO ANTERIOR del reset).
+        const rateRecord = await getCurrentRate("BCV", input.paidAt);
+        const rate = new (await import("decimal.js")).Decimal(rateRecord.vesPerUsd);
+
         // Construir allocations automáticas
         const { Decimal } = await import("decimal.js");
         let remaining = new Decimal(input.amount);
@@ -1518,14 +1525,24 @@ export const financeRouter = router({
         for (const inv of pendingInvoices) {
           if (remaining.lte(0)) break;
 
-          // Calcular saldo pendiente de esta factura en moneda primaria del pago
+          // Calcular saldo pendiente de esta factura en moneda primaria del pago.
+          // Si la factura tiene totalBss=0 pero pagás en VES, convertimos via tasa.
           const isPrimaryUsd = input.currencyPrimary === "USD";
-          const total = isPrimaryUsd
-            ? new Decimal(inv.totalUsd.toString())
-            : new Decimal(inv.totalBss.toString());
-          const paid = isPrimaryUsd
-            ? new Decimal(inv.paidUsd.toString())
-            : new Decimal(inv.paidBss.toString());
+          const totalUsdInv = new Decimal(inv.totalUsd.toString());
+          const totalBssInv = new Decimal(inv.totalBss.toString());
+          const paidUsdInv = new Decimal(inv.paidUsd.toString());
+          const paidBssInv = new Decimal(inv.paidBss.toString());
+
+          let total: Decimal;
+          let paid: Decimal;
+          if (isPrimaryUsd) {
+            total = totalUsdInv;
+            paid = paidUsdInv;
+          } else {
+            // Si totalBss está en 0 (caso reset), derivamos desde USD × tasa
+            total = totalBssInv.gt(0) ? totalBssInv : totalUsdInv.mul(rate);
+            paid = paidBssInv.gt(0) ? paidBssInv : paidUsdInv.mul(rate);
+          }
           const balance = total.minus(paid);
 
           if (balance.lte(0)) continue;
