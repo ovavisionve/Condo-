@@ -416,7 +416,7 @@ function RecurringTemplatesPanel({
       await createTpl.mutateAsync({
         organizationId, communityId,
         category: form.category,
-        customCategory: form.category === "OTHER" && form.customCategory ? form.customCategory : undefined,
+        customCategory: form.customCategory.trim() || undefined,
         description: form.description,
         supplierName: form.supplierName || undefined,
         amountUsd: Number(form.amountUsd),
@@ -562,16 +562,15 @@ function RecurringTemplatesPanel({
                   <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
                 </div>
               </div>
-              {form.category === "OTHER" && (
-                <div>
-                  <Label>Tipo de gasto (nombre)</Label>
-                  <Input
-                    placeholder="Ej: Piscina, Planta eléctrica..."
-                    value={form.customCategory}
-                    onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
-                  />
-                </div>
-              )}
+              <div>
+                <Label>Subcategoría / Nombre específico <span className="text-muted-foreground text-xs">(opcional — visible en el recibo)</span></Label>
+                <Input
+                  placeholder="Ej: Piscina, Planta eléctrica, Pintura..."
+                  value={form.customCategory}
+                  onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
+                  maxLength={80}
+                />
+              </div>
               <div>
                 <Label>Descripción</Label>
                 <Input required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
@@ -659,7 +658,9 @@ function NewExpenseDialog({
     customCategory: "",
     description: "",
     amount: "",
-    currencyPrimary: "USD" as "USD" | "VES",
+    // Bs por defecto (pedido del cliente: "Por defecto TODO en bolivares pero
+    // con la posibilidad de pasar a dolares").
+    currencyPrimary: "VES" as "USD" | "VES",
     supplierName: "",
     invoiceNumber: "",
     notes: "",
@@ -679,9 +680,10 @@ function NewExpenseDialog({
         organizationId,
         communityId,
         category: form.category,
-        customCategory: form.category === "OTHER" && form.customCategory.trim()
-          ? form.customCategory.trim()
-          : undefined,
+        // Subcategoría libre — antes solo se aceptaba si category=OTHER.
+        // Ahora cualquier categoría puede llevar customCategory (pedido del cliente:
+        // "Crear nuevas categorías en los gastos").
+        customCategory: form.customCategory.trim() || undefined,
         description: form.description,
         periodYear: form.periodYear,
         periodMonth: form.periodMonth,
@@ -722,17 +724,20 @@ function NewExpenseDialog({
             </div>
           </div>
 
-          {form.category === "OTHER" && (
-            <div>
-              <Label>¿Qué tipo de gasto? <span className="text-muted-foreground text-xs">(nombre)</span></Label>
-              <Input
-                placeholder="Ej: Piscina, Planta eléctrica, Pintura..."
-                value={form.customCategory}
-                onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
-                maxLength={80}
-              />
-            </div>
-          )}
+          <div>
+            <Label>
+              Subcategoría / Nombre específico{" "}
+              <span className="text-muted-foreground text-xs">(opcional — se muestra en el recibo en lugar de la categoría genérica)</span>
+            </Label>
+            <Input
+              placeholder={form.category === "OTHER"
+                ? "Ej: Piscina, Planta eléctrica, Pintura..."
+                : `Ej: subcategoría específica de ${CAT_LABELS[form.category] ?? form.category}...`}
+              value={form.customCategory}
+              onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
+              maxLength={80}
+            />
+          </div>
 
           <div>
             <Label>Descripción</Label>

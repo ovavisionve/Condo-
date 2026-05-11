@@ -224,11 +224,12 @@ export async function issueMonthlyInvoices(params: {
   type ExpenseLike = typeof expenses[number];
   function groupByTemplate(rows: ExpenseLike[], scope: string | null): ExpenseLike[] {
     const byTpl = new Map<string, ExpenseLike[]>();
-    const standalone: ExpenseLike[] = []; // sin templateId o son PROVISION_BASE / PROVISION_ADJUSTMENT
+    const byCategory = new Map<string, ExpenseLike[]>(); // gastos sin template, agrupados por (category|customCategory)
+    const isolated: ExpenseLike[] = []; // PROVISION_BASE / PROVISION_ADJUSTMENT — cada uno su propia línea
     for (const e of rows) {
       // Provisiones y ajustes NO se agrupan — cada uno es su propia línea con su descripción
       if (e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT") {
-        standalone.push(e);
+        isolated.push(e);
         continue;
       }
       if (e.recurringTemplateId) {
@@ -238,27 +239,38 @@ export async function issueMonthlyInvoices(params: {
         arr.push(e);
         byTpl.set(key, arr);
       } else {
-        standalone.push(e);
+        // Gastos sueltos (sin plantilla): agrupar por categoría + sub-categoría + scope.
+        // Pedido cliente: "Una sola en el resumen, no pueden verse 10 de un mismo sector".
+        // Ej: 10 gastos "Ferretería" → 1 línea sumada en el recibo.
+        const key = `${e.category}|${e.customCategory ?? ""}|${scope ?? ""}`;
+        const arr = byCategory.get(key) ?? [];
+        arr.push(e);
+        byCategory.set(key, arr);
       }
     }
-    const aggregated: ExpenseLike[] = [];
-    for (const [, group] of byTpl) {
+
+    function aggregateGroup(group: ExpenseLike[], useTemplateDesc: boolean): ExpenseLike {
       if (group.length === 1) {
         const e = group[0]!;
-        aggregated.push({ ...e, description: e.recurringTemplate?.description ?? e.description });
-        continue;
+        return { ...e, description: useTemplateDesc ? (e.recurringTemplate?.description ?? e.description) : e.description };
       }
       const sumBss = group.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
       const sumUsd = group.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
       const head = group[0]!;
-      aggregated.push({
+      return {
         ...head,
         amountBss: sumBss.toFixed(2) as never,
         amountUsd: sumUsd.toFixed(2) as never,
-        description: head.recurringTemplate?.description ?? head.description,
-      });
+        description: useTemplateDesc
+          ? (head.recurringTemplate?.description ?? head.description)
+          : (head.customCategory ?? head.description),
+      };
     }
-    return [...aggregated, ...standalone];
+
+    const aggregated: ExpenseLike[] = [];
+    for (const [, group] of byTpl) aggregated.push(aggregateGroup(group, true));
+    for (const [, group] of byCategory) aggregated.push(aggregateGroup(group, false));
+    return [...aggregated, ...isolated];
   }
   const towerExpenses = groupByTemplate(towerExpensesRaw, "tower");
   const generalExpenses = groupByTemplate(generalExpensesRaw, null);
