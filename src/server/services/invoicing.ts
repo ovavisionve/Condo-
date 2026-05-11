@@ -206,7 +206,10 @@ export async function issueMonthlyInvoices(params: {
   }
 
   // ── FASE 2: Cálculo en memoria (sin tocar la BD) ──────────────────────────
-  type LineDraft = { unitId: string; expenseId: string | null; description: string; bss: Decimal; usd: Decimal; aliquot: Decimal };
+  // sortOrder: 1=PROVISION_BASE, 2=PROVISION_ADJUSTMENT, 3=Cuota mensual,
+  // 4=Gasto general agrupado, 5=Gasto por torre, 6=Gasto individual,
+  // 7=Descuento ingreso. Pedido del cliente: "Las provisiones van primero".
+  type LineDraft = { unitId: string; expenseId: string | null; description: string; bss: Decimal; usd: Decimal; aliquot: Decimal; sortOrder: number };
   const draftLines: LineDraft[] = [];
 
   // Separar gastos por tipo: individuales, por torre, generales
@@ -280,6 +283,7 @@ export async function issueMonthlyInvoices(params: {
       bss: new Decimal(exp.amountBss.toString()),
       usd: new Decimal(exp.amountUsd.toString()),
       aliquot: new Decimal("100"),
+      sortOrder: 6,
     });
   }
 
@@ -309,10 +313,15 @@ export async function issueMonthlyInvoices(params: {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
       if (bss.eq(0) && usd.eq(0)) continue;
+      // sortOrder: 1 si es PROVISION_BASE, 2 si es AJUSTE, 5 si gasto torre normal
+      const sortOrder = exp.kind === "PROVISION_BASE" ? 1
+        : exp.kind === "PROVISION_ADJUSTMENT" ? 2
+        : 5;
       draftLines.push({
         unitId: u.id, expenseId: exp.id,
         description: `${exp.customCategory ?? exp.description} (Torre ${exp.towerScope})`,
         bss, usd, aliquot: new Decimal(u.aliquot.toString()),
+        sortOrder,
       });
     }
   }
@@ -330,10 +339,15 @@ export async function issueMonthlyInvoices(params: {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
       if (bss.eq(0) && usd.eq(0)) continue;
+      // sortOrder: 1 si es PROVISION_BASE, 2 si es AJUSTE, 4 si gasto general normal
+      const sortOrder = exp.kind === "PROVISION_BASE" ? 1
+        : exp.kind === "PROVISION_ADJUSTMENT" ? 2
+        : 4;
       draftLines.push({
         unitId: u.id, expenseId: exp.id,
         description: `${exp.customCategory ?? exp.description}`,
         bss, usd, aliquot: new Decimal(u.aliquot.toString()),
+        sortOrder,
       });
     }
   }
@@ -354,6 +368,7 @@ export async function issueMonthlyInvoices(params: {
         description: `Descuento — Ingresos comunes del período`,
         bss: bss.neg(), usd: usd.neg(),
         aliquot: new Decimal(u.aliquot.toString()),
+        sortOrder: 7,
       });
     }
   }
@@ -363,7 +378,7 @@ export async function issueMonthlyInvoices(params: {
     const feeUsd = new Decimal(community.monthlyFeeUsd!.toString());
     const feeBss = feeUsd.mul(refRate.vesPerUsd);
     for (const u of units) {
-      draftLines.push({ unitId: u.id, expenseId: null, description: "Cuota de condominio mensual", usd: feeUsd, bss: feeBss, aliquot: new Decimal(u.aliquot.toString()) });
+      draftLines.push({ unitId: u.id, expenseId: null, description: "Cuota de condominio mensual", usd: feeUsd, bss: feeBss, aliquot: new Decimal(u.aliquot.toString()), sortOrder: 3 });
     }
   }
 
@@ -378,7 +393,12 @@ export async function issueMonthlyInvoices(params: {
   const invoiceRows: InvoiceRow[] = [];
 
   for (const u of units) {
-    const lines = draftLines.filter((l) => l.unitId === u.id);
+    // Ordenar líneas: provisiones primero (sortOrder 1-2), luego cuota (3),
+    // gastos generales (4), torre (5), individual (6), descuentos (7).
+    // Pedido del cliente: "Las provisiones van primero".
+    const lines = draftLines
+      .filter((l) => l.unitId === u.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
     if (lines.length === 0) continue;
     const totalBss = lines.reduce((acc, l) => acc.plus(l.bss), new Decimal(0));
     const totalUsd = lines.reduce((acc, l) => acc.plus(l.usd), new Decimal(0));

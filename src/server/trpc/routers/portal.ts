@@ -1069,11 +1069,12 @@ export const portalRouter = router({
         ? `${owner.person.idType} ${owner.person.idNumber}`
         : undefined;
 
+      const MONTHS_PDF_P = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
       const invoicesData = payment.allocations.map((alloc) => {
         const inv = alloc.invoice;
         const period =
           inv.periodMonth && inv.periodYear
-            ? `${String(inv.periodMonth).padStart(2, "0")}/${inv.periodYear}`
+            ? `${MONTHS_PDF_P[inv.periodMonth - 1]} ${inv.periodYear}`
             : "";
         return {
           number: inv.invoiceNumber,
@@ -1081,6 +1082,21 @@ export const portalRouter = router({
           amountUsd: alloc.amountUsd.toString(),
         };
       });
+
+      // Saldo a favor: monto del pago - lo aplicado a facturas
+      const { Decimal: DecP } = await import("decimal.js");
+      const totalUsdP = new DecP(payment.amountUsd.toString());
+      const totalBssP = new DecP(payment.amountBss.toString());
+      const allocUsdP = payment.allocations.reduce(
+        (s, a) => s.plus(a.amountUsd.toString()),
+        new DecP(0),
+      );
+      const allocBssP = payment.allocations.reduce(
+        (s, a) => s.plus(a.amountBss.toString()),
+        new DecP(0),
+      );
+      const creditUsdP = DecP.max(0, totalUsdP.minus(allocUsdP));
+      const creditBssP = DecP.max(0, totalBssP.minus(allocBssP));
 
       const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
       const buffer = await generatePaymentVoucherPdf({
@@ -1099,6 +1115,8 @@ export const portalRouter = router({
         reference: payment.reference ?? undefined,
         paidAt: payment.paidAt,
         invoices: invoicesData,
+        creditUsd: creditUsdP.gt(0.005) ? creditUsdP.toFixed(2) : undefined,
+        creditBss: creditBssP.gt(0.005) ? creditBssP.toFixed(2) : undefined,
       });
 
       return {

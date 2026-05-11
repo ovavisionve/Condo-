@@ -987,6 +987,9 @@ export type PaymentVoucherData = {
   reference?: string;
   paidAt: Date;
   invoices: { number: string; period: string; amountUsd: string }[];
+  /** Saldo a favor: monto no aplicado a facturas que queda como anticipo. */
+  creditUsd?: string;
+  creditBss?: string;
 };
 
 const vc = StyleSheet.create({
@@ -1052,6 +1055,19 @@ const vc = StyleSheet.create({
   // ── Anticipo notice ─────────────────────────────────────────────────────
   anticipoBox: { borderWidth: 1, borderColor: BDR, backgroundColor: ROW, padding: "8 10", marginBottom: 14 },
   anticipoText: { fontSize: 8.5, color: MID },
+
+  // ── "Aplicado a:" resumen rapido ───────────────────────────────────────
+  appliedToBox: { backgroundColor: ROW, padding: "6 10", marginBottom: 10, borderLeftWidth: 3, borderLeftColor: BK },
+  appliedToLabel: { fontSize: 7.5, color: LT, fontFamily: "Helvetica-Bold", letterSpacing: 1, marginBottom: 2 },
+  appliedToValue: { fontSize: 10, fontFamily: "Helvetica-Bold", color: BK },
+
+  // ── Saldo a favor ──────────────────────────────────────────────────────
+  creditBox: { borderWidth: 1, borderColor: BK, padding: "10 12", marginBottom: 14 },
+  creditLabel: { fontSize: 7.5, color: LT, fontFamily: "Helvetica-Bold", letterSpacing: 1, marginBottom: 4 },
+  creditRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 },
+  creditAmountUsd: { fontSize: 14, fontFamily: "Helvetica-Bold", color: BK },
+  creditAmountBss: { fontSize: 9, color: MID },
+  creditNote: { fontSize: 7.5, color: MID, marginTop: 2 },
 
   // ── Footer ──────────────────────────────────────────────────────────────
   footer: { position: "absolute", bottom: 24, left: 38, right: 38 },
@@ -1185,6 +1201,14 @@ function VoucherDoc({ data }: { data: PaymentVoucherData }) {
         ),
       ),
 
+      // ── Aplicado a: (resumen rápido pedido por el cliente) ────────
+      !isAnticipo && data.invoices.length > 0 && React.createElement(View, { style: vc.appliedToBox },
+        React.createElement(Text, { style: vc.appliedToLabel }, "APLICADO A:"),
+        React.createElement(Text, { style: vc.appliedToValue },
+          data.invoices.map((iv) => iv.period).join("  ·  ")
+        ),
+      ),
+
       // ── Recibos aplicados ────────────────────────────────────────
       !isAnticipo && React.createElement(View, { style: vc.invoiceSection },
         React.createElement(Text, { style: vc.invoiceSectionTitle }, "RECIBOS DE CONDOMINIO APLICADOS"),
@@ -1200,6 +1224,18 @@ function VoucherDoc({ data }: { data: PaymentVoucherData }) {
             React.createElement(Text, { style: vc.invoiceTdAmt }, fmtUsd(ivRow.amountUsd)),
           )
         ),
+      ),
+
+      // ── Saldo a favor (cuando hay aplicación + sobrante) ─────────
+      !isAnticipo && data.creditUsd && Number(data.creditUsd) > 0.005 && React.createElement(View, { style: vc.creditBox },
+        React.createElement(Text, { style: vc.creditLabel }, "SALDO A FAVOR"),
+        React.createElement(View, { style: vc.creditRow },
+          React.createElement(Text, { style: vc.creditAmountUsd }, "$" + Number(data.creditUsd).toFixed(2) + " USD"),
+          data.creditBss && React.createElement(Text, { style: vc.creditAmountBss },
+            "Bs " + Number(data.creditBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
+        ),
+        React.createElement(Text, { style: vc.creditNote },
+          "El monto excedente quedará como crédito a favor del propietario y será descontado de los próximos Recibos de Condominio."),
       ),
 
       // ── Anticipo ─────────────────────────────────────────────────

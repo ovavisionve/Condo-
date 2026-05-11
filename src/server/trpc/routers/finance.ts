@@ -1706,6 +1706,24 @@ export const financeRouter = router({
           : null;
         const person = ownership?.person ?? tenancy?.person ?? null;
 
+        // Saldo a favor: monto total del pago - suma de allocations a facturas.
+        // Si el cliente pagó 60 y solo se aplicó 50 a facturas, quedan 10 como crédito.
+        const totalUsd = new Decimal(payment.amountUsd.toString());
+        const totalBss = new Decimal(payment.amountBss.toString());
+        const allocUsd = payment.allocations.reduce(
+          (s, a) => s.plus(a.amountUsd.toString()),
+          new Decimal(0),
+        );
+        const allocBss = payment.allocations.reduce(
+          (s, a) => s.plus(a.amountBss.toString()),
+          new Decimal(0),
+        );
+        const creditUsd = Decimal.max(0, totalUsd.minus(allocUsd));
+        const creditBss = Decimal.max(0, totalBss.minus(allocBss));
+
+        // Formato de período "Mar 2026" (más legible que "3/2026" — pedido del cliente)
+        const MONTHS_PDF = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
         const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
         const buffer = await generatePaymentVoucherPdf({
           communityName: community.name,
@@ -1725,9 +1743,11 @@ export const financeRouter = router({
           paidAt: payment.paidAt,
           invoices: payment.allocations.map((a) => ({
             number: a.invoice.invoiceNumber,
-            period: `${a.invoice.periodMonth}/${a.invoice.periodYear}`,
+            period: `${MONTHS_PDF[a.invoice.periodMonth - 1]} ${a.invoice.periodYear}`,
             amountUsd: a.amountUsd.toString(),
           })),
+          creditUsd: creditUsd.gt(0.005) ? creditUsd.toFixed(2) : undefined,
+          creditBss: creditBss.gt(0.005) ? creditBss.toFixed(2) : undefined,
         });
         return { base64: buffer.toString("base64") };
       }),
