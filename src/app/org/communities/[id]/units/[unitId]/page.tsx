@@ -42,11 +42,18 @@ export default function UnitDetailPage() {
   const [showAssignPerson, setShowAssignPerson] = useState<"OWNER" | "TENANT" | null>(null);
   const [showFineForm, setShowFineForm] = useState(false);
   const [showExtraFeeForm, setShowExtraFeeForm] = useState(false);
+  const [showPaymentPlanForm, setShowPaymentPlanForm] = useState(false);
+  const [showCancelPlanFor, setShowCancelPlanFor] = useState<string | null>(null);
+  const [generatingNotice, setGeneratingNotice] = useState(false);
+  const [noticeReason, setNoticeReason] = useState<"OVERDUE_90" | "OVERDUE_180" | "OTHER">("OVERDUE_90");
+  const [noticeCustom, setNoticeCustom] = useState("");
+  const [showNoticeOpts, setShowNoticeOpts] = useState(false);
 
   const { data: unit, refetch } = trpc.org.units.detail.useQuery({ organizationId, unitId });
   const rate = trpc.finance.exchange.current.useQuery({ organizationId });
   const todayRate = Number(rate.data?.vesPerUsd ?? 0);
   const utils = trpc.useUtils();
+  const generateLegalNoticeMut = trpc.finance.invoices.generateLegalNotice.useMutation();
 
   if (!unit) return <div className="text-muted-foreground">Cargando...</div>;
 
@@ -65,6 +72,18 @@ export default function UnitDetailPage() {
     }),
     { usd: 0, bss: 0 },
   );
+
+  // Días de mora máximos entre facturas no pagadas/anuladas → para botón de carta legal
+  const today = Date.now();
+  const maxDaysOverdue = unit.invoices.reduce((max, inv) => {
+    if (inv.status === "VOIDED" || inv.status === "PAID") return max;
+    const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+    if (pending <= 0.005) return max;
+    const due = new Date(inv.dueDate).getTime();
+    const days = Math.floor((today - due) / (1000 * 60 * 60 * 24));
+    return Math.max(max, days);
+  }, 0);
+  const hasLegalGroundForNotice = maxDaysOverdue >= 90 && balance.usd > 0.005;
 
   return (
     <div className="space-y-6">
@@ -242,6 +261,101 @@ export default function UnitDetailPage() {
           </table>
         </div>
       </div>
+
+      {/* Cobranza extrajudicial (Art. 14 LPH) */}
+      {hasLegalGroundForNotice && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-amber-900">📜 Cobro extrajudicial — Art. 14 LPH</h3>
+              <p className="mt-1 text-xs text-amber-800">
+                Esta unidad tiene <strong>{maxDaysOverdue} días</strong> en mora con saldo
+                pendiente de <strong>${balance.usd.toFixed(2)}</strong>. Puede generar una carta
+                formal de cobro extrajudicial citando el artículo 14 de la Ley de Propiedad Horizontal.
+              </p>
+              {showNoticeOpts && (
+                <div className="mt-3 space-y-2">
+                  <div>
+                    <Label className="text-xs">Motivo</Label>
+                    <select
+                      className="block w-full rounded border bg-white px-2 py-1 text-sm"
+                      value={noticeReason}
+                      onChange={(e) => setNoticeReason(e.target.value as "OVERDUE_90" | "OVERDUE_180" | "OTHER")}
+                    >
+                      <option value="OVERDUE_90">Mora superior a 90 días</option>
+                      <option value="OVERDUE_180">Mora superior a 180 días</option>
+                      <option value="OTHER">Incumplimiento general</option>
+                    </select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Mensaje adicional (opcional)</Label>
+                    <textarea
+                      className="block w-full rounded border bg-white px-2 py-1 text-sm"
+                      rows={3}
+                      maxLength={1000}
+                      value={noticeCustom}
+                      onChange={(e) => setNoticeCustom(e.target.value)}
+                      placeholder="Texto adicional que se anexará al cuerpo de la carta."
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex shrink-0 flex-col gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowNoticeOpts((v) => !v)}
+              >
+                {showNoticeOpts ? "Ocultar opciones" : "Opciones"}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-amber-700 hover:bg-amber-800 text-white"
+                disabled={generatingNotice}
+                onClick={async () => {
+                  setGeneratingNotice(true);
+                  try {
+                    const result = await generateLegalNoticeMut.mutateAsync({
+                      organizationId,
+                      communityId,
+                      unitId,
+                      reason: noticeReason,
+                      customMessage: noticeCustom.trim() || undefined,
+                    });
+                    // Disparar descarga
+                    const link = document.createElement("a");
+                    link.href = `data:application/pdf;base64,${result.base64}`;
+                    link.download = result.fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : "Error generando carta");
+                  } finally {
+                    setGeneratingNotice(false);
+                  }
+                }}
+              >
+                {generatingNotice ? "Generando..." : "📜 Generar carta de cobro extrajudicial"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Plan de pago */}
+      <PaymentPlanCard
+        organizationId={organizationId}
+        communityId={communityId}
+        unitId={unitId}
+        showForm={showPaymentPlanForm}
+        onToggleForm={() => setShowPaymentPlanForm((v) => !v)}
+        cancelPlanFor={showCancelPlanFor}
+        onCancelOpen={setShowCancelPlanFor}
+        onChanged={() => { void refetch(); void utils.finance.paymentPlans.list.invalidate(); }}
+        suggestedTotal={balance.usd}
+      />
 
       {/* Multas y cuotas extra */}
       <div className="grid gap-4 md:grid-cols-2">
@@ -784,5 +898,283 @@ function ApplyExtraFeeForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+// ─── Plan de pago (Feature B) ───────────────────────────────────────────────
+
+const PLAN_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "Activo",
+  COMPLETED: "Completado",
+  CANCELLED: "Cancelado",
+  DEFAULTED: "Incumplido",
+};
+const PLAN_STATUS_COLORS: Record<string, string> = {
+  ACTIVE: "bg-blue-100 text-blue-700",
+  COMPLETED: "bg-green-100 text-green-700",
+  CANCELLED: "bg-zinc-200 text-zinc-600",
+  DEFAULTED: "bg-red-100 text-red-700",
+};
+
+function PaymentPlanCard({
+  organizationId,
+  communityId,
+  unitId,
+  showForm,
+  onToggleForm,
+  cancelPlanFor,
+  onCancelOpen,
+  onChanged,
+  suggestedTotal,
+}: {
+  organizationId: string;
+  communityId: string;
+  unitId: string;
+  showForm: boolean;
+  onToggleForm: () => void;
+  cancelPlanFor: string | null;
+  onCancelOpen: (id: string | null) => void;
+  onChanged: () => void;
+  suggestedTotal: number;
+}) {
+  const plans = trpc.finance.paymentPlans.list.useQuery({
+    organizationId, communityId, unitId,
+  });
+  const activePlan = plans.data?.find((p) => p.status === "ACTIVE") ?? null;
+  const detail = trpc.finance.paymentPlans.byId.useQuery(
+    { organizationId, id: activePlan?.id ?? "" },
+    { enabled: !!activePlan },
+  );
+  const createPlan = trpc.finance.paymentPlans.create.useMutation();
+  const cancelPlan = trpc.finance.paymentPlans.cancel.useMutation();
+
+  const [form, setForm] = useState({
+    totalUsd: "",
+    installments: "6",
+    startDate: new Date().toISOString().slice(0, 10),
+    notes: "",
+  });
+  const [cancelReason, setCancelReason] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await createPlan.mutateAsync({
+        organizationId,
+        communityId,
+        unitId,
+        totalUsd: Number(form.totalUsd),
+        installments: Number(form.installments),
+        startDate: new Date(form.startDate),
+        notes: form.notes || undefined,
+      });
+      setForm({ totalUsd: "", installments: "6", startDate: new Date().toISOString().slice(0, 10), notes: "" });
+      onToggleForm();
+      await plans.refetch();
+      onChanged();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const onConfirmCancel = async () => {
+    if (!cancelPlanFor) return;
+    if (!cancelReason.trim() || cancelReason.trim().length < 3) {
+      setErr("Indique el motivo de la cancelacion");
+      return;
+    }
+    try {
+      await cancelPlan.mutateAsync({
+        organizationId,
+        id: cancelPlanFor,
+        reason: cancelReason.trim(),
+      });
+      onCancelOpen(null);
+      setCancelReason("");
+      await plans.refetch();
+      onChanged();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  return (
+    <div className="rounded-lg border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Plan de pago</h3>
+        {!activePlan && (
+          <Button size="sm" variant="outline" onClick={onToggleForm}>
+            {showForm ? "Cancelar" : "+ Crear plan de pago"}
+          </Button>
+        )}
+        {activePlan && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-red-300 text-red-700 hover:bg-red-50"
+            onClick={() => onCancelOpen(activePlan.id)}
+          >
+            Cancelar plan
+          </Button>
+        )}
+      </div>
+
+      {!activePlan && !showForm && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Esta unidad no tiene un plan de pago activo. Puede pactar uno para fraccionar la deuda acumulada en cuotas mensuales.
+        </p>
+      )}
+
+      {showForm && !activePlan && (
+        <form onSubmit={onSubmit} className="mt-3 grid gap-3 rounded border bg-muted/30 p-3 md:grid-cols-2">
+          <div>
+            <Label>Total a pactar (USD)</Label>
+            <Input
+              type="number" step="0.01" min="0.01" required
+              placeholder={suggestedTotal > 0 ? `Deuda actual: $${suggestedTotal.toFixed(2)}` : "Ej: 1000.00"}
+              value={form.totalUsd}
+              onChange={(e) => setForm((f) => ({ ...f, totalUsd: e.target.value }))}
+            />
+          </div>
+          <div>
+            <Label>Numero de cuotas</Label>
+            <Input
+              type="number" min={2} max={36} required
+              value={form.installments}
+              onChange={(e) => setForm((f) => ({ ...f, installments: e.target.value }))}
+            />
+          </div>
+          <div>
+            <Label>Fecha de inicio (1ra cuota)</Label>
+            <Input
+              type="date" required
+              value={form.startDate}
+              onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))}
+            />
+          </div>
+          <div>
+            <Label>Notas (opcional)</Label>
+            <Input
+              value={form.notes}
+              onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            />
+          </div>
+          <div className="col-span-full">
+            <p className="text-xs text-muted-foreground">
+              Se generara una factura tipo EXTRA_FEE por cada cuota mensual a partir de la fecha de inicio.
+              La unidad podra pagar cada cuota como una factura normal.
+            </p>
+          </div>
+          {err && <p className="col-span-full text-sm text-destructive">{err}</p>}
+          <div className="col-span-full flex justify-end">
+            <Button type="submit" disabled={createPlan.isPending}>
+              {createPlan.isPending ? "Creando..." : "Crear plan"}
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {activePlan && (
+        <div className="mt-3 space-y-3">
+          <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+            <div>
+              <div className="text-muted-foreground">Total pactado</div>
+              <div className="font-medium">${Number(activePlan.totalUsd.toString()).toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Cuotas</div>
+              <div className="font-medium">{activePlan.installments} x ${Number(activePlan.installmentUsd.toString()).toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Inicio</div>
+              <div className="font-medium">{new Date(activePlan.startDate).toLocaleDateString("es-VE")}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Estado</div>
+              <div>
+                <span className={`rounded px-2 py-0.5 text-xs ${PLAN_STATUS_COLORS[activePlan.status] ?? "bg-gray-100"}`}>
+                  {PLAN_STATUS_LABELS[activePlan.status] ?? activePlan.status}
+                </span>
+              </div>
+            </div>
+          </div>
+          {activePlan.notes && (
+            <p className="text-xs text-muted-foreground italic">{activePlan.notes}</p>
+          )}
+          <div className="overflow-hidden rounded-lg border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-left">
+                <tr>
+                  <th className="px-3 py-2">Cuota</th>
+                  <th className="px-3 py-2"># Recibo</th>
+                  <th className="px-3 py-2">Vence</th>
+                  <th className="px-3 py-2 text-right">USD</th>
+                  <th className="px-3 py-2 text-right">Pagado</th>
+                  <th className="px-3 py-2 text-right">Pendiente</th>
+                  <th className="px-3 py-2">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(detail.data?.invoices ?? []).map((inv, i) => {
+                  const total = Number(inv.totalUsd.toString());
+                  const paid = Number(inv.paidUsd.toString());
+                  const pending = Math.max(0, total - paid);
+                  return (
+                    <tr key={inv.id} className="border-t">
+                      <td className="px-3 py-2">{i + 1} / {activePlan.installments}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{inv.invoiceNumber}</td>
+                      <td className="px-3 py-2 text-xs">{new Date(inv.dueDate).toLocaleDateString("es-VE")}</td>
+                      <td className="px-3 py-2 text-right">${total.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right text-green-700">${paid.toFixed(2)}</td>
+                      <td className={`px-3 py-2 text-right ${pending > 0.005 ? "font-medium text-destructive" : "text-green-600"}`}>
+                        ${pending.toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        <span className={`rounded px-2 py-0.5 ${STATUS_COLORS[inv.status] ?? "bg-gray-100"}`}>
+                          {STATUS_LABELS[inv.status] ?? inv.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(detail.data?.invoices ?? []).length === 0 && (
+                  <tr><td colSpan={7} className="px-3 py-4 text-center text-muted-foreground">Cargando cuotas...</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {cancelPlanFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-card p-4 shadow-lg">
+            <h3 className="mb-2 text-sm font-semibold">Cancelar plan de pago</h3>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Las facturas ya emitidas permaneceran en el sistema. Puede anularlas individualmente desde el modulo de facturas si corresponde.
+            </p>
+            <Label>Motivo de la cancelacion</Label>
+            <textarea
+              className="mt-1 block w-full rounded border bg-background px-2 py-1 text-sm"
+              rows={3}
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder="Ej: Acuerdo renegociado por incumplimiento"
+            />
+            {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => { onCancelOpen(null); setCancelReason(""); setErr(null); }}>
+                Cerrar
+              </Button>
+              <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white" onClick={onConfirmCancel} disabled={cancelPlan.isPending}>
+                {cancelPlan.isPending ? "Cancelando..." : "Confirmar cancelacion"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

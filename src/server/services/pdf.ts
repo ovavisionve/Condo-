@@ -688,6 +688,279 @@ export async function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> 
   return renderToBuffer(InvoiceDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
 }
 
+// ─── Carta de cobro extrajudicial (Art. 14 LPH) ───────────────────────────────
+
+export type LegalNoticePdfData = {
+  // Comunidad / Junta
+  communityName: string;
+  communityAddress: string;
+  communityRif?: string | null;
+  communityCity?: string | null;
+  communityPhone?: string | null;
+  // Documento
+  noticeNumber: string;
+  noticeDate: Date;
+  reason: "OVERDUE_90" | "OVERDUE_180" | "OTHER";
+  customMessage?: string | null;
+  // Destinatario
+  ownerName: string;
+  ownerIdType?: string | null;
+  ownerIdNumber?: string | null;
+  unitCode: string;
+  unitTower?: string | null;
+  unitFloor?: number | null;
+  // Facturas adeudadas
+  invoices: {
+    invoiceNumber: string;
+    periodLabel: string;     // "Abril 2025"
+    dueDate: Date;
+    daysOverdue: number;
+    pendingUsd: string;
+    pendingBss: string;
+  }[];
+  totalPendingUsd: string;
+  totalPendingBss: string;
+  exchangeRate: string;
+  exchangeSource: string;
+  // Plazo legal
+  graceDays: number;          // ej. 15
+  signerName?: string | null; // Administrador / Presidente Junta
+  signerRole?: string | null;
+};
+
+const REASON_LABEL: Record<string, string> = {
+  OVERDUE_90:  "MORA SUPERIOR A NOVENTA (90) DÍAS",
+  OVERDUE_180: "MORA SUPERIOR A CIENTO OCHENTA (180) DÍAS",
+  OTHER:       "INCUMPLIMIENTO DE OBLIGACIONES CONDOMINIALES",
+};
+
+const ln = StyleSheet.create({
+  page: { fontFamily: "Helvetica", fontSize: 10, padding: "40 44", color: DK, backgroundColor: "#fff", lineHeight: 1.45 },
+
+  // Header
+  header: { marginBottom: 16, borderBottomWidth: 2, borderBottomColor: BK, paddingBottom: 10 },
+  headerTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  communityName: { fontSize: 14, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 0.4, marginBottom: 3 },
+  communityMeta: { fontSize: 8.5, color: MID, lineHeight: 1.5 },
+  docId:   { fontSize: 11, fontFamily: "Helvetica-Bold", color: BK, textAlign: "right" },
+  docIdLabel: { fontSize: 8, color: MID, textAlign: "right" },
+
+  // Title
+  titleBlock: { marginBottom: 14, alignItems: "center" },
+  title: { fontSize: 15, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 2.5, textAlign: "center" },
+  subtitle: { fontSize: 9, color: MID, marginTop: 4, textAlign: "center", letterSpacing: 0.5 },
+
+  // Lugar + fecha
+  placeDate: { fontSize: 10, color: DK, marginBottom: 12, textAlign: "right" },
+
+  // Destinatario
+  recipient: { marginBottom: 14, borderLeftWidth: 3, borderLeftColor: BK, paddingLeft: 10 },
+  recipientLabel: { fontSize: 8, color: LT, letterSpacing: 1, marginBottom: 3 },
+  recipientName: { fontSize: 11, fontFamily: "Helvetica-Bold", color: BK },
+  recipientLine: { fontSize: 9.5, color: DK, marginTop: 1 },
+
+  // Cuerpo
+  body: { marginBottom: 12 },
+  paragraph: { fontSize: 10, color: DK, marginBottom: 8, textAlign: "justify", lineHeight: 1.55 },
+  paragraphBold: { fontFamily: "Helvetica-Bold" },
+
+  // Cita legal
+  legalQuote: { backgroundColor: ROW, padding: "9 12", borderLeftWidth: 2, borderLeftColor: BK,
+                marginBottom: 10, marginTop: 4 },
+  legalQuoteHeader: { fontSize: 8.5, fontFamily: "Helvetica-Bold", color: BK, marginBottom: 4, letterSpacing: 0.5 },
+  legalQuoteText: { fontSize: 9.5, color: DK, fontStyle: "italic", textAlign: "justify", lineHeight: 1.5 },
+
+  // Tabla deuda
+  tableTitle: { fontSize: 9, fontFamily: "Helvetica-Bold", color: BK, marginTop: 8, marginBottom: 4, letterSpacing: 0.5 },
+  tableHead: { flexDirection: "row", backgroundColor: BK, padding: "5 6" },
+  th: { color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8 },
+  thNum:    { width: 90, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8 },
+  thPer:    { width: 72, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8 },
+  thDue:    { width: 60, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "center" },
+  thDays:   { width: 40, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "center" },
+  thUsd:    { flex: 1,   color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
+  thBss:    { width: 90, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 8, textAlign: "right" },
+  row:    { flexDirection: "row", padding: "4 6", borderBottomWidth: 1, borderBottomColor: BDR2 },
+  rowAlt: { flexDirection: "row", padding: "4 6", borderBottomWidth: 1, borderBottomColor: BDR2, backgroundColor: ROW },
+  tdNum:  { width: 90, fontSize: 8.5, color: DK, fontFamily: "Helvetica-Bold" },
+  tdPer:  { width: 72, fontSize: 8.5, color: DK },
+  tdDue:  { width: 60, fontSize: 8.5, color: MID, textAlign: "center" },
+  tdDays: { width: 40, fontSize: 8.5, color: DK, textAlign: "center", fontFamily: "Helvetica-Bold" },
+  tdUsd:  { flex: 1,   fontSize: 8.5, color: DK, textAlign: "right", fontFamily: "Helvetica-Bold" },
+  tdBss:  { width: 90, fontSize: 8.5, color: MID, textAlign: "right" },
+
+  totalRow: { flexDirection: "row", padding: "6 6", backgroundColor: BK, marginTop: 2 },
+  totalLabel: { flex: 1, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10 },
+  totalUsd:   { width: 90, color: "#fff", fontFamily: "Helvetica-Bold", fontSize: 10, textAlign: "right" },
+  totalBss:   { width: 90, color: "#cccccc", fontFamily: "Helvetica-Bold", fontSize: 9, textAlign: "right" },
+
+  // Plazo / advertencia
+  warningBox: { borderWidth: 1, borderColor: BK, padding: "10 12", marginTop: 12, marginBottom: 14 },
+  warningTitle: { fontSize: 10, fontFamily: "Helvetica-Bold", color: BK, marginBottom: 4, letterSpacing: 0.5 },
+  warningText: { fontSize: 9.5, color: DK, textAlign: "justify", lineHeight: 1.5 },
+
+  // Firma
+  signatureBlock: { marginTop: 28, alignItems: "center" },
+  signLine: { borderTopWidth: 1, borderTopColor: BK, width: 240, marginBottom: 4 },
+  signName: { fontSize: 10, fontFamily: "Helvetica-Bold", color: BK, textAlign: "center" },
+  signRole: { fontSize: 9, color: MID, textAlign: "center" },
+  signOrg:  { fontSize: 9, color: MID, textAlign: "center", marginTop: 1 },
+
+  footer: { position: "absolute", bottom: 28, left: 44, right: 44 },
+  footerLine: { height: 1, backgroundColor: BDR, marginBottom: 4 },
+  footerText: { fontSize: 7.5, color: LT, textAlign: "center" },
+  footerLegal: { fontSize: 7.5, color: MID, fontFamily: "Helvetica-Bold", textAlign: "center", marginTop: 3 },
+});
+
+function LegalNoticeDoc({ data }: { data: LegalNoticePdfData }) {
+  const fmtUsd = (v: string | number) => `$${Number(v).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtBss = (v: string | number) =>
+    `Bs ${Number(v).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const dateLong = data.noticeDate.toLocaleDateString("es-VE", { day: "2-digit", month: "long", year: "numeric" });
+  const idStr = data.ownerIdType && data.ownerIdNumber
+    ? `${data.ownerIdType}-${data.ownerIdNumber}` : "";
+  const unitLine = [
+    `Unidad ${data.unitCode}`,
+    data.unitTower ? `Torre ${data.unitTower}` : null,
+    data.unitFloor != null ? `Piso ${data.unitFloor}` : null,
+  ].filter(Boolean).join(" · ");
+  const place = data.communityCity ?? "Venezuela";
+
+  return React.createElement(Document, { title: `Aviso de Cobro Extrajudicial — ${data.noticeNumber}` },
+    React.createElement(Page, { size: "A4", style: ln.page },
+
+      // Header
+      React.createElement(View, { style: ln.header },
+        React.createElement(View, { style: ln.headerTop },
+          React.createElement(View, {},
+            React.createElement(Text, { style: ln.communityName }, data.communityName.toUpperCase()),
+            React.createElement(Text, { style: ln.communityMeta },
+              "JUNTA DE CONDOMINIO" + (data.communityRif ? "   RIF: " + data.communityRif : "")),
+            React.createElement(Text, { style: { ...ln.communityMeta, marginTop: 1 } },
+              [data.communityAddress, data.communityPhone].filter(Boolean).join("   ")),
+          ),
+          React.createElement(View, {},
+            React.createElement(Text, { style: ln.docIdLabel }, "Aviso N°"),
+            React.createElement(Text, { style: ln.docId }, data.noticeNumber),
+          ),
+        ),
+      ),
+
+      // Título
+      React.createElement(View, { style: ln.titleBlock },
+        React.createElement(Text, { style: ln.title }, "AVISO DE COBRO EXTRAJUDICIAL"),
+        React.createElement(Text, { style: ln.subtitle }, REASON_LABEL[data.reason] ?? REASON_LABEL.OTHER),
+      ),
+
+      // Lugar y fecha
+      React.createElement(Text, { style: ln.placeDate },
+        `${place}, ${dateLong}`),
+
+      // Destinatario
+      React.createElement(View, { style: ln.recipient },
+        React.createElement(Text, { style: ln.recipientLabel }, "DIRIGIDO A:"),
+        React.createElement(Text, { style: ln.recipientName },
+          `Ciudadano(a): ${data.ownerName.toUpperCase()}`),
+        idStr ? React.createElement(Text, { style: ln.recipientLine }, `Cédula / RIF: ${idStr}`) : null,
+        React.createElement(Text, { style: ln.recipientLine }, `Propietario / Ocupante de: ${unitLine}`),
+        React.createElement(Text, { style: ln.recipientLine },
+          data.communityName + (data.communityAddress ? ` — ${data.communityAddress}` : "")),
+      ),
+
+      // Cuerpo: introducción
+      React.createElement(View, { style: ln.body },
+        React.createElement(Text, { style: ln.paragraph },
+          "Por medio de la presente, la Junta de Condominio del inmueble identificado supra, en ejercicio de las atribuciones que le confiere la ",
+          React.createElement(Text, { style: ln.paragraphBold }, "Ley de Propiedad Horizontal de la República Bolivariana de Venezuela"),
+          ", procede a notificar formalmente a usted del estado de mora en que se encuentra respecto al pago de las cuotas ordinarias y/o extraordinarias de condominio correspondientes a la unidad de su propiedad u ocupación.",
+        ),
+
+        // Cita Art. 14 LPH
+        React.createElement(View, { style: ln.legalQuote },
+          React.createElement(Text, { style: ln.legalQuoteHeader }, "ARTÍCULO 14 — LEY DE PROPIEDAD HORIZONTAL"),
+          React.createElement(Text, { style: ln.legalQuoteText },
+            "\"La obligación del propietario de un apartamento o local por concepto de pago de las cuotas que le correspondan en los gastos comunes constituye un crédito privilegiado del condominio, y los documentos otorgados por el administrador o por la junta de condominio en los que conste dicha obligación, tendrán fuerza ejecutiva y aparejarán ejecución por la vía del procedimiento ejecutivo, sin perjuicio del derecho que tienen los propietarios a impugnar los gastos comunes en juicio ordinario.\"",
+          ),
+        ),
+
+        React.createElement(Text, { style: ln.paragraph },
+          "En consecuencia, los recibos de condominio emitidos a su nombre, debidamente identificados en el presente documento, constituyen ",
+          React.createElement(Text, { style: ln.paragraphBold }, "títulos ejecutivos"),
+          " a tenor de la norma citada, y su falta de pago habilita a esta Junta de Condominio para acudir a la vía judicial ejecutiva sin necesidad de juicio previo de cognición.",
+        ),
+
+        data.customMessage && data.customMessage.trim().length > 0
+          ? React.createElement(Text, { style: ln.paragraph }, data.customMessage.trim())
+          : null,
+      ),
+
+      // Tabla de facturas adeudadas
+      React.createElement(Text, { style: ln.tableTitle },
+        "DETALLE DE RECIBOS PENDIENTES DE PAGO"),
+      React.createElement(View, { style: ln.tableHead },
+        React.createElement(Text, { style: ln.thNum }, "N° Recibo"),
+        React.createElement(Text, { style: ln.thPer }, "Período"),
+        React.createElement(Text, { style: ln.thDue }, "Vence"),
+        React.createElement(Text, { style: ln.thDays }, "Mora"),
+        React.createElement(Text, { style: ln.thUsd }, "Pendiente USD"),
+        React.createElement(Text, { style: ln.thBss }, "Pendiente Bs"),
+      ),
+      ...data.invoices.map((inv, i) =>
+        React.createElement(View, { key: i, style: i % 2 === 0 ? ln.row : ln.rowAlt },
+          React.createElement(Text, { style: ln.tdNum }, inv.invoiceNumber),
+          React.createElement(Text, { style: ln.tdPer }, inv.periodLabel),
+          React.createElement(Text, { style: ln.tdDue }, inv.dueDate.toLocaleDateString("es-VE")),
+          React.createElement(Text, { style: ln.tdDays }, `${inv.daysOverdue} d`),
+          React.createElement(Text, { style: ln.tdUsd }, fmtUsd(inv.pendingUsd)),
+          React.createElement(Text, { style: ln.tdBss }, fmtBss(inv.pendingBss)),
+        ),
+      ),
+      React.createElement(View, { style: ln.totalRow },
+        React.createElement(Text, { style: ln.totalLabel }, "TOTAL ADEUDADO"),
+        React.createElement(Text, { style: ln.totalUsd }, fmtUsd(data.totalPendingUsd)),
+        React.createElement(Text, { style: ln.totalBss }, fmtBss(data.totalPendingBss)),
+      ),
+      React.createElement(Text, { style: { fontSize: 8, color: MID, marginTop: 4, textAlign: "right" } },
+        `Tasa BCV aplicada: ${Number(data.exchangeRate).toFixed(4)} Bs/$ (${data.exchangeSource})`),
+
+      // Plazo y advertencia
+      React.createElement(View, { style: ln.warningBox },
+        React.createElement(Text, { style: ln.warningTitle },
+          `PLAZO PARA EL PAGO: ${data.graceDays} DÍAS CALENDARIO`),
+        React.createElement(Text, { style: ln.warningText },
+          `Se le concede un plazo improrrogable de ${data.graceDays} (${data.graceDays === 15 ? "QUINCE" : data.graceDays}) días calendario, contados a partir de la recepción de la presente comunicación, para que proceda a cancelar la totalidad de la deuda señalada o a celebrar un convenio de pago formal con esta Administración. `,
+          React.createElement(Text, { style: ln.paragraphBold },
+            "Vencido dicho plazo sin que se haya verificado el pago o el acuerdo, esta Junta de Condominio procederá a ejercer las acciones judiciales que en derecho correspondan, "),
+          "incluyendo demanda por la vía ejecutiva al amparo del artículo 14 de la Ley de Propiedad Horizontal, con la consiguiente generación de costas y costos procesales a su cargo.",
+        ),
+      ),
+
+      // Firma
+      React.createElement(View, { style: ln.signatureBlock },
+        React.createElement(View, { style: ln.signLine }),
+        React.createElement(Text, { style: ln.signName },
+          (data.signerName ?? "Administración").toUpperCase()),
+        React.createElement(Text, { style: ln.signRole },
+          data.signerRole ?? "Administrador / Junta de Condominio"),
+        React.createElement(Text, { style: ln.signOrg }, data.communityName),
+      ),
+
+      // Footer
+      React.createElement(View, { style: ln.footer },
+        React.createElement(View, { style: ln.footerLine }),
+        React.createElement(Text, { style: ln.footerText },
+          `Documento emitido el ${dateLong}   ·   ${data.communityName}`),
+        React.createElement(Text, { style: ln.footerLegal },
+          "AVISO DE COBRO EXTRAJUDICIAL · ARTÍCULO 14 LEY DE PROPIEDAD HORIZONTAL · REPÚBLICA BOLIVARIANA DE VENEZUELA"),
+      ),
+    ),
+  );
+}
+
+export async function generateLegalNoticePdf(data: LegalNoticePdfData): Promise<Buffer> {
+  return renderToBuffer(LegalNoticeDoc({ data }) as React.ReactElement<import("@react-pdf/renderer").DocumentProps>);
+}
+
 // ─── Bauche / Comprobante de pago ─────────────────────────────────────────────
 
 const METHOD_LABEL: Record<string, string> = {

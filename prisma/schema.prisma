@@ -172,6 +172,7 @@ model Community {
   recurringExpenseTemplates RecurringExpenseTemplate[]
   commonAreas   CommonArea[]
   reservations  Reservation[]
+  paymentPlans  PaymentPlan[]
 
   @@index([organizationId, active])
 }
@@ -220,6 +221,7 @@ model Unit {
   individualExpenses       Expense[]              @relation("ExpenseTargetUnit")
   unidentifiedPayments    UnidentifiedPayment[]  @relation("UnidentifiedToUnit")
   reservations            Reservation[]
+  paymentPlans            PaymentPlan[]
 
   @@unique([communityId, code])
   @@index([organizationId])
@@ -1981,4 +1983,37 @@ model InpcRate {
 
   @@unique([year, month])
   @@index([year, month])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLAN DE PAGO (acuerdo con morosos para fraccionar deuda acumulada)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PaymentPlanStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  DEFAULTED
+}
+
+model PaymentPlan {
+  id              String   @id @default(cuid())
+  organizationId  String
+  communityId     String
+  community       Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId          String
+  unit            Unit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  totalUsd        Decimal  @db.Decimal(18, 2)
+  installments    Int      // ej: 6 cuotas
+  installmentUsd  Decimal  @db.Decimal(18, 2)
+  startDate       DateTime
+  status          PaymentPlanStatus @default(ACTIVE)
+  notes           String?
+  createdAt       DateTime @default(now())
+  createdById     String?
+  cancelledAt     DateTime?
+  cancelReason    String?
+
+  @@index([communityId, unitId])
+  @@index([organizationId])
 }

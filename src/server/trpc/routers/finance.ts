@@ -644,6 +644,154 @@ export const financeRouter = router({
         };
       }),
 
+    /**
+     * Genera una carta de cobro extrajudicial (Art. 14 LPH) para una unidad
+     * con facturas en mora. Devuelve el PDF en base64 para descarga.
+     */
+    generateLegalNotice: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          unitId: z.string(),
+          reason: z.enum(["OVERDUE_90", "OVERDUE_180", "OTHER"]).default("OVERDUE_90"),
+          customMessage: z.string().max(1000).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, unitId, reason, customMessage } = input;
+
+        // 1. Cargar unidad, propietario, comunidad
+        const [unit, community, ownership, pendingInvoices, rate] = await Promise.all([
+          ctx.db.unit.findFirstOrThrow({
+            where: { id: unitId, communityId, organizationId, deletedAt: null },
+          }),
+          ctx.db.community.findFirstOrThrow({
+            where: { id: communityId, organizationId, deletedAt: null },
+            select: {
+              name: true, address: true, rif: true, phone: true, city: true,
+            },
+          }),
+          ctx.db.ownership.findFirst({
+            where: { unitId, endDate: null },
+            include: {
+              person: {
+                select: { firstName: true, lastName: true, idType: true, idNumber: true, address: true },
+              },
+            },
+          }),
+          ctx.db.invoice.findMany({
+            where: {
+              unitId,
+              communityId,
+              organizationId,
+              status: { notIn: ["VOIDED", "PAID"] },
+            },
+            orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }],
+          }),
+          (await import("@/server/services/exchange")).getCurrentRate("BCV"),
+        ]);
+
+        // 2. Filtrar facturas con monto pendiente real (> 0)
+        const today = new Date();
+        const MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+        const items = pendingInvoices
+          .map((inv) => {
+            const pendingUsd = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+            const pendingBss = new Decimal(inv.totalBss.toString()).minus(inv.paidBss.toString());
+            const dueDate = new Date(inv.dueDate);
+            const diffMs = today.getTime() - dueDate.getTime();
+            const daysOverdue = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+            return {
+              invoiceNumber: inv.invoiceNumber,
+              periodLabel: `${MESES_ES[inv.periodMonth - 1] ?? ""} ${inv.periodYear}`,
+              dueDate,
+              daysOverdue,
+              pendingUsd,
+              pendingBss,
+            };
+          })
+          .filter((it) => it.pendingUsd.gt(0.005));
+
+        if (items.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "La unidad no tiene deudas pendientes",
+          });
+        }
+
+        const totalUsd = items.reduce((acc, it) => acc.plus(it.pendingUsd), new Decimal(0));
+        const totalBss = items.reduce((acc, it) => acc.plus(it.pendingBss), new Decimal(0));
+
+        // 3. Generar correlativo de aviso
+        const noticeNumber = `AVISO-${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${unit.code}-${Date.now().toString(36).toUpperCase()}`;
+
+        // 4. Construir datos del PDF
+        const ownerName = ownership?.person
+          ? `${ownership.person.firstName} ${ownership.person.lastName}`
+          : "Propietario / Ocupante de la unidad";
+
+        const { generateLegalNoticePdf } = await import("@/server/services/pdf");
+        const buffer = await generateLegalNoticePdf({
+          communityName: community.name,
+          communityAddress: community.address ?? "",
+          communityRif: community.rif,
+          communityCity: community.city,
+          communityPhone: community.phone,
+          noticeNumber,
+          noticeDate: today,
+          reason,
+          customMessage: customMessage ?? null,
+          ownerName,
+          ownerIdType: ownership?.person?.idType ?? null,
+          ownerIdNumber: ownership?.person?.idNumber ?? null,
+          unitCode: unit.code,
+          unitTower: unit.tower,
+          unitFloor: unit.floor,
+          invoices: items.map((it) => ({
+            invoiceNumber: it.invoiceNumber,
+            periodLabel: it.periodLabel,
+            dueDate: it.dueDate,
+            daysOverdue: it.daysOverdue,
+            pendingUsd: it.pendingUsd.toFixed(2),
+            pendingBss: it.pendingBss.toFixed(2),
+          })),
+          totalPendingUsd: totalUsd.toFixed(2),
+          totalPendingBss: totalBss.toFixed(2),
+          exchangeRate: rate.vesPerUsd.toString(),
+          exchangeSource: rate.source,
+          graceDays: 15,
+          signerName: null,
+          signerRole: null,
+        });
+
+        // 5. Audit log
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId,
+            actorId: ctx.user.id,
+            action: "EXPORT",
+            entityType: "Unit",
+            entityId: unitId,
+            after: {
+              noticeNumber,
+              reason,
+              invoicesCount: items.length,
+              totalPendingUsd: totalUsd.toFixed(2),
+            },
+          },
+        });
+
+        return {
+          base64: buffer.toString("base64"),
+          fileName: `Aviso-Cobro-${unit.code}-${noticeNumber}.pdf`,
+          mimeType: "application/pdf",
+          noticeNumber,
+          invoicesCount: items.length,
+          totalPendingUsd: totalUsd.toFixed(2),
+        };
+      }),
+
     sendByEmail: orgProcedure
       .input(orgIdInput.extend({ invoiceId: z.string() }))
       .mutation(async ({ ctx, input }) => {
@@ -1810,6 +1958,255 @@ export const financeRouter = router({
         })();
 
         return inv;
+      }),
+  }),
+
+  // ─── Planes de pago (con morosos) ─────────────────────────────
+  paymentPlans: router({
+    list: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          unitId: z.string().optional(),
+          status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED", "DEFAULTED"]).optional(),
+        }),
+      )
+      .query(({ ctx, input }) =>
+        ctx.db.paymentPlan.findMany({
+          where: {
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            ...(input.unitId ? { unitId: input.unitId } : {}),
+            ...(input.status ? { status: input.status } : {}),
+          },
+          include: {
+            unit: { select: { id: true, code: true, tower: true, floor: true } },
+          },
+          orderBy: [{ createdAt: "desc" }],
+        }),
+      ),
+
+    /**
+     * Detalle de un plan con las facturas (cuotas) generadas y su estado de pago.
+     */
+    byId: orgProcedure
+      .input(orgIdInput.extend({ id: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const plan = await ctx.db.paymentPlan.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+          include: {
+            unit: { select: { id: true, code: true, tower: true, floor: true } },
+          },
+        });
+
+        // Las cuotas se materializan como Invoice tipo EXTRA_FEE cuya descripción
+        // empieza con `Plan de pago — cuota X de Y` y cuyo número arranca con `PLAN-<planId>-`.
+        const invoices = await ctx.db.invoice.findMany({
+          where: {
+            communityId: plan.communityId,
+            unitId: plan.unitId,
+            invoiceNumber: { startsWith: `PLAN-${plan.id}-` },
+          },
+          orderBy: { dueDate: "asc" },
+        });
+
+        return { plan, invoices };
+      }),
+
+    /**
+     * Crea un plan de pago para una unidad con deuda. Genera N facturas EXTRA_FEE
+     * con vencimientos mensuales a partir de startDate.
+     */
+    create: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          unitId: z.string(),
+          totalUsd: z.coerce.number().positive(),
+          installments: z.number().int().min(2).max(36),
+          startDate: z.coerce.date(),
+          notes: z.string().max(500).optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, unitId, totalUsd, installments, startDate, notes } = input;
+
+        // 1. Validar entidades y que no exista otro plan ACTIVO para la unidad
+        const [unit, community, existingActive] = await Promise.all([
+          ctx.db.unit.findFirstOrThrow({
+            where: { id: unitId, communityId, organizationId, deletedAt: null },
+          }),
+          ctx.db.community.findFirstOrThrow({
+            where: { id: communityId, organizationId, deletedAt: null },
+            select: { primaryCurrency: true },
+          }),
+          ctx.db.paymentPlan.findFirst({
+            where: { unitId, communityId, organizationId, status: "ACTIVE" },
+          }),
+        ]);
+        if (existingActive) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "La unidad ya tiene un plan de pago activo. Cancele el plan vigente antes de crear uno nuevo.",
+          });
+        }
+
+        // 2. Calcular cuota: reparto exacto con ajuste del último para cuadrar el total
+        const total = new Decimal(totalUsd).toDecimalPlaces(2);
+        const baseInst = total.div(installments).toDecimalPlaces(2);
+        const installAmounts: Decimal[] = [];
+        let sumSoFar = new Decimal(0);
+        for (let i = 0; i < installments; i++) {
+          if (i < installments - 1) {
+            installAmounts.push(baseInst);
+            sumSoFar = sumSoFar.plus(baseInst);
+          } else {
+            installAmounts.push(total.minus(sumSoFar));
+          }
+        }
+
+        // 3. Tasa BCV actual (snapshot a cada factura)
+        const rate = await (await import("@/server/services/exchange")).getCurrentRate("BCV");
+        const ratesDec = new Decimal(rate.vesPerUsd.toString());
+
+        // 4. Crear el plan + las facturas en transacción
+        const startUTC = new Date(Date.UTC(
+          startDate.getUTCFullYear(),
+          startDate.getUTCMonth(),
+          startDate.getUTCDate(),
+          12, 0, 0,
+        ));
+
+        const result = await ctx.db.$transaction(async (tx) => {
+          const plan = await tx.paymentPlan.create({
+            data: {
+              organizationId,
+              communityId,
+              unitId,
+              totalUsd: total.toFixed(2),
+              installments,
+              installmentUsd: baseInst.toFixed(2),
+              startDate: startUTC,
+              status: "ACTIVE",
+              notes: notes ?? null,
+              createdById: ctx.user.id,
+            },
+          });
+
+          const nowYear = new Date().getFullYear();
+          const stamp = Date.now().toString(36).toUpperCase();
+          for (let i = 0; i < installments; i++) {
+            const amount = installAmounts[i]!;
+            const bss = amount.mul(ratesDec).toDecimalPlaces(2);
+            const due = new Date(Date.UTC(
+              startUTC.getUTCFullYear(),
+              startUTC.getUTCMonth() + i,
+              startUTC.getUTCDate(),
+              12, 0, 0,
+            ));
+            const invoiceNumber = `PLAN-${plan.id}-${String(i + 1).padStart(2, "0")}-${stamp}`;
+            const description = `Plan de pago — cuota ${i + 1} de ${installments}`;
+
+            await tx.invoice.create({
+              data: {
+                organizationId,
+                communityId,
+                unitId,
+                invoiceNumber,
+                type: "EXTRA_FEE",
+                periodYear: due.getUTCFullYear(),
+                periodMonth: due.getUTCMonth() + 1,
+                issuedAt: new Date(),
+                dueDate: due,
+                totalUsd: amount.toFixed(2),
+                totalBss: bss.toFixed(2),
+                exchangeRate: ratesDec.toFixed(8),
+                exchangeSource: rate.source,
+                currencyPrimary: community.primaryCurrency,
+                status: "ISSUED",
+                items: {
+                  create: [{
+                    description,
+                    amountUsd: amount.toFixed(2),
+                    amountBss: bss.toFixed(2),
+                    aliquot: "100.000000",
+                  }],
+                },
+              },
+            });
+          }
+
+          await tx.auditLog.create({
+            data: {
+              organizationId,
+              actorId: ctx.user.id,
+              action: "CREATE",
+              entityType: "PaymentPlan",
+              entityId: plan.id,
+              after: {
+                unitId,
+                totalUsd: total.toFixed(2),
+                installments,
+                installmentUsd: baseInst.toFixed(2),
+                startDate: startUTC.toISOString(),
+              },
+            },
+          });
+
+          // Suppress unused-var lint for `unit`
+          void unit;
+
+          return plan;
+        });
+
+        return result;
+      }),
+
+    /**
+     * Cancela un plan activo. Las facturas ya emitidas permanecen
+     * (se pueden anular individualmente desde el módulo de facturas).
+     */
+    cancel: orgProcedure
+      .input(
+        orgIdInput.extend({
+          id: z.string(),
+          reason: z.string().min(3).max(500),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const plan = await ctx.db.paymentPlan.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+        });
+        if (plan.status !== "ACTIVE") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Solo se pueden cancelar planes ACTIVOS",
+          });
+        }
+
+        const updated = await ctx.db.paymentPlan.update({
+          where: { id: plan.id },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+            cancelReason: input.reason,
+          },
+        });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "PaymentPlan",
+            entityId: plan.id,
+            before: { status: plan.status },
+            after: { status: "CANCELLED", cancelReason: input.reason },
+            reason: input.reason,
+          },
+        });
+
+        return updated;
       }),
   }),
 
