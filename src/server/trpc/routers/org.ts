@@ -817,6 +817,44 @@ export const orgRouter = router({
           ? await ctx.db.user.findUnique({ where: { id: person.userId } })
           : await ctx.db.user.findUnique({ where: { email: person.email } });
 
+        // CRÍTICO: si hay otro Person YA vinculado a ese User (mismo email compartido),
+        // tenemos un conflicto en Person.userId @unique. En el demo del cliente, varios
+        // residentes de prueba compartían email → al enviar credenciales a uno de ellos,
+        // el sistema tiraba "Ya existe un registro con el mismo valor en: userId".
+        //
+        // Fix: si el User existe y está vinculado a OTRA Person, desvinculamos a esa otra
+        // Person primero (es lo que el admin querría: el último que solicita credenciales
+        // toma el control del email). Auditamos el cambio.
+        if (user) {
+          const otherPerson = await ctx.db.person.findFirst({
+            where: {
+              userId: user.id,
+              id: { not: person.id },
+              organizationId: input.organizationId,
+            },
+            select: { id: true, firstName: true, lastName: true },
+          });
+          if (otherPerson) {
+            await ctx.db.person.update({
+              where: { id: otherPerson.id },
+              data: { userId: null },
+            });
+            await ctx.db.auditLog.create({
+              data: {
+                organizationId: input.organizationId,
+                actorId: ctx.user.id,
+                action: "UPDATE",
+                entityType: "Person",
+                entityId: otherPerson.id,
+                after: {
+                  reason: "Email reasignado a otro residente — userId desvinculado",
+                  reassignedTo: person.id,
+                },
+              },
+            });
+          }
+        }
+
         if (user) {
           // Actualizar hash y activar
           user = await ctx.db.user.update({
@@ -905,6 +943,93 @@ export const orgRouter = router({
         });
 
         return { ok: true, email: person.email };
+      }),
+
+    /**
+     * Setea una contraseña MANUAL para un residente sin depender del email.
+     * Útil cuando el residente no tiene email registrado, o cuando el SMTP no funciona.
+     * Devuelve la contraseña en claro para que el admin se la dé verbalmente al residente.
+     *
+     * Si el residente no tiene User, lo crea con email auto-generado del tipo
+     * `residente-{personId}@arrayanes.local` (que después se puede actualizar al email real).
+     */
+    setPortalPasswordManual: orgProcedure
+      .input(orgIdInput.extend({
+        personId: z.string(),
+        password: z.string().min(6).max(50).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const person = await ctx.db.person.findFirstOrThrow({
+          where: { id: input.personId, organizationId: input.organizationId, deletedAt: null },
+        });
+
+        // Generar password si no se pasó
+        const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+        const rawPassword = input.password ?? Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+        const passwordHash = await bcrypt.hash(rawPassword, 12);
+
+        // Email para login: usar el real si existe, si no auto-generar
+        const loginEmail = person.email ?? `residente-${person.id.slice(-8)}@residente.local`;
+
+        // Buscar User existente
+        let user = person.userId
+          ? await ctx.db.user.findUnique({ where: { id: person.userId } })
+          : await ctx.db.user.findUnique({ where: { email: loginEmail } });
+
+        // Desvincular otros Person si conflictan con userId @unique
+        if (user) {
+          const otherPerson = await ctx.db.person.findFirst({
+            where: {
+              userId: user.id,
+              id: { not: person.id },
+              organizationId: input.organizationId,
+            },
+            select: { id: true },
+          });
+          if (otherPerson) {
+            await ctx.db.person.update({
+              where: { id: otherPerson.id },
+              data: { userId: null },
+            });
+          }
+        }
+
+        if (user) {
+          user = await ctx.db.user.update({
+            where: { id: user.id },
+            data: { passwordHash, active: true, emailVerified: new Date() },
+          });
+        } else {
+          user = await ctx.db.user.create({
+            data: {
+              email: loginEmail,
+              name: `${person.firstName} ${person.lastName}`,
+              passwordHash,
+              emailVerified: new Date(),
+              active: true,
+            },
+          });
+        }
+
+        if (person.userId !== user.id) {
+          await ctx.db.person.update({
+            where: { id: person.id },
+            data: { userId: user.id },
+          });
+        }
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Person",
+            entityId: person.id,
+            after: { passwordResetManual: true, loginEmail },
+          },
+        });
+
+        return { ok: true, email: loginEmail, password: rawPassword };
       }),
 
     /**

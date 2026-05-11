@@ -581,6 +581,20 @@ function ResidentRow({
   const [reminderSent, setReminderSent] = useState(false);
 
   const sendReminder = trpc.org.persons.sendReminder.useMutation();
+  const setManualPassword = trpc.org.persons.setPortalPasswordManual.useMutation();
+  const [manualCreds, setManualCreds] = useState<{ email: string; password: string } | null>(null);
+
+  const handleManualPassword = async () => {
+    setSending(true); setSendErr(null);
+    try {
+      const result = await setManualPassword.mutateAsync({ organizationId, personId: person.id });
+      setManualCreds({ email: result.email, password: result.password });
+    } catch (err: unknown) {
+      setSendErr(err instanceof Error ? err.message : "Error");
+    } finally {
+      setSending(false);
+    }
+  };
 
   const handleSendAccess = async () => {
     setSending(true); setSent(null); setSendErr(null);
@@ -662,10 +676,31 @@ function ResidentRow({
               onClick={handleSendAccess}
               disabled={sending}
               className="rounded-md border px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 whitespace-nowrap"
-              title="Enviar acceso al portal"
+              title="Enviar acceso al portal por email"
             >
               {sending ? "..." : sent ? "✓ Enviado" : "📧"}
             </button>
+          )}
+          <button
+            onClick={handleManualPassword}
+            disabled={sending}
+            className="rounded-md border px-2 py-1 text-xs text-purple-600 hover:bg-purple-50 disabled:opacity-50 whitespace-nowrap"
+            title="Generar contraseña sin enviar email (útil sin email o si SMTP falla)"
+          >
+            🔑
+          </button>
+          {manualCreds && (
+            <div className="w-full mt-1 rounded-md border border-green-200 bg-green-50 px-2 py-1.5 text-xs">
+              <div className="font-medium text-green-800">Credenciales (anótalas y dáselas al residente):</div>
+              <div className="font-mono">Usuario: <span className="font-semibold">{manualCreds.email}</span></div>
+              <div className="font-mono">Clave: <span className="font-semibold">{manualCreds.password}</span></div>
+              <button
+                onClick={() => setManualCreds(null)}
+                className="mt-1 text-green-700 hover:underline"
+              >
+                Cerrar
+              </button>
+            </div>
           )}
           {hasPendingDebt && (person.email || person.whatsapp) && (
             <button
