@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../../OrgContext";
 import { Button } from "@/components/ui/button";
@@ -354,8 +354,9 @@ function NewPaymentDialog({
 
   const [form, setForm] = useState({
     amount: "",
-    currencyPrimary: "USD" as "USD" | "VES",
-    method: "TRANSFER_USD" as (typeof METHODS)[number],
+    // Por defecto Bs (el cliente factura en Bs como moneda primaria del país).
+    currencyPrimary: "VES" as "USD" | "VES",
+    method: "TRANSFER_BSS" as (typeof METHODS)[number],
     reference: "",
     paidAt: new Date().toISOString().slice(0, 10),
     notes: "",
@@ -411,21 +412,31 @@ function NewPaymentDialog({
     return amountNum;
   }, [rate, amountNum, form.currencyPrimary]);
 
-  // Auto-distribuir: aplica el monto (en USD, convirtiendo si es VES) a las facturas
-  // pendientes desde la más antigua. Las facturas se llevan internamente en USD.
+  // Auto-distribuir: aplica el monto a las facturas pendientes desde la más antigua.
+  // CRÍTICO: las allocations se envían al backend en la MONEDA PRIMARIA del pago
+  // (no siempre en USD), porque el server las interpreta usando `currencyPrimary`.
+  // Si se mandaban en USD pero la moneda primaria era VES, el server las trataba como Bs
+  // y solo aplicaba centavos → el resto quedaba como anticipo. Bug reportado por cliente.
   const handleAutoDistribute = () => {
     const rawAmount = Number(form.amount) || 0;
-    if (rawAmount <= 0 || pendingInvoices.length === 0) return;
-    // Si el pago es en VES, convertirlo a USD usando la tasa de la fecha de pago.
-    const totalInUsd = form.currencyPrimary === "VES"
-      ? (rate && rate > 0 ? rawAmount / rate : 0)
-      : rawAmount;
-    if (totalInUsd <= 0) return;
-    let remaining = totalInUsd;
+    if (rawAmount <= 0 || pendingInvoices.length === 0) {
+      setAllocs({});
+      return;
+    }
+    const isVes = form.currencyPrimary === "VES";
+    if (isVes && (!rate || rate <= 0)) {
+      // Sin tasa no podemos convertir el saldo de las facturas a Bs. Limpiar.
+      setAllocs({});
+      return;
+    }
+    let remaining = rawAmount; // en la moneda primaria del pago
     const newAllocs: Record<string, string> = {};
     for (const inv of pendingInvoices) {
-      if (remaining <= 0) break;
-      const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+      if (remaining <= 0.005) break;
+      // Saldo pendiente en la moneda primaria del pago
+      const pendingUsd = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+      const pending = isVes ? pendingUsd * (rate as number) : pendingUsd;
+      if (pending <= 0) continue;
       const apply = Math.min(remaining, pending);
       if (apply > 0) {
         newAllocs[inv.id] = apply.toFixed(2);
@@ -434,6 +445,13 @@ function NewPaymentDialog({
     }
     setAllocs(newAllocs);
   };
+
+  // Auto-distribuir SIEMPRE que cambie el monto, la moneda, la unidad o la tasa.
+  // El cliente pidió: "por defecto a la más antigua SIEMPRE, que no sea opcional".
+  useEffect(() => {
+    handleAutoDistribute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.amount, form.currencyPrimary, unitId, rate, pendingInvoices.length]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -635,16 +653,23 @@ function NewPaymentDialog({
                 </Button>
               </div>
               <div className="rounded-md border">
+                {(() => {
+                  const isVes = form.currencyPrimary === "VES";
+                  const symbol = isVes ? "Bs " : "$";
+                  return (
+                <>
                 {/* Cabecera */}
                 <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 border-b bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
-                  <span>Período</span>
+                  <span>Período · Aplicado a</span>
                   <span className="text-right w-24">Pendiente</span>
-                  <span className="text-right w-20">Equivalente Bs</span>
-                  <span className="text-right w-24">Aplicar</span>
+                  <span className="text-right w-20">{isVes ? "Equivalente USD" : "Equivalente Bs"}</span>
+                  <span className="text-right w-24">Aplicar ({symbol.trim()})</span>
                 </div>
                 <div className="divide-y">
                   {pendingInvoices.map((inv) => {
-                    const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    const pendingUsd = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    // Saldo pendiente en la moneda primaria del pago
+                    const pending = isVes && rate ? pendingUsd * rate : pendingUsd;
                     const applied = Number(allocs[inv.id] ?? 0) || 0;
                     const remaining = pending - applied;
                     return (
@@ -658,7 +683,7 @@ function NewPaymentDialog({
                           </span>
                           {remaining > 0.005 && applied > 0 && (
                             <span className="ml-1 text-xs text-amber-600">
-                              (queda ${remaining.toFixed(2)})
+                              (queda {symbol}{remaining.toFixed(2)})
                             </span>
                           )}
                           {remaining <= 0.005 && applied > 0 && (
@@ -666,12 +691,14 @@ function NewPaymentDialog({
                           )}
                         </div>
                         <span className="w-24 text-right text-sm font-medium text-orange-700">
-                          ${pending.toFixed(2)}
+                          {symbol}{pending.toFixed(2)}
                         </span>
                         <span className="w-20 text-right text-xs text-muted-foreground">
-                          {rate
-                            ? `Bs ${(pending * rate).toLocaleString("es-VE", { maximumFractionDigits: 0 })}`
-                            : "—"}
+                          {isVes
+                            ? `$${pendingUsd.toFixed(2)}`
+                            : rate
+                              ? `Bs ${(pendingUsd * rate).toLocaleString("es-VE", { maximumFractionDigits: 0 })}`
+                              : "—"}
                         </span>
                         <div className="flex w-24 items-center gap-1">
                           <Input
@@ -697,12 +724,11 @@ function NewPaymentDialog({
                     );
                   })}
                 </div>
-                {/* Resumen de asignación — comparado en la moneda primaria del pago */}
+                {/* Resumen de asignación — ahora sumAllocs ya está en la moneda primaria */}
                 {(() => {
-                  // Las allocations (sumAllocs) están en USD. Convertimos a la moneda del pago para comparar.
-                  const isVes = form.currencyPrimary === "VES";
-                  const sumAllocsInPrimary = isVes && rate ? sumAllocs * rate : sumAllocs;
-                  const symbol = isVes ? "Bs " : "$";
+                  // sumAllocs YA está en la moneda primaria del pago (no en USD).
+                  const sumAllocsInPrimary = sumAllocs;
+                  const sumAllocsInUsd = isVes && rate ? sumAllocs / rate : sumAllocs;
                   const overAssigned = sumAllocsInPrimary > amountNum + 0.005;
                   const remaining = amountNum - sumAllocsInPrimary;
                   return (
@@ -720,7 +746,7 @@ function NewPaymentDialog({
                             {symbol}{sumAllocsInPrimary.toFixed(2)}
                           </span>
                           {isVes && sumAllocs > 0 && (
-                            <span className="text-muted-foreground"> (= ${sumAllocs.toFixed(2)})</span>
+                            <span className="text-muted-foreground"> (= ${sumAllocsInUsd.toFixed(2)})</span>
                           )}
                         </span>
                         <span className="text-muted-foreground">
@@ -740,10 +766,23 @@ function NewPaymentDialog({
                       )}
                       {amountNum > 0 && remaining > 0.005 && (
                         <p className="mt-1 text-xs text-amber-700">
-                          ℹ️ {symbol}{remaining.toFixed(2)} sin asignar se registrarán como anticipo.
+                          ℹ️ Saldo a favor: {symbol}{remaining.toFixed(2)} se registrarán como anticipo.
+                        </p>
+                      )}
+                      {/* Preview "Aplicado a:" — pedido del cliente */}
+                      {sumAllocsInPrimary > 0 && (
+                        <p className="mt-1 text-xs text-green-700">
+                          ✅ Aplicado a:{" "}
+                          {pendingInvoices
+                            .filter((inv) => Number(allocs[inv.id] ?? 0) > 0)
+                            .map((inv) => `${periodLabel(inv.periodYear, inv.periodMonth)}`)
+                            .join(" + ")}
                         </p>
                       )}
                     </div>
+                  );
+                })()}
+                </>
                   );
                 })()}
               </div>
