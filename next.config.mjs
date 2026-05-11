@@ -28,6 +28,10 @@ const securityHeaders = [
       "img-src 'self' blob: data: https:",
       "font-src 'self' data:",
       "connect-src 'self' https: wss: ws:",
+      // Permitir embed de PDFs generados in-memory (data: URLs y blob: URLs)
+      // en <iframe>/<object> — necesario para el widget Previsualizar Recibo.
+      "frame-src 'self' blob: data:",
+      "object-src 'self' blob: data:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
