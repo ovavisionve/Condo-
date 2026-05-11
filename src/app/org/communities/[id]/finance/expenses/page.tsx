@@ -374,6 +374,7 @@ type TplRecord = {
   amountUsd: import("decimal.js").Decimal | string | number;
   towerScope?: string | null;
   active: boolean;
+  isProvision?: boolean;
 };
 
 function RecurringTemplatesPanel({
@@ -404,6 +405,7 @@ function RecurringTemplatesPanel({
     amountUsd: "",
     towerScope: "",
     notes: "",
+    isProvision: false,
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -420,8 +422,9 @@ function RecurringTemplatesPanel({
         amountUsd: Number(form.amountUsd),
         towerScope: form.towerScope || null,
         notes: form.notes || undefined,
+        isProvision: form.isProvision,
       });
-      setForm({ category: "ELECTRICITY", customCategory: "", description: "", supplierName: "", amountUsd: "", towerScope: "", notes: "" });
+      setForm({ category: "ELECTRICITY", customCategory: "", description: "", supplierName: "", amountUsd: "", towerScope: "", notes: "", isProvision: false });
       setShowNew(false);
       onMutated();
     } catch (err: unknown) {
@@ -466,7 +469,17 @@ function RecurringTemplatesPanel({
             {templates.map((tpl) => (
               <tr key={tpl.id} className="border-t hover:bg-muted/30">
                 <td className="px-3 py-2">{categoryLabel(tpl.category, tpl.customCategory)}</td>
-                <td className="px-3 py-2">{tpl.description}</td>
+                <td className="px-3 py-2">
+                  {tpl.description}
+                  {tpl.isProvision && (
+                    <span
+                      className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                      title="Plantilla de provisión: genera línea PROVISION + AJUSTE MES ANTERIOR en el recibo"
+                    >
+                      📊 Provisión
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-muted-foreground">{tpl.supplierName ?? "—"}</td>
                 <td className="px-3 py-2 text-xs">
                   {tpl.towerScope
@@ -482,7 +495,21 @@ function RecurringTemplatesPanel({
                   }
                 </td>
                 <td className="px-3 py-2">
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      className="text-xs text-amber-700 hover:text-amber-900"
+                      onClick={async () => {
+                        await updateTpl.mutateAsync({
+                          organizationId, id: tpl.id,
+                          isProvision: !tpl.isProvision,
+                        });
+                        onMutated();
+                      }}
+                      title="Alternar comportamiento de provisión"
+                    >
+                      {tpl.isProvision ? "Quitar provisión" : "Marcar provisión"}
+                    </button>
+                    <span className="text-muted-foreground">·</span>
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
                       onClick={async () => {
@@ -568,6 +595,29 @@ function RecurringTemplatesPanel({
                   </select>
                 </div>
               </div>
+
+              {/* Toggle: Provisión — agrupa gastos reales y calcula ajuste mes anterior */}
+              <div className="rounded-lg border border-dashed bg-amber-50/50 p-3 space-y-2">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.isProvision}
+                    onChange={(e) => setForm((f) => ({ ...f, isProvision: e.target.checked }))}
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-slate-800">📊 Tratar como provisión</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Al aplicar al mes: crea una línea "<strong>Provisión {form.description || "X"}</strong>" con el monto fijo
+                      arriba <em>y</em> una línea "<strong>Ajuste Provisión {form.description || "X"} mes anterior</strong>"
+                      con el diferencial (real - presupuestado del mes pasado).
+                      Los gastos reales del mes vinculados a esta plantilla NO se facturan
+                      directamente: se usan solo para calcular el ajuste del siguiente mes.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               {error && <p className="text-sm text-destructive">{error}</p>}
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setShowNew(false)}>Cancelar</Button>

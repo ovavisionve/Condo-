@@ -2566,6 +2566,8 @@ export const financeRouter = router({
           amountUsd: z.coerce.number().positive(),
           towerScope: z.string().max(20).optional().nullable(),
           notes: z.string().optional(),
+          /** Si true, es provisión: agrupa gastos reales y calcula AJUSTE PROVISION mes anterior. */
+          isProvision: z.boolean().default(false),
         }),
       )
       .mutation(({ ctx, input }) =>
@@ -2580,6 +2582,7 @@ export const financeRouter = router({
             amountUsd: input.amountUsd.toFixed(2),
             towerScope: input.towerScope ?? null,
             notes: input.notes ?? null,
+            isProvision: input.isProvision,
             active: true,
           },
         }),
@@ -2595,6 +2598,7 @@ export const financeRouter = router({
           towerScope: z.string().max(20).optional().nullable(),
           notes: z.string().optional(),
           active: z.boolean().optional(),
+          isProvision: z.boolean().optional(),
         }),
       )
       .mutation(({ ctx, input }) => {
