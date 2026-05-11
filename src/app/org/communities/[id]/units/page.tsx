@@ -46,6 +46,7 @@ export default function UnitsPage() {
   const [editingUnit, setEditingUnit] = useState<{ id: string; code: string; aliquot: { toString(): string }; tower: string | null; floor: number | null; areaM2: { toString(): string } | null; bedrooms: number | null; bathrooms: number | null; parkingSpots: number | null } | null>(null);
   const [filterTower, setFilterTower] = useState("");
   const [filterFloor, setFilterFloor] = useState("");
+  const [search, setSearch] = useState("");
 
   const sumAliquot = list.data?.reduce((s, u) => s + Number(u.aliquot.toString()), 0) ?? 0;
   const remaining = Math.max(0, 100 - sumAliquot);
@@ -53,9 +54,17 @@ export default function UnitsPage() {
   const towers = Array.from(new Set(list.data?.map((u) => u.tower).filter(Boolean)));
   const floors = Array.from(new Set(list.data?.map((u) => u.floor).filter((f) => f != null))).sort((a, b) => (a ?? 0) - (b ?? 0));
 
+  const searchLower = search.trim().toLowerCase();
   const filtered = list.data?.filter((u) => {
     if (filterTower && u.tower !== filterTower) return false;
     if (filterFloor && String(u.floor) !== filterFloor) return false;
+    if (searchLower) {
+      const matchesCode = u.code.toLowerCase().includes(searchLower);
+      const matchesOwner = u.ownerships?.some((o) =>
+        `${o.person.firstName} ${o.person.lastName}`.toLowerCase().includes(searchLower),
+      );
+      if (!matchesCode && !matchesOwner) return false;
+    }
     return true;
   });
 
@@ -68,7 +77,14 @@ export default function UnitsPage() {
             Total alícuota: {sumAliquot.toFixed(4)}% · Disponible: {remaining.toFixed(4)}%
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="search"
+            placeholder="🔍 Buscar por código o propietario..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex h-9 w-64 rounded-md border border-input bg-background px-3 text-sm"
+          />
           {towers.length > 0 && (
             <select
               className="flex h-9 rounded-md border border-input bg-background px-3 text-sm"

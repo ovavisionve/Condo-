@@ -233,6 +233,68 @@ export const orgRouter = router({
           orderBy: { code: "asc" },
         }),
       ),
+
+    /**
+     * Listado paginado con búsqueda. Para vistas con 188+ unidades que necesitan
+     * scroll/paginación. Devuelve { items, total, hasMore }.
+     */
+    listPaginated: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        page: z.number().int().min(1).default(1),
+        pageSize: z.number().int().min(10).max(200).default(50),
+        search: z.string().max(100).optional(),
+        tower: z.string().max(10).optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const where = {
+          organizationId: input.organizationId,
+          communityId: input.communityId,
+          deletedAt: null,
+          ...(input.tower ? { tower: input.tower } : {}),
+          ...(input.search
+            ? {
+                OR: [
+                  { code: { contains: input.search, mode: "insensitive" as const } },
+                  { ownerships: {
+                      some: {
+                        endDate: null,
+                        person: {
+                          OR: [
+                            { firstName: { contains: input.search, mode: "insensitive" as const } },
+                            { lastName: { contains: input.search, mode: "insensitive" as const } },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                ],
+              }
+            : {}),
+        };
+        const [total, items] = await Promise.all([
+          ctx.db.unit.count({ where }),
+          ctx.db.unit.findMany({
+            where,
+            include: {
+              ownerships: {
+                where: { endDate: null },
+                include: { person: { select: { firstName: true, lastName: true, idNumber: true } } },
+              },
+            },
+            orderBy: { code: "asc" },
+            skip: (input.page - 1) * input.pageSize,
+            take: input.pageSize,
+          }),
+        ]);
+        return {
+          items,
+          total,
+          page: input.page,
+          pageSize: input.pageSize,
+          hasMore: input.page * input.pageSize < total,
+        };
+      }),
     create: orgProcedure
       .input(
         orgIdInput.extend({
