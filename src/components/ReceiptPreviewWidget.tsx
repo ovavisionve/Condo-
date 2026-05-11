@@ -33,6 +33,7 @@ export function ReceiptPreviewWidget() {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [unitFilter, setUnitFilter] = useState("");
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
 
   // Lista de unidades para el buscador (solo cuando hay community)
   const unitsQ = trpc.org.units.list.useQuery(
@@ -122,12 +123,34 @@ export function ReceiptPreviewWidget() {
   }
 
   return (
-    <div className="fixed bottom-6 left-6 z-50 flex w-[860px] max-w-[calc(100vw-2rem)] h-[80vh] max-h-[calc(100vh-3rem)] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden">
+    <>
+      {/* Backdrop semitransparente en modo fullscreen */}
+      {fullscreen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60"
+          onClick={() => setFullscreen(false)}
+          aria-hidden
+        />
+      )}
+    <div
+      className={
+        fullscreen
+          ? "fixed inset-4 md:inset-8 z-50 flex rounded-2xl border border-border bg-white shadow-2xl overflow-hidden"
+          : "fixed bottom-6 left-6 z-50 flex w-[860px] max-w-[calc(100vw-2rem)] h-[80vh] max-h-[calc(100vh-3rem)] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden"
+      }
+    >
       {/* Sidebar selección */}
-      <div className="w-[230px] border-r bg-slate-50 flex flex-col">
+      <div className={fullscreen ? "w-[280px] border-r bg-slate-50 flex flex-col" : "w-[230px] border-r bg-slate-50 flex flex-col"}>
         <div className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-2.5">
           <span className="text-base">📄</span>
           <span className="font-semibold text-xs flex-1 leading-tight">Vista del Recibo<br/><span className="font-normal opacity-90">(como lo ve el residente)</span></span>
+          <button
+            onClick={() => setFullscreen((f) => !f)}
+            title={fullscreen ? "Reducir" : "Expandir a pantalla completa"}
+            className="rounded p-1 hover:bg-emerald-700 text-sm leading-none"
+          >
+            {fullscreen ? "🗗" : "🗖"}
+          </button>
         </div>
 
         {/* Mes / Año */}
@@ -235,21 +258,31 @@ export function ReceiptPreviewWidget() {
           </div>
         )}
         {pdfUrl && !previewMut.isPending && (
-          // object da mejor compatibilidad que iframe con data:URLs en algunos
-          // navegadores (especialmente con visor PDF interno de Chrome/Edge).
-          // Si no funciona, fallback a iframe.
-          <object
-            data={pdfUrl}
-            type="application/pdf"
-            className="w-full h-full"
-            aria-label="Preview del Recibo"
-          >
-            <iframe
-              src={pdfUrl}
-              className="w-full h-full border-0"
-              title="Preview del Recibo"
-            />
-          </object>
+          <>
+            {/* Botón flotante "Ver más grande / Reducir" sobre el PDF */}
+            <button
+              onClick={() => setFullscreen((f) => !f)}
+              className="absolute top-3 left-3 z-20 rounded-md bg-white/90 hover:bg-white shadow border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 backdrop-blur-sm"
+              title={fullscreen ? "Reducir a esquina" : "Ver en grande (modal)"}
+            >
+              {fullscreen ? "🗗 Reducir" : "🔍 Ver en grande"}
+            </button>
+            {/* object da mejor compatibilidad que iframe con data:URLs en algunos
+                navegadores (especialmente con visor PDF interno de Chrome/Edge).
+                Si no funciona, fallback a iframe. */}
+            <object
+              data={pdfUrl}
+              type="application/pdf"
+              className="w-full h-full"
+              aria-label="Preview del Recibo"
+            >
+              <iframe
+                src={pdfUrl}
+                className="w-full h-full border-0"
+                title="Preview del Recibo"
+              />
+            </object>
+          </>
         )}
         {!pdfUrl && !previewMut.isPending && !previewMut.error && (
           <div className="p-6 text-center text-sm text-muted-foreground">
@@ -264,5 +297,6 @@ export function ReceiptPreviewWidget() {
         )}
       </div>
     </div>
+    </>
   );
 }
