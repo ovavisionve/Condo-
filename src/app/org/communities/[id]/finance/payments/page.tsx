@@ -344,7 +344,6 @@ function NewPaymentDialog({
   onCreated: () => void;
 }) {
   const units = trpc.org.units.list.useQuery({ organizationId, communityId });
-  const exchangeRate = trpc.finance.exchange.current.useQuery({ organizationId });
 
   const [unitId, setUnitId] = useState<string>("");
   const invoices = trpc.finance.invoices.list.useQuery(
@@ -361,6 +360,12 @@ function NewPaymentDialog({
     paidAt: new Date().toISOString().slice(0, 10),
     notes: "",
   });
+
+  // #BUG TASA — Tasa de la fecha del pago seleccionada (no la de hoy).
+  const exchangeRate = trpc.finance.exchange.byDate.useQuery(
+    { organizationId, date: new Date(form.paidAt) },
+    { enabled: Boolean(form.paidAt) },
+  );
   const [allocs, setAllocs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   // Feature 7: también registrar como ingreso con la misma referencia
@@ -406,11 +411,17 @@ function NewPaymentDialog({
     return amountNum;
   }, [rate, amountNum, form.currencyPrimary]);
 
-  // Auto-distribuir: aplica el monto a las facturas pendientes de más antigua a más nueva
+  // Auto-distribuir: aplica el monto (en USD, convirtiendo si es VES) a las facturas
+  // pendientes desde la más antigua. Las facturas se llevan internamente en USD.
   const handleAutoDistribute = () => {
-    const total = Number(form.amount) || 0;
-    if (total <= 0 || pendingInvoices.length === 0) return;
-    let remaining = total;
+    const rawAmount = Number(form.amount) || 0;
+    if (rawAmount <= 0 || pendingInvoices.length === 0) return;
+    // Si el pago es en VES, convertirlo a USD usando la tasa de la fecha de pago.
+    const totalInUsd = form.currencyPrimary === "VES"
+      ? (rate && rate > 0 ? rawAmount / rate : 0)
+      : rawAmount;
+    if (totalInUsd <= 0) return;
+    let remaining = totalInUsd;
     const newAllocs: Record<string, string> = {};
     for (const inv of pendingInvoices) {
       if (remaining <= 0) break;
@@ -678,42 +689,55 @@ function NewPaymentDialog({
                     );
                   })}
                 </div>
-                {/* Resumen de asignación */}
-                <div className="border-t bg-muted/30 px-3 py-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">
-                      Suma asignada:{" "}
-                      <span className={`font-medium ${
-                        sumAllocs > amountNum + 0.005
-                          ? "text-destructive"
-                          : sumAllocs > 0
-                          ? "text-green-700"
-                          : "text-muted-foreground"
-                      }`}>
-                        {form.currencyPrimary === "USD" ? "$" : "Bs "}{sumAllocs.toFixed(2)}
-                      </span>
-                    </span>
-                    <span className="text-muted-foreground">
-                      Monto total:{" "}
-                      <span className="font-medium">
-                        {form.currencyPrimary === "USD" ? "$" : "Bs "}{form.amount || "0.00"}
-                      </span>
-                      {usdEquiv !== null && form.currencyPrimary === "VES" && (
-                        <span className="text-muted-foreground"> (≈ ${usdEquiv.toFixed(2)})</span>
+                {/* Resumen de asignación — comparado en la moneda primaria del pago */}
+                {(() => {
+                  // Las allocations (sumAllocs) están en USD. Convertimos a la moneda del pago para comparar.
+                  const isVes = form.currencyPrimary === "VES";
+                  const sumAllocsInPrimary = isVes && rate ? sumAllocs * rate : sumAllocs;
+                  const symbol = isVes ? "Bs " : "$";
+                  const overAssigned = sumAllocsInPrimary > amountNum + 0.005;
+                  const remaining = amountNum - sumAllocsInPrimary;
+                  return (
+                    <div className="border-t bg-muted/30 px-3 py-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">
+                          Suma asignada:{" "}
+                          <span className={`font-medium ${
+                            overAssigned
+                              ? "text-destructive"
+                              : sumAllocsInPrimary > 0
+                              ? "text-green-700"
+                              : "text-muted-foreground"
+                          }`}>
+                            {symbol}{sumAllocsInPrimary.toFixed(2)}
+                          </span>
+                          {isVes && sumAllocs > 0 && (
+                            <span className="text-muted-foreground"> (= ${sumAllocs.toFixed(2)})</span>
+                          )}
+                        </span>
+                        <span className="text-muted-foreground">
+                          Monto total:{" "}
+                          <span className="font-medium">
+                            {symbol}{form.amount || "0.00"}
+                          </span>
+                          {usdEquiv !== null && isVes && (
+                            <span className="text-muted-foreground"> (≈ ${usdEquiv.toFixed(2)})</span>
+                          )}
+                        </span>
+                      </div>
+                      {overAssigned && (
+                        <p className="mt-1 text-xs text-destructive">
+                          ⚠️ La suma asignada supera el monto ingresado.
+                        </p>
                       )}
-                    </span>
-                  </div>
-                  {sumAllocs > amountNum + 0.005 && (
-                    <p className="mt-1 text-xs text-destructive">
-                      ⚠️ La suma asignada supera el monto ingresado.
-                    </p>
-                  )}
-                  {amountNum > 0 && sumAllocs < amountNum - 0.005 && (
-                    <p className="mt-1 text-xs text-amber-700">
-                      ℹ️ ${(amountNum - sumAllocs).toFixed(2)} sin asignar se registrarán como anticipo.
-                    </p>
-                  )}
-                </div>
+                      {amountNum > 0 && remaining > 0.005 && (
+                        <p className="mt-1 text-xs text-amber-700">
+                          ℹ️ {symbol}{remaining.toFixed(2)} sin asignar se registrarán como anticipo.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}

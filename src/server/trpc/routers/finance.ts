@@ -61,6 +61,17 @@ export const financeRouter = router({
         vesPerUsd: rate.vesPerUsd.toString(),
       };
     }),
+    /** Tasa BCV para una fecha específica (busca cache exacto o más cercano anterior). */
+    byDate: orgProcedure
+      .input(orgIdInput.extend({ date: z.coerce.date() }))
+      .query(async ({ input }) => {
+        const rate = await getCurrentRate("BCV", input.date);
+        return {
+          date: rate.date,
+          source: rate.source,
+          vesPerUsd: rate.vesPerUsd.toString(),
+        };
+      }),
     recent: orgProcedure
       .input(orgIdInput.extend({ limit: z.number().int().min(1).max(100).default(30) }))
       .query(async ({ input }) => {
@@ -212,6 +223,8 @@ export const financeRouter = router({
           towerScope: z.string().max(20).optional().nullable(),
           isIndividual: z.boolean().default(false),
           targetUnitId: z.string().optional().nullable(),
+          /** Plantilla recurrente asociada (para agrupar en el recibo). */
+          recurringTemplateId: z.string().optional().nullable(),
         }),
       )
       .mutation(async ({ ctx, input }) =>
@@ -2514,14 +2527,19 @@ export const financeRouter = router({
         });
         if (templates.length === 0) return { created: 0 };
 
-        const rate = await getCurrentRate("BCV");
+        // #2 — Tasa según el mes del período (último día del mes), no la de hoy.
+        const periodEnd = new Date(year, month, 0);
+        const rate = await getCurrentRate("BCV", periodEnd);
         const usdRate = new Decimal(rate.vesPerUsd.toString());
 
         let created = 0;
         for (const tpl of templates) {
-          // Verificar si ya existe un gasto con la misma descripción en este período
+          // Verificar si ya existe un gasto de esta plantilla en este período
           const exists = await ctx.db.expense.findFirst({
-            where: { communityId, periodYear: year, periodMonth: month, description: tpl.description, voidedAt: null },
+            where: {
+              communityId, periodYear: year, periodMonth: month,
+              recurringTemplateId: tpl.id, voidedAt: null,
+            },
           });
           if (exists) continue;
 
@@ -2545,6 +2563,7 @@ export const financeRouter = router({
               currencyPrimary: "USD",
               towerScope: tpl.towerScope ?? null,
               isIndividual: false,
+              recurringTemplateId: tpl.id, // agrupación en recibo
               createdById: ctx.user.id,
             },
           });

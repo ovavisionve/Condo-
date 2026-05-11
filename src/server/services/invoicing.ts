@@ -62,6 +62,8 @@ export type CreateExpenseInput = {
   isIndividual?: boolean;
   /** Unidad destino cuando isIndividual=true. */
   targetUnitId?: string | null;
+  /** Plantilla recurrente asociada: si se provee, este gasto se agrupa con otros de la misma plantilla en el recibo. */
+  recurringTemplateId?: string | null;
   createdById: string;
 };
 
@@ -122,6 +124,7 @@ export async function registerExpense(input: CreateExpenseInput) {
       towerScope: input.towerScope ?? null,
       isIndividual: input.isIndividual ?? false,
       targetUnitId: input.targetUnitId ?? null,
+      recurringTemplateId: input.recurringTemplateId ?? null,
       createdById: input.createdById,
     },
   });
@@ -177,6 +180,7 @@ export async function issueMonthlyInvoices(params: {
 
   const expenses = await db.expense.findMany({
     where: { communityId, periodYear: year, periodMonth: month, invoicedAt: null, voidedAt: null },
+    include: { recurringTemplate: { select: { id: true, description: true, isProvision: true } } },
   });
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
@@ -200,8 +204,52 @@ export async function issueMonthlyInvoices(params: {
 
   // Separar gastos por tipo: individuales, por torre, generales
   const individualExpenses = expenses.filter((e) => e.isIndividual && e.targetUnitId);
-  const towerExpenses = expenses.filter((e) => !e.isIndividual && e.towerScope);
-  const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+  const towerExpensesRaw = expenses.filter((e) => !e.isIndividual && e.towerScope);
+  const generalExpensesRaw = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+
+  // — Plantillas recurrentes —
+  // Si varios gastos provienen de la misma plantilla, se agrupan en UNA sola línea
+  // del recibo con la descripción de la plantilla. Esto evita recibos con 60 renglones
+  // y refleja el patrón típico (PROVISION X = suma de gastos del mes).
+  type ExpenseLike = typeof expenses[number];
+  function groupByTemplate(rows: ExpenseLike[], scope: string | null): ExpenseLike[] {
+    const byTpl = new Map<string, ExpenseLike[]>();
+    const noTpl: ExpenseLike[] = [];
+    for (const e of rows) {
+      if (e.recurringTemplateId) {
+        // Las plantillas se agrupan por (templateId, towerScope) para no mezclar torres.
+        const key = `${e.recurringTemplateId}|${scope ?? ""}`;
+        const arr = byTpl.get(key) ?? [];
+        arr.push(e);
+        byTpl.set(key, arr);
+      } else {
+        noTpl.push(e);
+      }
+    }
+    // Por cada grupo: sumar montos y construir un expense compuesto que conserva
+    // el id del primero (para el FK del InvoiceItem) y usa la descripción de la plantilla.
+    const aggregated: ExpenseLike[] = [];
+    for (const [, group] of byTpl) {
+      if (group.length === 1) {
+        // Solo uno: igual usar la descripción de la plantilla para consistencia
+        const e = group[0]!;
+        aggregated.push({ ...e, description: e.recurringTemplate?.description ?? e.description });
+        continue;
+      }
+      const sumBss = group.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+      const sumUsd = group.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+      const head = group[0]!;
+      aggregated.push({
+        ...head,
+        amountBss: sumBss.toFixed(2) as never,
+        amountUsd: sumUsd.toFixed(2) as never,
+        description: head.recurringTemplate?.description ?? head.description,
+      });
+    }
+    return [...aggregated, ...noTpl];
+  }
+  const towerExpenses = groupByTemplate(towerExpensesRaw, "tower");
+  const generalExpenses = groupByTemplate(generalExpensesRaw, null);
 
   // Calcular cuánto de la deducción de ingresos corresponde a cada tipo
   // Simplificación: la deducción se aplica solo a gastos generales (prorrateados).

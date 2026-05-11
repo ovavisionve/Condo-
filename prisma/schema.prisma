@@ -562,6 +562,9 @@ model Expense {
   isIndividual    Boolean         @default(false)
   targetUnitId    String?         // solo si isIndividual=true
   targetUnit      Unit?           @relation("ExpenseTargetUnit", fields: [targetUnitId], references: [id], onDelete: SetNull)
+  /// Plantilla recurrente que originó este gasto (para agrupar items en el recibo)
+  recurringTemplateId String?
+  recurringTemplate   RecurringExpenseTemplate? @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
   // Estado
   invoicedAt      DateTime? // si null, todavía no se ha prorrateado
   voidedAt        DateTime?
@@ -576,6 +579,7 @@ model Expense {
   @@index([communityId, periodYear, periodMonth])
   @@index([communityId, invoicedAt])
   @@index([targetUnitId])
+  @@index([recurringTemplateId])
 }
 
 enum InvoiceStatus {
@@ -860,8 +864,13 @@ model RecurringExpenseTemplate {
   towerScope      String?         // null=general, "A","B"=torre específica
   notes           String?
   active          Boolean         @default(true)
+  /// Si true, los gastos generados por esta plantilla son "provisiones": se agrupan en
+  /// una sola línea del recibo y se calcula AJUSTE PROVISION del mes anterior.
+  isProvision     Boolean         @default(false)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  expenses        Expense[]
 
   @@index([communityId, active])
   @@index([organizationId])
