@@ -890,6 +890,68 @@ export const financeRouter = router({
         const totalUsd = sections.reduce((s, sec) => s + Number(sec.subtotalUsd), 0);
         const totalBss = sections.reduce((s, sec) => s + Number(sec.subtotalBss), 0);
 
+        // ── Fondo de Reserva ACUMULADO DEL EDIFICIO ─────────────────────
+        // Misma lógica que downloadPdf real: saldo anterior = items
+        // RESERVE_FUND del condominio en facturas históricas; aporte mes =
+        // contribución total del edificio en el mes corriente.
+        const reserveItemsAllPrev = await ctx.db.invoiceItem.findMany({
+          where: {
+            invoice: {
+              communityId: input.communityId,
+              status: { not: "VOIDED" },
+            },
+            expense: { category: "RESERVE_FUND" },
+          },
+          include: {
+            invoice: { select: { periodYear: true, periodMonth: true } },
+          },
+        });
+        let prevReserveUsd = 0, prevReserveBss = 0;
+        for (const ri of reserveItemsAllPrev) {
+          if (
+            ri.invoice.periodYear < input.year ||
+            (ri.invoice.periodYear === input.year && ri.invoice.periodMonth < input.month)
+          ) {
+            prevReserveUsd += Number(ri.amountUsd);
+            prevReserveBss += Number(ri.amountBss);
+          }
+        }
+        // Aporte del mes: suma de Expense RESERVE_FUND del periodo (todas las unidades)
+        const reserveExpensesMonth = expensesAll.filter((e) => e.category === "RESERVE_FUND");
+        const monthReserveUsd = reserveExpensesMonth.reduce((s, e) => s + Number(e.amountUsd), 0);
+        const monthReserveBss = reserveExpensesMonth.reduce((s, e) => s + Number(e.amountBss), 0);
+        const previewReserveFund = (prevReserveUsd > 0 || monthReserveUsd > 0)
+          ? {
+              previousBalanceUsd: prevReserveUsd.toFixed(2),
+              previousBalanceBss: prevReserveBss.toFixed(2),
+              contributionUsd: monthReserveUsd.toFixed(2),
+              contributionBss: monthReserveBss.toFixed(2),
+              period: `${String(input.month).padStart(2, "0")}/${input.year}`,
+              totalUsd: (prevReserveUsd + monthReserveUsd).toFixed(2),
+              totalBss: (prevReserveBss + monthReserveBss).toFixed(2),
+            }
+          : undefined;
+
+        // ── Saldo a favor del residente (anticipo no aplicado) ──────────
+        const paymentsForCredit = await ctx.db.payment.findMany({
+          where: { unitId: targetUnit.id, voidedAt: null },
+          select: {
+            amountUsd: true, amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        let previewCreditUsd = 0, previewCreditBss = 0;
+        for (const p of paymentsForCredit) {
+          const tU = Number(p.amountUsd);
+          const tB = Number(p.amountBss);
+          const aU = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+          const aB = p.allocations.reduce((s, a) => s + Number(a.amountBss), 0);
+          if (tU - aU > 0.005) previewCreditUsd += tU - aU;
+          if (tB - aB > 0.005) previewCreditBss += tB - aB;
+        }
+        previewCreditUsd = Math.min(previewCreditUsd, totalUsd);
+        previewCreditBss = Math.min(previewCreditBss, totalBss);
+
         const now = new Date();
         const buffer = await generateInvoicePdf({
           communityName: community.name,
@@ -918,10 +980,13 @@ export const financeRouter = router({
             amountBss: l.cuotaBss.toFixed(2),
           })),
           sections,
+          reserveFund: previewReserveFund,
           totalUsd: totalUsd.toFixed(2),
           totalBss: totalBss.toFixed(2),
           paidUsd: "0",
           paidBss: "0",
+          creditUsd: previewCreditUsd > 0.005 ? previewCreditUsd.toFixed(2) : undefined,
+          creditBss: previewCreditBss > 0.005 ? previewCreditBss.toFixed(2) : undefined,
           bankAccounts: bankAccounts.map((b) => ({
             bankName: b.bankName,
             accountNumber: b.accountNumber,
