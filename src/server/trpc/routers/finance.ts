@@ -542,13 +542,16 @@ export const financeRouter = router({
             };
           });
 
-        // ── Fondo de Reserva (saldo acumulado por unidad) ─────────────────────
-        // Sumar TODOS los InvoiceItem con categoría RESERVE_FUND de esta unidad
-        // hasta el mes anterior, y aportar del mes corriente por separado.
-        const reserveItems = await ctx.db.invoiceItem.findMany({
+        // ── Fondo de Reserva ACUMULADO DEL EDIFICIO ─────────────────────────
+        // Saldo anterior = suma de TODOS los items RESERVE_FUND del condominio en
+        // facturas de meses anteriores. Aporte del mes = suma de TODOS los items
+        // RESERVE_FUND del mes corriente (todas las unidades). Esto refleja el
+        // saldo del fondo de reserva del CONDOMINIO ENTERO, no de la unidad
+        // (pedido del cliente: "Del edificio").
+        const reserveItemsAll = await ctx.db.invoiceItem.findMany({
           where: {
             invoice: {
-              unitId: inv.unitId,
+              communityId: inv.communityId,
               status: { not: "VOIDED" },
             },
             expense: { category: "RESERVE_FUND" },
@@ -558,7 +561,7 @@ export const financeRouter = router({
           },
         });
         let prevUsd = 0, prevBss = 0, currUsd = 0, currBss = 0;
-        for (const ri of reserveItems) {
+        for (const ri of reserveItemsAll) {
           const isCurrent = ri.invoice.periodYear === inv.periodYear && ri.invoice.periodMonth === inv.periodMonth;
           if (isCurrent) {
             currUsd += Number(ri.amountUsd);
@@ -582,6 +585,30 @@ export const financeRouter = router({
               totalBss: (prevBss + currBss).toFixed(2),
             }
           : undefined;
+
+        // ── Saldo a favor del residente: anticipo (suma de pagos − allocations) ──
+        // Solo cuenta el sobrante de pagos que NO se aplicó a otras facturas.
+        const unitPaymentsForCredit = await ctx.db.payment.findMany({
+          where: { unitId: inv.unitId, voidedAt: null },
+          select: {
+            amountUsd: true, amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        let creditUsdNum = 0, creditBssNum = 0;
+        for (const p of unitPaymentsForCredit) {
+          const totalU = Number(p.amountUsd);
+          const totalB = Number(p.amountBss);
+          const allocU = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+          const allocB = p.allocations.reduce((s, a) => s + Number(a.amountBss), 0);
+          if (totalU - allocU > 0.005) creditUsdNum += totalU - allocU;
+          if (totalB - allocB > 0.005) creditBssNum += totalB - allocB;
+        }
+        // Cap al total del recibo (no podemos mostrar saldo a favor mayor al recibo)
+        const totalUsdNum = Number(inv.totalUsd);
+        const totalBssNum = Number(inv.totalBss);
+        const creditApplyU = Math.min(creditUsdNum, totalUsdNum);
+        const creditApplyB = Math.min(creditBssNum, totalBssNum);
 
         const data = {
           communityName: community.name,
@@ -615,6 +642,8 @@ export const financeRouter = router({
           totalBss: inv.totalBss.toString(),
           paidUsd: inv.paidUsd.toString(),
           paidBss: inv.paidBss.toString(),
+          creditUsd: creditApplyU > 0.005 ? creditApplyU.toFixed(2) : undefined,
+          creditBss: creditApplyB > 0.005 ? creditApplyB.toFixed(2) : undefined,
           paymentsApplied: inv.payments.map((pa) => ({
             paidAt: pa.payment.paidAt,
             method: pa.payment.method,

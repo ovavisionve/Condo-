@@ -206,10 +206,19 @@ export async function issueMonthlyInvoices(params: {
   }
 
   // ── FASE 2: Cálculo en memoria (sin tocar la BD) ──────────────────────────
-  // sortOrder: 1=PROVISION_BASE, 2=PROVISION_ADJUSTMENT, 3=Cuota mensual,
+  // sortOrder: 1=Provisión+ajuste (pareados), 3=Cuota mensual,
   // 4=Gasto general agrupado, 5=Gasto por torre, 6=Gasto individual,
-  // 7=Descuento ingreso. Pedido del cliente: "Las provisiones van primero".
-  type LineDraft = { unitId: string; expenseId: string | null; description: string; bss: Decimal; usd: Decimal; aliquot: Decimal; sortOrder: number };
+  // 7=Descuento ingreso. Pedido del cliente: "Las provisiones van primero"
+  // y "PROVISION X seguida inmediatamente de AJUSTE PROVISION X mes anterior"
+  // (como en el PDF de referencia de Arrayanes — Aviso de Cobro 001923).
+  //
+  // groupKey: cuando son provisión/ajuste del mismo templateId, comparten groupKey
+  // para que aparezcan pegados al ordenar. subOrder: 0=base, 1=ajuste.
+  type LineDraft = {
+    unitId: string; expenseId: string | null; description: string;
+    bss: Decimal; usd: Decimal; aliquot: Decimal;
+    sortOrder: number; groupKey: string; subOrder: number;
+  };
   const draftLines: LineDraft[] = [];
 
   // Separar gastos por tipo: individuales, por torre, generales
@@ -296,6 +305,8 @@ export async function issueMonthlyInvoices(params: {
       usd: new Decimal(exp.amountUsd.toString()),
       aliquot: new Decimal("100"),
       sortOrder: 6,
+      groupKey: `indiv-${exp.id}`,
+      subOrder: 0,
     });
   }
 
@@ -325,15 +336,19 @@ export async function issueMonthlyInvoices(params: {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
       if (bss.eq(0) && usd.eq(0)) continue;
-      // sortOrder: 1 si es PROVISION_BASE, 2 si es AJUSTE, 5 si gasto torre normal
-      const sortOrder = exp.kind === "PROVISION_BASE" ? 1
-        : exp.kind === "PROVISION_ADJUSTMENT" ? 2
-        : 5;
+      // Provisiones y ajustes comparten sortOrder=1 y se pegan por groupKey (templateId).
+      // Subor: 0 = provisión base; 1 = ajuste mes anterior (va abajo de su provisión).
+      const isProv = exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT";
+      const sortOrder = isProv ? 1 : 5;
+      const groupKey = isProv && exp.recurringTemplateId
+        ? `prov-${exp.recurringTemplateId}`
+        : `tower-${exp.id}`;
+      const subOrder = exp.kind === "PROVISION_ADJUSTMENT" ? 1 : 0;
       draftLines.push({
         unitId: u.id, expenseId: exp.id,
         description: `${exp.customCategory ?? exp.description} (Torre ${exp.towerScope})`,
         bss, usd, aliquot: new Decimal(u.aliquot.toString()),
-        sortOrder,
+        sortOrder, groupKey, subOrder,
       });
     }
   }
@@ -351,15 +366,20 @@ export async function issueMonthlyInvoices(params: {
       const bss = bssDistribution.get(u.id) ?? new Decimal(0);
       const usd = usdDistribution.get(u.id) ?? new Decimal(0);
       if (bss.eq(0) && usd.eq(0)) continue;
-      // sortOrder: 1 si es PROVISION_BASE, 2 si es AJUSTE, 4 si gasto general normal
-      const sortOrder = exp.kind === "PROVISION_BASE" ? 1
-        : exp.kind === "PROVISION_ADJUSTMENT" ? 2
-        : 4;
+      // Provisiones y ajustes comparten sortOrder=1 y se pegan por groupKey (templateId).
+      // Esto reproduce el patrón del PDF Arrayanes: PROVISION X seguida directamente
+      // de AJUSTE PROVISION X mes anterior, luego PROVISION Y, AJUSTE Y, etc.
+      const isProv = exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT";
+      const sortOrder = isProv ? 1 : 4;
+      const groupKey = isProv && exp.recurringTemplateId
+        ? `prov-${exp.recurringTemplateId}`
+        : `gen-${exp.id}`;
+      const subOrder = exp.kind === "PROVISION_ADJUSTMENT" ? 1 : 0;
       draftLines.push({
         unitId: u.id, expenseId: exp.id,
         description: `${exp.customCategory ?? exp.description}`,
         bss, usd, aliquot: new Decimal(u.aliquot.toString()),
-        sortOrder,
+        sortOrder, groupKey, subOrder,
       });
     }
   }
@@ -381,6 +401,8 @@ export async function issueMonthlyInvoices(params: {
         bss: bss.neg(), usd: usd.neg(),
         aliquot: new Decimal(u.aliquot.toString()),
         sortOrder: 7,
+        groupKey: "deduction",
+        subOrder: 0,
       });
     }
   }
@@ -390,7 +412,7 @@ export async function issueMonthlyInvoices(params: {
     const feeUsd = new Decimal(community.monthlyFeeUsd!.toString());
     const feeBss = feeUsd.mul(refRate.vesPerUsd);
     for (const u of units) {
-      draftLines.push({ unitId: u.id, expenseId: null, description: "Cuota de condominio mensual", usd: feeUsd, bss: feeBss, aliquot: new Decimal(u.aliquot.toString()), sortOrder: 3 });
+      draftLines.push({ unitId: u.id, expenseId: null, description: "Cuota de condominio mensual", usd: feeUsd, bss: feeBss, aliquot: new Decimal(u.aliquot.toString()), sortOrder: 3, groupKey: "fee", subOrder: 0 });
     }
   }
 
@@ -405,12 +427,17 @@ export async function issueMonthlyInvoices(params: {
   const invoiceRows: InvoiceRow[] = [];
 
   for (const u of units) {
-    // Ordenar líneas: provisiones primero (sortOrder 1-2), luego cuota (3),
+    // Ordenar líneas: provisiones+ajustes pareadas primero (sortOrder=1, pegadas por
+    // groupKey, subOrder=0 base seguido de subOrder=1 ajuste), luego cuota (3),
     // gastos generales (4), torre (5), individual (6), descuentos (7).
-    // Pedido del cliente: "Las provisiones van primero".
     const lines = draftLines
       .filter((l) => l.unitId === u.id)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
+      .sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        // Mismo sortOrder: agrupar por groupKey y dentro de cada grupo subOrder
+        if (a.groupKey !== b.groupKey) return a.groupKey.localeCompare(b.groupKey);
+        return a.subOrder - b.subOrder;
+      });
     if (lines.length === 0) continue;
     const totalBss = lines.reduce((acc, l) => acc.plus(l.bss), new Decimal(0));
     const totalUsd = lines.reduce((acc, l) => acc.plus(l.usd), new Decimal(0));

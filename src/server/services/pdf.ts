@@ -393,10 +393,19 @@ export type InvoicePdfData = {
     totalBss: string;
   };
   // Totales
+  /** Total del mes (gastos comunes + torre + individual + cuota, sin restar saldo a favor) */
   totalUsd: string;
   totalBss: string;
+  /** Abonos ya aplicados por payment allocations (legacy / pagos parciales del residente) */
   paidUsd: string;
   paidBss: string;
+  /**
+   * Saldo a favor del residente (anticipo no asignado) que se aplica a este recibo.
+   * En el PDF aparece como "SALDO A FAVOR" en el bloque TOTAL A PAGAR.
+   * Si > 0, TOTAL A PAGAR = TOTAL DEL MES − SALDO A FAVOR − ABONOS.
+   */
+  creditUsd?: string;
+  creditBss?: string;
   // Pagos aplicados a esta factura
   paymentsApplied?: {
     paidAt: Date;
@@ -521,8 +530,22 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
       // ── Items: layout Arrayanes (sections con base/cuota) o legacy ──────────
       data.sections && data.sections.length > 0
         ? React.createElement(View, {},
-            ...data.sections.map((sec, sIdx) =>
-              React.createElement(View, { key: sIdx, style: inv.tableSection },
+            ...data.sections.map((sec, sIdx) => {
+              // Separar Fondo de Reserva del resto (estilo PDF Arrayanes):
+              // primero items normales → SUBTOTAL → Fondo Reserva → TOTAL.
+              // Solo aplica en GASTOS COMUNES; otras secciones se renderizan plano.
+              const isCommons = sec.title.toUpperCase().includes("COMUN");
+              const reserveItem = isCommons
+                ? sec.items.find((i) => i.description.toLowerCase().includes("fondo") && i.description.toLowerCase().includes("reserva"))
+                : undefined;
+              const otherItems = reserveItem
+                ? sec.items.filter((i) => i !== reserveItem)
+                : sec.items;
+
+              const subtotalOnlyUsd = otherItems.reduce((s, i) => s + Number(i.cuotaUsd), 0);
+              const subtotalOnlyBss = otherItems.reduce((s, i) => s + Number(i.cuotaBss), 0);
+
+              return React.createElement(View, { key: sIdx, style: inv.tableSection },
                 React.createElement(Text, { style: inv.tableSectionTitle }, sec.title),
                 React.createElement(View, { style: inv.tableHead },
                   React.createElement(Text, { style: inv.thDesc }, "Concepto / Descripción"),
@@ -530,7 +553,8 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
                   React.createElement(Text, { style: inv.thUsd }, "Cuota USD"),
                   React.createElement(Text, { style: inv.thBss }, "Cuota Bs"),
                 ),
-                ...sec.items.map((it, i) =>
+                // Items (sin Fondo de Reserva si aplicó la separación)
+                ...otherItems.map((it, i) =>
                   React.createElement(View, { key: i, style: i % 2 === 0 ? inv.tableRow : inv.tableRowAlt },
                     React.createElement(Text, { style: inv.tdDesc }, it.description),
                     React.createElement(Text, { style: inv.tdAliq }, fmtBss(it.baseBss)),
@@ -538,16 +562,29 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
                     React.createElement(Text, { style: inv.tdBss }, fmtBss(it.cuotaBss)),
                   ),
                 ),
-                // Subtotal de la sección con porcentaje aplicado
+                // SUBTOTAL (sólo si hay fondo de reserva separado, para que tenga sentido visual)
+                reserveItem && React.createElement(View, { style: inv.totalLineRow },
+                  React.createElement(Text, { style: inv.totalLineLabel }, `SUBTOTAL ${sec.title}`),
+                  React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(subtotalOnlyUsd)),
+                  React.createElement(Text, { style: inv.totalLineBss }, fmtBss(subtotalOnlyBss)),
+                ),
+                // Fondo de Reserva como item separado
+                reserveItem && React.createElement(View, { style: inv.tableRow },
+                  React.createElement(Text, { style: inv.tdDesc }, reserveItem.description),
+                  React.createElement(Text, { style: inv.tdAliq }, fmtBss(reserveItem.baseBss)),
+                  React.createElement(Text, { style: inv.tdUsd }, fmtUsd(reserveItem.cuotaUsd)),
+                  React.createElement(Text, { style: inv.tdBss }, fmtBss(reserveItem.cuotaBss)),
+                ),
+                // TOTAL de la sección (subtotal + fondo)
                 React.createElement(View, { style: inv.totalLineRow },
                   React.createElement(Text, { style: inv.totalLineLabel },
-                    `Total ${sec.title}${sec.aliquotPercent ? ` (${Number(sec.aliquotPercent).toFixed(4)}%${sec.baseTotalBss ? ` de Bs ${fmtBss(sec.baseTotalBss)}` : ""})` : ""}`,
+                    `TOTAL ${sec.title}${sec.aliquotPercent ? ` (${Number(sec.aliquotPercent).toFixed(4)}%${sec.baseTotalBss ? ` de Bs ${fmtBss(sec.baseTotalBss)}` : ""})` : ""}`,
                   ),
                   React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(sec.subtotalUsd)),
                   React.createElement(Text, { style: inv.totalLineBss }, fmtBss(sec.subtotalBss)),
                 ),
-              ),
-            ),
+              );
+            }),
           )
         : React.createElement(View, { style: inv.tableSection },
             React.createElement(Text, { style: inv.tableSectionTitle }, "GASTOS COMUNES"),
@@ -568,9 +605,13 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
             ),
           ),
 
-      // ── Fondo de Reserva (estilo Arrayanes) ─────────────────────
+      // ── Fondo de Reserva ACUMULADO DEL EDIFICIO (estilo Arrayanes) ────────
+      // El saldo anterior y el aporte mostrados aquí son del EDIFICIO ENTERO,
+      // no de esta unidad. La contribución de la unidad al fondo de reserva
+      // del mes corriente aparece como línea dentro de GASTOS COMUNES arriba.
       data.reserveFund && React.createElement(View, { style: inv.tableSection },
-        React.createElement(Text, { style: inv.tableSectionTitle }, "FONDO DE RESERVA"),
+        React.createElement(Text, { style: inv.tableSectionTitle },
+          "FONDO DE RESERVA (ACUMULADO DEL CONDOMINIO)"),
         React.createElement(View, { style: inv.tableHead },
           React.createElement(Text, { style: inv.thDesc }, "Concepto"),
           React.createElement(Text, { style: inv.thAliq }, ""),
@@ -584,42 +625,64 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
           React.createElement(Text, { style: inv.tdBss }, fmtBss(data.reserveFund.previousBalanceBss)),
         ),
         React.createElement(View, { style: inv.tableRowAlt },
-          React.createElement(Text, { style: inv.tdDesc }, `Aporte ${data.reserveFund.period}`),
+          React.createElement(Text, { style: inv.tdDesc }, `Aporte del condominio ${data.reserveFund.period}`),
           React.createElement(Text, { style: inv.tdAliq }, ""),
           React.createElement(Text, { style: inv.tdUsd }, fmtUsd(data.reserveFund.contributionUsd)),
           React.createElement(Text, { style: inv.tdBss }, fmtBss(data.reserveFund.contributionBss)),
         ),
         React.createElement(View, { style: inv.totalLineRow },
-          React.createElement(Text, { style: inv.totalLineLabel }, "Total Fondo de Reserva acumulado"),
+          React.createElement(Text, { style: inv.totalLineLabel }, "TOTAL FONDO DE RESERVA (acumulado edificio)"),
           React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(data.reserveFund.totalUsd)),
           React.createElement(Text, { style: inv.totalLineBss }, fmtBss(data.reserveFund.totalBss)),
         ),
       ),
 
-      // ── Totales ─────────────────────────────────────────────────
-      React.createElement(View, { style: inv.totalsBox },
-        React.createElement(View, { style: inv.totalLineRow },
-          React.createElement(Text, { style: inv.totalLineLabel }, "Total de Gastos Comunes"),
-          React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(data.totalUsd)),
-          React.createElement(Text, { style: inv.totalLineBss }, fmtBss(data.totalBss)),
-        ),
-        Number(data.paidUsd) > 0.005 && React.createElement(View, { style: inv.deductionRow },
-          React.createElement(Text, { style: inv.deductionLabel }, "(–) Abonos recibidos"),
-          React.createElement(Text, { style: inv.deductionUsd }, `– ${fmtUsd(data.paidUsd)}`),
-          React.createElement(Text, { style: inv.deductionBss }, `– ${fmtBss(data.paidBss)}`),
-        ),
-        isPaid
-          ? React.createElement(View, { style: inv.cancelledRow },
-              React.createElement(Text, { style: inv.cancelledLabel }, "SALDO TOTAL: CANCELADO"),
-              React.createElement(Text, { style: inv.cancelledUsd }, "$0.00"),
-              React.createElement(Text, { style: inv.cancelledBss }, "Bs 0,00"),
-            )
-          : React.createElement(View, { style: inv.grandTotalRow },
-              React.createElement(Text, { style: inv.gtLabel }, "TOTAL A PAGAR"),
-              React.createElement(Text, { style: inv.gtUsd }, fmtUsd(pendingUsd)),
-              React.createElement(Text, { style: inv.gtBss }, fmtBss(pendingBss)),
-            ),
-      ),
+      // ── Totales (estructura Arrayanes: TOTAL DEL MES → SALDO A FAVOR → TOTAL A PAGAR) ──
+      (() => {
+        const creditU = Number(data.creditUsd ?? 0);
+        const creditB = Number(data.creditBss ?? 0);
+        const paidU   = Number(data.paidUsd);
+        const paidB   = Number(data.paidBss);
+        // TOTAL A PAGAR = TOTAL DEL MES − Saldo a favor − Abonos
+        const totalMesU = Number(data.totalUsd);
+        const totalMesB = Number(data.totalBss);
+        const aPagarU = Math.max(0, totalMesU - creditU - paidU);
+        const aPagarB = Math.max(0, totalMesB - creditB - paidB);
+        const isPaidCalc = aPagarU < 0.005;
+
+        return React.createElement(View, { style: inv.totalsBox },
+          // TOTAL DEL MES (suma sin descuentos)
+          React.createElement(View, { style: inv.totalLineRow },
+            React.createElement(Text, { style: inv.totalLineLabel }, "TOTAL DEL MES"),
+            React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(totalMesU)),
+            React.createElement(Text, { style: inv.totalLineBss }, fmtBss(totalMesB)),
+          ),
+          // SALDO A FAVOR (anticipo del residente que se aplica)
+          creditU > 0.005 && React.createElement(View, { style: inv.deductionRow },
+            React.createElement(Text, { style: inv.deductionLabel }, "(–) SALDO A FAVOR (anticipo)"),
+            React.createElement(Text, { style: inv.deductionUsd }, `– ${fmtUsd(creditU)}`),
+            React.createElement(Text, { style: inv.deductionBss }, `– ${fmtBss(creditB)}`),
+          ),
+          // ABONOS RECIBIDOS (pagos directos contra esta factura)
+          paidU > 0.005 && React.createElement(View, { style: inv.deductionRow },
+            React.createElement(Text, { style: inv.deductionLabel }, "(–) Abonos recibidos"),
+            React.createElement(Text, { style: inv.deductionUsd }, `– ${fmtUsd(paidU)}`),
+            React.createElement(Text, { style: inv.deductionBss }, `– ${fmtBss(paidB)}`),
+          ),
+          // TOTAL A PAGAR
+          isPaidCalc
+            ? React.createElement(View, { style: inv.cancelledRow },
+                React.createElement(Text, { style: inv.cancelledLabel }, "SALDO TOTAL: CANCELADO"),
+                React.createElement(Text, { style: inv.cancelledUsd }, "$0.00"),
+                React.createElement(Text, { style: inv.cancelledBss }, "Bs 0,00"),
+              )
+            : React.createElement(View, { style: inv.grandTotalRow },
+                React.createElement(Text, { style: inv.gtLabel }, "TOTAL A PAGAR"),
+                React.createElement(Text, { style: inv.gtUsd }, fmtUsd(aPagarU)),
+                React.createElement(Text, { style: inv.gtBss }, fmtBss(aPagarB)),
+              ),
+        );
+      })(),
 
       // ── Tasa BCV ─────────────────────────────────────────────────
       React.createElement(View, { style: inv.rateBox },
