@@ -171,15 +171,45 @@ function detectSeparator(sample: string): string {
   return ",";
 }
 
+/**
+ * Busca la fila de cabecera entre las primeras N filas. Los bancos venezolanos
+ * suelen poner: título, info de cuenta, fila vacía, y RECIÉN ahí las cabeceras.
+ * Devuelve el índice de la fila de cabecera y el ColMap, o null si no detecta.
+ */
+function findHeaderRow(allRows: string[][], maxRowsToScan = 10): { headerIdx: number; cols: ColMap } | null {
+  const upTo = Math.min(maxRowsToScan, allRows.length);
+  for (let i = 0; i < upTo; i++) {
+    const row = (allRows[i] ?? []).map(String);
+    const cols = detectColumns(row);
+    if (cols) return { headerIdx: i, cols };
+  }
+  return null;
+}
+
+/**
+ * Normaliza una fila para que tenga al menos `minCols` celdas, rellenando con "".
+ * Evita que celdas faltantes corran los datos del usuario hacia índices incorrectos.
+ */
+function padRow(cells: unknown[], minCols: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(cells.length, minCols); i++) {
+    const v = cells[i];
+    out.push(v === undefined || v === null ? "" : String(v));
+  }
+  return out;
+}
+
 function parseCSV(text: string): BankRow[] {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) return [];
   const sep = detectSeparator(lines[0]!);
-  const headers = splitLine(lines[0]!, sep);
-  const cols = detectColumns(headers);
-  if (!cols) return [];
-  const rows = lines.slice(1).flatMap(line => {
-    const cells = splitLine(line, sep);
+  const allRows = lines.map(line => splitLine(line, sep));
+  const header = findHeaderRow(allRows, 10);
+  if (!header) return [];
+  const { headerIdx, cols } = header;
+  const colCount = (allRows[headerIdx] ?? []).length;
+  const rows = allRows.slice(headerIdx + 1).flatMap(rawCells => {
+    const cells = padRow(rawCells, colCount);
     const montoRaw = parseMoney(cells[cols.monto] ?? "");
     if (montoRaw === 0) return [];
     const monto = Math.abs(montoRaw);
@@ -197,18 +227,25 @@ async function parseExcel(file: File): Promise<BankRow[]> {
   const sheetName = wb.SheetNames[0];
   if (!sheetName) return [];
   const ws = wb.Sheets[sheetName]!;
-  const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: "" });
-  if (rows.length < 2) return [];
-  const headers = (rows[0] as string[]).map(String);
-  const cols = detectColumns(headers);
-  if (!cols) return [];
-  const parsed = (rows.slice(1) as string[][]).flatMap(cells => {
-    const montoRaw = parseMoney(String(cells[cols.monto] ?? ""));
+  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: "" });
+  if (rawRows.length < 2) return [];
+  // Buscar la cabecera entre las primeras 10 filas (los bancos VE ponen título arriba).
+  const allRows = (rawRows as unknown[][]).map(r => r.map(v => v === undefined || v === null ? "" : String(v)));
+  const header = findHeaderRow(allRows, 10);
+  if (!header) return [];
+  const { headerIdx, cols } = header;
+  const colCount = (allRows[headerIdx] ?? []).length;
+  const parsed = allRows.slice(headerIdx + 1).flatMap(rawCells => {
+    // CRÍTICO: padRow rellena con "" hasta colCount. Antes, si una fila tenía menos
+    // celdas que la cabecera, cells[cols.X] devolvía undefined y los campos se "corrían"
+    // visualmente al renderizar — bug "después de la primera lectura todo se corre".
+    const cells = padRow(rawCells, colCount);
+    const montoRaw = parseMoney(cells[cols.monto] ?? "");
     if (montoRaw === 0) return [];
     const monto = Math.abs(montoRaw);
-    const descripcion = cols.descripcion >= 0 ? String(cells[cols.descripcion] ?? "") : "";
+    const descripcion = cols.descripcion >= 0 ? (cells[cols.descripcion] ?? "") : "";
     const tipo: "credito" | "debito" = montoRaw > 0 ? "credito" : "debito";
-    return [{ fecha: String(cells[cols.fecha] ?? ""), referencia: cols.referencia >= 0 ? String(cells[cols.referencia] ?? "") : "", monto, montoRaw, descripcion, tipo, subtype: detectSubtype(descripcion) }] as BankRow[];
+    return [{ fecha: cells[cols.fecha] ?? "", referencia: cols.referencia >= 0 ? (cells[cols.referencia] ?? "") : "", monto, montoRaw, descripcion, tipo, subtype: detectSubtype(descripcion) }] as BankRow[];
   });
   return linkCommissions(parsed);
 }
