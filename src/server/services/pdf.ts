@@ -440,7 +440,11 @@ function dr(label: string, value: string) {
 
 function InvoiceDoc({ data }: { data: InvoicePdfData }) {
   const mes = MESES_ES[(data.periodMonth - 1)] ?? "";
-  const periodo = `${mes} ${data.periodYear}`;
+  // Período "Desde 1 hasta X de MES YEAR" — formato del PDF Arrayanes.
+  // Primer día del mes hasta último día.
+  const lastDay = new Date(data.periodYear, data.periodMonth, 0).getDate();
+  const periodo = `Desde 1 hasta ${lastDay} de ${mes} ${data.periodYear}`;
+  const periodoShort = `${mes} ${data.periodYear}`;
   const pendingUsd = Math.max(0, Number(data.totalUsd) - Number(data.paidUsd));
   const pendingBss = Math.max(0, Number(data.totalBss) - Number(data.paidBss));
   const isPaid    = pendingUsd < 0.005;
