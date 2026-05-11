@@ -231,10 +231,32 @@ export async function POST(req: NextRequest) {
     // Vehículos de la org (vinculados a Person — los borramos para poder borrar Persons)
     wipe.vehicles = (await db.vehicle.deleteMany({ where: { organizationId: oid } })).count;
 
-    // Persons sin más vínculos (después de los wipes anteriores las personas
-    // de la org de Los Arrayanes ya no tienen FKs activos)
+    // Antes de borrar Persons, desvincular usuarios y borrar los Users de test
+    // (necesario para que el reset sea verdaderamente idempotente — antes preservábamos
+    // personas con userId, lo que hacía que recrearlas chocara con el unique
+    // (organizationId, idType, idNumber)).
+    const personsWithUser = await db.person.findMany({
+      where: { organizationId: oid, userId: { not: null } },
+      select: { userId: true },
+    });
+    const userIdsToDelete = personsWithUser.map(p => p.userId!).filter(Boolean);
+    // Desvincular primero
+    await db.person.updateMany({
+      where: { organizationId: oid, userId: { not: null } },
+      data: { userId: null },
+    });
+    // Borrar memberships de esos users antes que el user
+    if (userIdsToDelete.length > 0) {
+      await db.membership.deleteMany({
+        where: { userId: { in: userIdsToDelete } },
+      });
+      await db.user.deleteMany({ where: { id: { in: userIdsToDelete } } });
+    }
+    wipe.usersDeleted = userIdsToDelete.length;
+
+    // Ahora SÍ todas las Persons de la org se pueden borrar
     wipe.persons = (await db.person.deleteMany({
-      where: { organizationId: oid, userId: null }, // preservar quien tenga User asociado
+      where: { organizationId: oid },
     })).count;
 
     report.steps.push({ step: "WIPE", details: wipe });
