@@ -645,6 +645,275 @@ export const financeRouter = router({
       }),
 
     /**
+     * Genera un PDF preview de cómo se verá el recibo del mes para UNA unidad,
+     * SIN persistir nada. Usa exactamente el mismo render que el recibo real
+     * (generateInvoicePdf). Pedido del cliente: "previsualizar el recibo que
+     * se emitirá... como lo verán los residentes".
+     */
+    previewReceiptPdf: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          year: z.number().int().min(2020).max(2100),
+          month: z.number().int().min(1).max(12),
+          /** Si no se especifica, toma la primera unidad activa del condominio. */
+          unitId: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { prorate } = await import("@/lib/proration");
+        const { generateInvoicePdf } = await import("@/server/services/pdf");
+
+        // ── Cargar datos ────────────────────────────────────────────────
+        const [community, units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
+          ctx.db.community.findFirstOrThrow({
+            where: { id: input.communityId, organizationId: input.organizationId },
+            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true },
+          }),
+          ctx.db.unit.findMany({
+            where: { communityId: input.communityId, active: true, deletedAt: null },
+            select: { id: true, code: true, aliquot: true, tower: true, floor: true },
+            orderBy: { code: "asc" },
+          }),
+          ctx.db.expense.findMany({
+            where: {
+              communityId: input.communityId,
+              periodYear: input.year,
+              periodMonth: input.month,
+              invoicedAt: null,
+              voidedAt: null,
+            },
+            include: { recurringTemplate: { select: { description: true, isProvision: true } } },
+          }),
+          ctx.db.income.findMany({
+            where: {
+              communityId: input.communityId,
+              periodYear: input.year,
+              periodMonth: input.month,
+              affectsInvoice: true,
+              voidedAt: null,
+            },
+          }),
+          ctx.db.bankAccount.findMany({
+            where: { communityId: input.communityId, active: true },
+            select: { bankName: true, accountNumber: true, accountHolder: true, accountType: true, currency: true, notes: true },
+          }),
+        ]);
+
+        if (units.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No hay unidades activas" });
+        }
+        const targetUnit = input.unitId
+          ? units.find((u) => u.id === input.unitId)
+          : units[0];
+        if (!targetUnit) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Unidad no encontrada" });
+        }
+
+        // Excluir REGULAR de plantilla isProvision (igual que issueMonthlyInvoices)
+        const expenses = expensesAll.filter(
+          (e) => !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true),
+        );
+
+        const ownership = await ctx.db.ownership.findFirst({
+          where: { unitId: targetUnit.id, endDate: null },
+          include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
+        });
+
+        const rateRecord = await getCurrentRate("BCV", new Date(input.year, input.month, 0));
+        const usdRate = new Decimal(rateRecord.vesPerUsd);
+
+        // ── Calcular líneas para la unidad target ───────────────────────
+        type Line = { description: string; baseBss: Decimal; cuotaUsd: Decimal; cuotaBss: Decimal; section: "common" | "tower" | "individual" };
+        const lines: Line[] = [];
+
+        const individualExpenses = expenses.filter((e) => e.isIndividual && e.targetUnitId === targetUnit.id);
+        const towerExpenses = expenses.filter((e) => !e.isIndividual && e.towerScope === targetUnit.tower);
+        const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+
+        const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s.plus(i.amountUsd.toString()), new Decimal(0));
+        const generalUsdSum = generalExpenses.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+        const deductionFactor = generalUsdSum.gt(0)
+          ? Decimal.min(totalIncomeDeductionUsd.div(generalUsdSum), new Decimal(1))
+          : new Decimal(0);
+
+        // 1. Individuales
+        for (const e of individualExpenses) {
+          lines.push({
+            description: e.customCategory ?? e.description,
+            baseBss: new Decimal(e.amountBss.toString()),
+            cuotaUsd: new Decimal(e.amountUsd.toString()),
+            cuotaBss: new Decimal(e.amountBss.toString()),
+            section: "individual",
+          });
+        }
+        // 2. Torre
+        const towerUnits = units.filter((u) => u.tower === targetUnit.tower);
+        if (towerUnits.length > 0) {
+          const participants = towerUnits.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
+          for (const e of towerExpenses) {
+            const usdDist = prorate(e.amountUsd.toString(), participants);
+            const bssDist = prorate(e.amountBss.toString(), participants);
+            const cuotaUsd = new Decimal(usdDist.get(targetUnit.id)?.toString() ?? 0);
+            const cuotaBss = new Decimal(bssDist.get(targetUnit.id)?.toString() ?? 0);
+            if (cuotaUsd.eq(0) && cuotaBss.eq(0)) continue;
+            lines.push({
+              description: `${e.customCategory ?? e.description} (Torre ${e.towerScope})`,
+              baseBss: new Decimal(e.amountBss.toString()),
+              cuotaUsd, cuotaBss,
+              section: "tower",
+            });
+          }
+        }
+        // 3. Generales (con descuento)
+        const allParticipants = units.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
+        // Agrupar por (category|customCategory) para evitar 10 líneas del mismo sector
+        const grouped = new Map<string, { description: string; sumUsd: Decimal; sumBss: Decimal; kind: string }>();
+        for (const e of generalExpenses) {
+          const key = e.recurringTemplateId
+            ? `tpl-${e.recurringTemplateId}`
+            : (e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT")
+              ? `iso-${e.id}`  // cada provisión su propia línea
+              : `cat-${e.category}|${e.customCategory ?? ""}`;
+          const desc = e.recurringTemplate?.description
+            ? (e.kind === "PROVISION_BASE" ? `Provisión ${e.recurringTemplate.description}`
+              : e.kind === "PROVISION_ADJUSTMENT" ? `Ajuste Provisión ${e.recurringTemplate.description} — mes anterior`
+              : e.recurringTemplate.description)
+            : (e.customCategory ?? e.description);
+          const existing = grouped.get(key);
+          if (existing) {
+            existing.sumUsd = existing.sumUsd.plus(e.amountUsd.toString());
+            existing.sumBss = existing.sumBss.plus(e.amountBss.toString());
+          } else {
+            grouped.set(key, {
+              description: desc,
+              sumUsd: new Decimal(e.amountUsd.toString()),
+              sumBss: new Decimal(e.amountBss.toString()),
+              kind: e.kind,
+            });
+          }
+        }
+        for (const g of grouped.values()) {
+          const adjUsd = g.sumUsd.mul(new Decimal(1).minus(deductionFactor));
+          const adjBss = g.sumBss.mul(new Decimal(1).minus(deductionFactor));
+          const usdDist = prorate(adjUsd.toFixed(2), allParticipants);
+          const bssDist = prorate(adjBss.toFixed(2), allParticipants);
+          const cuotaUsd = new Decimal(usdDist.get(targetUnit.id)?.toString() ?? 0);
+          const cuotaBss = new Decimal(bssDist.get(targetUnit.id)?.toString() ?? 0);
+          if (cuotaUsd.eq(0) && cuotaBss.eq(0)) continue;
+          lines.push({
+            description: g.description,
+            baseBss: g.sumBss,
+            cuotaUsd, cuotaBss,
+            section: "common",
+          });
+        }
+        // 4. Cuota mensual
+        if (community.monthlyFeeUsd && Number(community.monthlyFeeUsd) > 0) {
+          const feeUsd = new Decimal(community.monthlyFeeUsd.toString());
+          const feeBss = feeUsd.mul(usdRate);
+          lines.push({
+            description: "Cuota de condominio mensual",
+            baseBss: feeBss.mul(units.length),  // total que aporta toda la comunidad
+            cuotaUsd: feeUsd,
+            cuotaBss: feeBss,
+            section: "common",
+          });
+        }
+
+        // ── Armar sections para el PDF ──────────────────────────────────
+        const aliquotPct = targetUnit.aliquot.toString();
+        const sectionsMap = new Map<"common" | "tower" | "individual", { title: string; items: Line[] }>();
+        for (const ln of lines) {
+          if (!sectionsMap.has(ln.section)) {
+            const title = ln.section === "common"
+              ? "GASTOS COMUNES"
+              : ln.section === "tower"
+                ? `GASTOS TORRE ${targetUnit.tower ?? ""}`
+                : "CARGOS INDIVIDUALES";
+            sectionsMap.set(ln.section, { title, items: [] });
+          }
+          sectionsMap.get(ln.section)!.items.push(ln);
+        }
+        const order: Array<"common" | "tower" | "individual"> = ["common", "tower", "individual"];
+        const sections = order
+          .filter((k) => sectionsMap.has(k))
+          .map((k) => {
+            const s = sectionsMap.get(k)!;
+            const subtotalUsd = s.items.reduce((sum, i) => sum.plus(i.cuotaUsd), new Decimal(0));
+            const subtotalBss = s.items.reduce((sum, i) => sum.plus(i.cuotaBss), new Decimal(0));
+            const baseTotalBss = s.items.reduce((sum, i) => sum.plus(i.baseBss), new Decimal(0));
+            return {
+              title: s.title,
+              aliquotPercent: aliquotPct,
+              baseTotalBss: baseTotalBss.toFixed(2),
+              items: s.items.map((i) => ({
+                description: i.description,
+                baseBss: i.baseBss.toFixed(2),
+                cuotaUsd: i.cuotaUsd.toFixed(2),
+                cuotaBss: i.cuotaBss.toFixed(2),
+              })),
+              subtotalUsd: subtotalUsd.toFixed(2),
+              subtotalBss: subtotalBss.toFixed(2),
+            };
+          });
+
+        const totalUsd = sections.reduce((s, sec) => s + Number(sec.subtotalUsd), 0);
+        const totalBss = sections.reduce((s, sec) => s + Number(sec.subtotalBss), 0);
+
+        const now = new Date();
+        const buffer = await generateInvoicePdf({
+          communityName: community.name,
+          communityAddress: community.address ?? "",
+          communityRif: community.rif,
+          communityPhone: community.phone,
+          invoiceNumber: `PREVIEW-${input.year}${String(input.month).padStart(2, "0")}-${targetUnit.code}`,
+          periodYear: input.year,
+          periodMonth: input.month,
+          issuedAt: now,
+          dueDate: now,
+          status: "DRAFT",
+          exchangeRate: usdRate.toFixed(8),
+          exchangeSource: rateRecord.source,
+          unitCode: targetUnit.code,
+          unitFloor: targetUnit.floor,
+          unitTower: targetUnit.tower,
+          ownerName: ownership?.person
+            ? `${ownership.person.firstName} ${ownership.person.lastName}`
+            : "(Sin propietario registrado)",
+          ownerIdType: ownership?.person?.idType,
+          ownerIdNumber: ownership?.person?.idNumber,
+          items: lines.map((l) => ({
+            description: l.description,
+            amountUsd: l.cuotaUsd.toFixed(2),
+            amountBss: l.cuotaBss.toFixed(2),
+          })),
+          sections,
+          totalUsd: totalUsd.toFixed(2),
+          totalBss: totalBss.toFixed(2),
+          paidUsd: "0",
+          paidBss: "0",
+          bankAccounts: bankAccounts.map((b) => ({
+            bankName: b.bankName,
+            accountNumber: b.accountNumber,
+            accountHolder: b.accountHolder,
+            accountType: b.accountType,
+            currency: b.currency,
+            notes: b.notes,
+          })),
+        });
+
+        return {
+          base64: buffer.toString("base64"),
+          mimeType: "application/pdf",
+          fileName: `Preview-Recibo-${targetUnit.code}-${input.year}-${String(input.month).padStart(2, "0")}.pdf`,
+          unitCode: targetUnit.code,
+          totalUsd: totalUsd.toFixed(2),
+          totalBss: totalBss.toFixed(2),
+        };
+      }),
+
+    /**
      * Genera una carta de cobro extrajudicial (Art. 14 LPH) para una unidad
      * con facturas en mora. Devuelve el PDF en base64 para descarga.
      */

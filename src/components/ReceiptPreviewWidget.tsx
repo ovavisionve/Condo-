@@ -1,16 +1,17 @@
 "use client";
 
 /**
- * Botón flotante PERMANENTE para previsualizar el recibo del mes en cualquier pantalla
- * del panel de administración. Pedido del cliente:
- *   "Que haya un botón permanente, tal cual como el de la IA, que esté siempre que
- *    permita pre visualizar el recibo que se emitirá desde cualquier lugar."
+ * Botón flotante PERMANENTE para previsualizar el recibo del mes EN EL FORMATO REAL
+ * (Aviso de Cobro) que verán los residentes. Usa el mismo generador PDF que el recibo
+ * que se emite a producción.
+ *
+ * Pedido del cliente: "previsualizar el recibo que se emitirá... como lo verán los
+ * residentes". El widget muestra un iframe con el PDF generado on-the-fly para una
+ * unidad de muestra (configurable por buscador).
  *
  * Posición: esquina inferior IZQUIERDA (el chip de IA está en bottom-right).
- * Comportamiento: abre un panel con el preview del mes corriente y permite
- * cambiar de mes/año + ver el desglose por unidad.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "@/app/org/OrgContext";
@@ -22,7 +23,6 @@ export function ReceiptPreviewWidget() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
-  // Detectar communityId desde la URL (si estamos dentro de /org/communities/[id]/...)
   const communityId = useMemo(() => {
     const m = pathname?.match(/\/org\/communities\/([^/]+)/);
     return m?.[1] ?? null;
@@ -32,17 +32,59 @@ export function ReceiptPreviewWidget() {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [unitFilter, setUnitFilter] = useState("");
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
 
-  const previewQ = trpc.finance.invoices.previewMonth.useQuery(
-    { organizationId, communityId: communityId ?? "", year, month },
-    { enabled: Boolean(communityId && open), staleTime: 30_000 },
+  // Lista de unidades para el buscador (solo cuando hay community)
+  const unitsQ = trpc.org.units.list.useQuery(
+    { organizationId, communityId: communityId ?? "" },
+    { enabled: Boolean(communityId && open) },
   );
 
-  // Si no estamos en un community, mostramos el botón igual pero al abrir
-  // pedimos elegir community
-  const communitiesQ = trpc.org.communities.list.useQuery(
-    { organizationId },
-    { enabled: !communityId && open },
+  // Generación on-demand del PDF preview
+  const previewMut = trpc.finance.invoices.previewReceiptPdf.useMutation();
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<{ unitCode: string; totalUsd: string; totalBss: string } | null>(null);
+
+  // Cuando cambia unidad, mes o año → regenerar PDF
+  useEffect(() => {
+    if (!open || !communityId) return;
+    if (!selectedUnitId && (unitsQ.data?.length ?? 0) === 0) return;
+    let cancelled = false;
+    const run = async () => {
+      // Si no hay unidad seleccionada todavía, tomar la primera
+      const uid = selectedUnitId ?? unitsQ.data?.[0]?.id;
+      if (!uid) return;
+      try {
+        const res = await previewMut.mutateAsync({
+          organizationId, communityId, year, month, unitId: uid,
+        });
+        if (cancelled) return;
+        // Convertir base64 → blob URL para iframe
+        const bytes = Uint8Array.from(atob(res.base64), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        setPdfUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+        setPreviewMeta({ unitCode: res.unitCode, totalUsd: res.totalUsd, totalBss: res.totalBss });
+      } catch {
+        // El componente maneja los errores abajo
+      }
+    };
+    void run();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, communityId, selectedUnitId, year, month, unitsQ.data?.length]);
+
+  // Cleanup blob URL al cerrar
+  useEffect(() => {
+    if (!open && pdfUrl) {
+      URL.revokeObjectURL(pdfUrl);
+      setPdfUrl(null);
+    }
+  }, [open, pdfUrl]);
+
+  const units = unitsQ.data ?? [];
+  const filteredUnits = units.filter((u) =>
+    !unitFilter || u.code.toLowerCase().includes(unitFilter.toLowerCase()),
   );
 
   // Botón colapsado
@@ -52,184 +94,144 @@ export function ReceiptPreviewWidget() {
         onClick={() => setOpen(true)}
         aria-label="Previsualizar recibo del mes"
         className="fixed bottom-6 left-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg hover:scale-105 hover:shadow-xl transition-all duration-200"
-        title="Previsualizar recibo del mes"
+        title="Previsualizar recibo del mes (vista del residente)"
       >
         <span className="text-2xl">📄</span>
       </button>
     );
   }
 
-  // Si no hay community en la URL, mostrar selector
+  // Sin community en URL → mensaje
   if (!communityId) {
     return (
-      <div className="fixed bottom-6 left-6 z-50 flex flex-col w-[420px] max-w-[calc(100vw-2rem)] max-h-[60vh] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden">
+      <div className="fixed bottom-6 left-6 z-50 flex flex-col w-[420px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden">
         <div className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2.5">
           <span className="text-lg">📄</span>
           <span className="font-semibold text-sm flex-1">Previsualizar Recibo</span>
-          <button onClick={() => setOpen(false)} className="opacity-80 hover:opacity-100">✕</button>
+          <button onClick={() => setOpen(false)} aria-label="Cerrar" className="opacity-80 hover:opacity-100">✕</button>
         </div>
-        <div className="p-4 text-sm space-y-2 overflow-y-auto">
-          <p className="text-muted-foreground">Elegí un condominio para ver el preview:</p>
-          {communitiesQ.data?.map((c) => (
-            <a
-              key={c.id}
-              href={`/org/communities/${c.id}/finance/invoices`}
-              className="block rounded border px-3 py-2 hover:bg-emerald-50"
-            >
-              {c.name}
-            </a>
-          ))}
+        <div className="p-6 text-center text-sm text-muted-foreground">
+          Entrá a una comunidad (Finanzas → cualquier sub-página) para ver el preview del recibo.
         </div>
       </div>
     );
   }
 
-  const data = previewQ.data;
-  const filteredUnits = data?.unitPreviews.filter((u) =>
-    !unitFilter || u.unitCode.toLowerCase().includes(unitFilter.toLowerCase()),
-  ) ?? [];
-
   return (
-    <div className="fixed bottom-6 left-6 z-50 flex flex-col w-[440px] max-w-[calc(100vw-2rem)] h-[620px] max-h-[calc(100vh-5rem)] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2.5">
-        <span className="text-lg">📄</span>
-        <span className="font-semibold text-sm flex-1">Previsualizar Recibo</span>
-        <button
-          onClick={() => setOpen(false)}
-          aria-label="Cerrar"
-          className="opacity-80 hover:opacity-100"
-        >✕</button>
+    <div className="fixed bottom-6 left-6 z-50 flex w-[860px] max-w-[calc(100vw-2rem)] h-[80vh] max-h-[calc(100vh-3rem)] rounded-2xl border border-border bg-white shadow-2xl overflow-hidden">
+      {/* Sidebar selección */}
+      <div className="w-[230px] border-r bg-slate-50 flex flex-col">
+        <div className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-2.5">
+          <span className="text-base">📄</span>
+          <span className="font-semibold text-xs flex-1 leading-tight">Vista del Recibo<br/><span className="font-normal opacity-90">(como lo ve el residente)</span></span>
+        </div>
+
+        {/* Mes / Año */}
+        <div className="p-2 border-b bg-white flex gap-1">
+          <select
+            className="flex-1 rounded border px-1.5 py-1 text-xs"
+            value={month}
+            onChange={(e) => setMonth(Number(e.target.value))}
+          >
+            {MONTHS.map((m, i) => (
+              <option key={i + 1} value={i + 1}>{m}</option>
+            ))}
+          </select>
+          <select
+            className="w-20 rounded border px-1.5 py-1 text-xs"
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+          >
+            {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i).map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Buscador unidad */}
+        <div className="p-2 border-b bg-white">
+          <input
+            type="text"
+            placeholder="🔍 Unidad (ej: 101A)"
+            value={unitFilter}
+            onChange={(e) => setUnitFilter(e.target.value)}
+            className="w-full rounded border px-2 py-1 text-xs"
+          />
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Ver el recibo para una unidad específica
+          </p>
+        </div>
+
+        {/* Lista de unidades */}
+        <div className="flex-1 overflow-y-auto">
+          {unitsQ.isLoading && (
+            <div className="p-3 text-xs text-muted-foreground">Cargando unidades...</div>
+          )}
+          {filteredUnits.slice(0, 100).map((u) => (
+            <button
+              key={u.id}
+              onClick={() => setSelectedUnitId(u.id)}
+              className={`w-full text-left px-3 py-1.5 text-xs border-b hover:bg-emerald-50 ${
+                (selectedUnitId === u.id || (!selectedUnitId && filteredUnits[0]?.id === u.id))
+                  ? "bg-emerald-100 font-semibold" : ""
+              }`}
+            >
+              {u.code}
+              {u.tower && <span className="ml-1 text-[10px] text-muted-foreground">T{u.tower}</span>}
+            </button>
+          ))}
+          {filteredUnits.length > 100 && (
+            <p className="px-3 py-1 text-[10px] text-muted-foreground">
+              +{filteredUnits.length - 100} más — filtrá arriba
+            </p>
+          )}
+        </div>
+
+        <div className="border-t p-2 bg-white">
+          {previewMeta && (
+            <div className="text-[11px] mb-2 leading-tight">
+              <div className="text-muted-foreground">Total recibo {previewMeta.unitCode}:</div>
+              <div className="font-bold text-emerald-700">Bs {Number(previewMeta.totalBss).toLocaleString("es-VE", { minimumFractionDigits: 2 })}</div>
+              <div className="text-muted-foreground">≈ ${previewMeta.totalUsd}</div>
+            </div>
+          )}
+          <button
+            onClick={() => setOpen(false)}
+            className="w-full rounded bg-slate-200 px-2 py-1 text-xs hover:bg-slate-300"
+          >
+            ✕ Cerrar
+          </button>
+        </div>
       </div>
 
-      {/* Selector mes/año */}
-      <div className="border-b bg-slate-50 px-4 py-2 flex items-center gap-2 text-sm">
-        <select
-          className="rounded border px-2 py-1 text-xs"
-          value={month}
-          onChange={(e) => setMonth(Number(e.target.value))}
-        >
-          {MONTHS.map((m, i) => (
-            <option key={i + 1} value={i + 1}>{m}</option>
-          ))}
-        </select>
-        <select
-          className="rounded border px-2 py-1 text-xs"
-          value={year}
-          onChange={(e) => setYear(Number(e.target.value))}
-        >
-          {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i).map((y) => (
-            <option key={y} value={y}>{y}</option>
-          ))}
-        </select>
-        {data?.alreadyIssued && (
-          <span className="ml-auto text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
-            Ya emitido
-          </span>
+      {/* PDF Preview */}
+      <div className="flex-1 bg-slate-100 relative">
+        {previewMut.isPending && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground bg-slate-100/80 z-10">
+            ⏳ Generando preview del recibo...
+          </div>
+        )}
+        {previewMut.error && !previewMut.isPending && (
+          <div className="p-6 text-sm text-destructive">
+            <strong>Error:</strong> {previewMut.error.message}
+            <p className="mt-2 text-xs text-muted-foreground">
+              Verificá que haya gastos cargados para {MONTHS[month - 1]} {year} y que la tasa BCV esté disponible.
+            </p>
+          </div>
+        )}
+        {pdfUrl && !previewMut.isPending && (
+          <iframe
+            src={pdfUrl}
+            className="w-full h-full border-0"
+            title="Preview del Recibo"
+          />
+        )}
+        {!pdfUrl && !previewMut.isPending && !previewMut.error && (
+          <div className="p-6 text-center text-sm text-muted-foreground">
+            Seleccioná una unidad de la lista para ver su recibo.
+          </div>
         )}
       </div>
-
-      {/* Resumen */}
-      {previewQ.isLoading && (
-        <div className="p-6 text-center text-sm text-muted-foreground">Calculando preview...</div>
-      )}
-      {previewQ.error && (
-        <div className="p-4 text-sm text-destructive">
-          {previewQ.error.message ?? "Error al cargar preview"}
-        </div>
-      )}
-      {data && (
-        <>
-          <div className="border-b bg-emerald-50 px-4 py-2 text-xs space-y-0.5">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Gastos del mes:</span>
-              <span className="font-semibold">${data.totalExpensesUsd}</span>
-            </div>
-            {Number(data.incomeDeduction.totalUsd) > 0 && (
-              <div className="flex justify-between text-emerald-700">
-                <span>− Ingresos que descuentan ({data.incomeDeduction.count}):</span>
-                <span className="font-semibold">−${data.incomeDeduction.totalUsd}</span>
-              </div>
-            )}
-            {Number(data.monthlyFeeUsd) > 0 && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">+ Cuota mensual × {data.unitCount} unidades:</span>
-                <span className="font-semibold">+${(Number(data.monthlyFeeUsd) * data.unitCount).toFixed(2)}</span>
-              </div>
-            )}
-            <div className="flex justify-between border-t pt-1 mt-1">
-              <span className="font-semibold">TOTAL a facturar:</span>
-              <span className="font-bold text-emerald-700">${data.grandTotalUsd}</span>
-            </div>
-          </div>
-
-          {/* Buscador unidad */}
-          <div className="px-4 py-2 border-b">
-            <input
-              type="text"
-              placeholder="🔍 Buscar unidad (ej: 101A, B-16)..."
-              value={unitFilter}
-              onChange={(e) => setUnitFilter(e.target.value)}
-              className="w-full rounded border px-3 py-1.5 text-sm"
-            />
-          </div>
-
-          {/* Lista de unidades */}
-          <div className="flex-1 overflow-y-auto">
-            {filteredUnits.length === 0 ? (
-              <div className="p-6 text-center text-sm text-muted-foreground">
-                {unitFilter ? "Sin unidades que coincidan" : "Sin unidades"}
-              </div>
-            ) : (
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left">
-                  <tr>
-                    <th className="px-3 py-1.5">Unidad</th>
-                    <th className="px-3 py-1.5">Torre</th>
-                    <th className="px-3 py-1.5 text-right">USD</th>
-                    <th className="px-3 py-1.5 text-right">Bs (≈)</th>
-                    <th className="px-3 py-1.5 text-center">Líneas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredUnits.slice(0, 200).map((u) => (
-                    <tr key={u.unitCode} className="border-t hover:bg-emerald-50/30">
-                      <td className="px-3 py-1 font-medium">{u.unitCode}</td>
-                      <td className="px-3 py-1 text-muted-foreground">{u.tower ?? "—"}</td>
-                      <td className="px-3 py-1 text-right font-mono">${u.totalUsd}</td>
-                      <td className="px-3 py-1 text-right font-mono text-muted-foreground">
-                        Bs {Number(u.totalBss).toLocaleString("es-VE", { maximumFractionDigits: 0 })}
-                      </td>
-                      <td className="px-3 py-1 text-center text-muted-foreground">{u.lineCount}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {filteredUnits.length > 200 && (
-              <p className="px-3 py-2 text-[10px] text-muted-foreground text-center">
-                Mostrando 200 de {filteredUnits.length} unidades — filtrá arriba para reducir.
-              </p>
-            )}
-          </div>
-
-          <div className="border-t bg-slate-50 px-4 py-2 flex items-center gap-2">
-            <a
-              href={`/org/communities/${communityId}/finance/invoices`}
-              className="text-xs text-emerald-700 underline hover:text-emerald-900"
-            >
-              Ir al wizard de emisión →
-            </a>
-            <button
-              onClick={() => previewQ.refetch()}
-              className="ml-auto text-xs rounded border px-2 py-1 hover:bg-white"
-              title="Refrescar"
-            >
-              🔄
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }
