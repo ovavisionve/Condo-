@@ -33,7 +33,10 @@ function detectSubtype(descripcion: string): TransactionSubtype {
     .normalize("NFD").replace(/[̀-ͯ]/g, "");
   // Orden importa: más específico primero
   if (/ret\.?\s*igtf|igtf/.test(d))                                                        return "igtf";
-  if (/com\.?\s*trf|com\.?\s*transf|com\.?\s*serv|com\.?\s*srv|com\.?\s*mtto|com\.?\s*pm|comision\s*(banca|serv|transf|mtto|trf|pm)|emisi[oó]n\s*(de\s*)?esta|gasto\s*banca/.test(d)) return "commission";
+  // Cualquier mención de "comision" o "comisión" → commission (los bancos venezolanos
+  // tienen mucha variedad: "COMISION POR MANTENIMIENTO", "COMISION TRF", "Com. PM", etc.).
+  // También: mantenimiento de cuenta, emisión de estados, gasto banca.
+  if (/\bcomis|com\.\s*(trf|transf|serv|srv|mtto|pm|banca)|mantenimiento\s+(de\s+)?cuenta|emisi[oó]n\s*(de\s*)?esta|gasto\s*banca|cargo\s*banca/.test(d)) return "commission";
   if (/pago\.?\s*m[oó]vil|\bpm\b|p\.m\b/.test(d))                                         return "mobile_payment";
   if (/\btrf\b|transf|transferencia|trans\.ctas/.test(d))                                  return "transfer";
   if (/\bpos\b|punto\.?\s*venta|cobro\s*tdc/.test(d))                                      return "pos";
