@@ -627,6 +627,16 @@ export default function ConciliacionPage() {
                       <span>📁</span> Seleccionar archivo
                       <input type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.ofx,.qfx" className="hidden" onChange={onFileChange} />
                     </label>
+                    <div className="mt-3">
+                      <a
+                        href="/api/admin/sample-bank-csv"
+                        download="extracto-banco-prueba.csv"
+                        className="inline-flex items-center gap-1.5 text-xs text-blue-300 hover:text-blue-200 underline"
+                        title="Descarga un CSV de ejemplo con 6-8 transacciones para probar el matching"
+                      >
+                        🧪 Descargar CSV de prueba (mock Banesco)
+                      </a>
+                    </div>
                   </>
                 )}
               </div>
