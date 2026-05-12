@@ -121,7 +121,13 @@ export default function FacturasPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">🧾 Facturas / Canon</h1>
-          <p className="text-muted-foreground text-sm">{invoices.length} facturas · Pendiente: <span className="font-medium text-orange-600">${fmt(totalPending)}</span> · Cobrado: <span className="font-medium text-green-600">${fmt(totalPaid)}</span></p>
+          <p className="text-muted-foreground text-sm">
+            {invoices.length} facturas ·{" "}
+            Pendiente: <span className="font-medium text-orange-600">Bs {fmt(totalPending * rateToday)}</span>
+            <span className="text-xs"> (≈${fmt(totalPending)})</span> ·{" "}
+            Cobrado: <span className="font-medium text-green-600">Bs {fmt(totalPaid * rateToday)}</span>
+            <span className="text-xs"> (≈${fmt(totalPaid)})</span>
+          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {bulkResult && <span className="text-sm text-green-700 font-medium">{bulkResult}</span>}
@@ -192,9 +198,17 @@ export default function FacturasPage() {
                       {STATUS_LABEL[inv.status] ?? inv.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right font-medium">${fmt(Number(inv.totalUsd))}</td>
+                  <td className="px-4 py-3 text-right font-medium">
+                    <div>Bs {fmt(Number(inv.totalBss))}</div>
+                    <div className="text-[10px] text-muted-foreground">≈ ${fmt(Number(inv.totalUsd))}</div>
+                  </td>
                   <td className="px-4 py-3 text-right hidden md:table-cell text-green-700">
-                    {Number(inv.paidUsd) > 0 ? `$${fmt(Number(inv.paidUsd))}` : "—"}
+                    {Number(inv.paidUsd) > 0 ? (
+                      <>
+                        <div>Bs {fmt(Number(inv.paidBss))}</div>
+                        <div className="text-[10px] text-muted-foreground">≈ ${fmt(Number(inv.paidUsd))}</div>
+                      </>
+                    ) : "—"}
                   </td>
                   <td className="px-4 py-3 text-right hidden lg:table-cell text-xs text-muted-foreground">
                     {new Date(inv.dueDate).toLocaleDateString("es-VE")}

@@ -107,6 +107,7 @@ export default function PagosPage() {
   };
 
   const totalPaid = payments.reduce((s, p) => s + Number(p.amountUsd), 0);
+  const totalPaidBss = payments.reduce((s, p) => s + Number(p.amountBss), 0);
 
   return (
     <div className="space-y-6">
@@ -178,7 +179,7 @@ export default function PagosPage() {
         <div>
           <h1 className="text-2xl font-semibold">💰 Pagos recibidos</h1>
           <p className="text-muted-foreground text-sm">
-            {payments.length} pagos · Total: <span className="font-medium text-green-600">${fmt(totalPaid)}</span>
+            {payments.length} pagos · Total: <span className="font-medium text-green-600">Bs {fmt(totalPaidBss)}</span><span className="text-xs"> (≈${fmt(totalPaid)})</span>
           </p>
         </div>
         <Button onClick={() => setShowNew(true)} className="bg-blue-600 hover:bg-blue-700">+ Registrar pago</Button>
@@ -209,7 +210,10 @@ export default function PagosPage() {
                     {p.local?.name && <span className="text-xs text-muted-foreground ml-1">— {p.local.name}</span>}
                   </td>
                   <td className="px-4 py-3 hidden sm:table-cell text-xs text-muted-foreground">{METHOD_LABEL[p.method] ?? p.method}</td>
-                  <td className="px-4 py-3 text-right font-medium text-green-700">${fmt(Number(p.amountUsd))}</td>
+                  <td className="px-4 py-3 text-right font-medium text-green-700">
+                    <div>Bs {fmt(Number(p.amountBss))}</div>
+                    <div className="text-[10px] text-muted-foreground font-normal">≈ ${fmt(Number(p.amountUsd))}</div>
+                  </td>
                   <td className="px-4 py-3 hidden md:table-cell text-xs text-muted-foreground">{p.reference ?? "—"}</td>
                   <td className="px-4 py-3 hidden lg:table-cell text-xs text-muted-foreground">
                     {p.allocations && p.allocations.length > 0
