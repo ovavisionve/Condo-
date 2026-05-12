@@ -163,21 +163,21 @@ export default function AccountStatementPage() {
 
       {unitId && (
         <>
-          {/* KPI: Saldo */}
+          {/* KPI: Saldo (Bs primario) */}
           <div className="grid gap-4 md:grid-cols-3">
             <div className="rounded-lg border bg-card p-4">
-              <div className="text-sm text-muted-foreground">Saldo pendiente (USD)</div>
-              <div className={`text-3xl font-bold ${debtUsd > 0.005 ? "text-destructive" : "text-green-600"}`}>
-                ${debtUsd.toFixed(2)}
-              </div>
-            </div>
-            <div className="rounded-lg border bg-card p-4">
-              <div className="text-sm text-muted-foreground">Equivalente Bs (hoy)</div>
+              <div className="text-sm text-muted-foreground">Saldo pendiente (Bs)</div>
               <div className={`text-3xl font-bold ${debtUsd > 0.005 ? "text-destructive" : "text-green-600"}`}>
                 Bs {(debtUsd * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
               </div>
               <div className="text-xs text-muted-foreground mt-1">
                 {todayRate > 0 ? `Tasa BCV: ${todayRate.toFixed(2)} Bs/$` : "Cargando tasa..."}
+              </div>
+            </div>
+            <div className="rounded-lg border bg-card p-4">
+              <div className="text-sm text-muted-foreground">Equivalente USD</div>
+              <div className={`text-3xl font-bold ${debtUsd > 0.005 ? "text-destructive" : "text-green-600"}`}>
+                ${debtUsd.toFixed(2)}
               </div>
             </div>
             <div className="rounded-lg border bg-card p-4">

@@ -38,6 +38,15 @@ export default function ReportsPage() {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [periodType, setPeriodType] = useState<"monthly" | "quarterly" | "semiannual">("monthly");
 
+  // Tasa BCV para mostrar Bs primario en los KPIs (pedido cliente)
+  const rateQ = trpc.finance.exchange.current.useQuery({ organizationId });
+  const todayRate = Number(rateQ.data?.vesPerUsd ?? 0);
+  const toBs = (usd: number | string) => {
+    const n = Number(usd);
+    if (!todayRate || !Number.isFinite(n)) return "—";
+    return (n * todayRate).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
   // Feature 8: rango para exportaciones por módulo
   const [exportRange, setExportRange] = useState({
     startYear: today.getFullYear(), startMonth: 1,
@@ -289,12 +298,34 @@ export default function ReportsPage() {
         )}
       </div>
 
-      {/* ── KPI Cards ──────────────────────────────────────── */}
+      {/* ── KPI Cards (Bs primario + USD secundario) ──────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <KpiCard label="Recibos emitidos" value={`$${s?.billing.totalUsd ?? "—"}`} sub={`${s?.billing.invoiceCount ?? 0} recibos en el período`} color="slate" loading={summary.isLoading} />
-        <KpiCard label="Cobrado en recibos" value={`$${s?.billing.paidUsd ?? "—"}`}  sub={`${s?.billing.collectionRate ?? 0}% de cobranza`} color={Number(s?.billing.collectionRate ?? 0) >= 80 ? "green" : Number(s?.billing.collectionRate ?? 0) >= 40 ? "amber" : "red"} loading={summary.isLoading} />
-        <KpiCard label="Por cobrar" value={`$${s?.billing.pendingUsd ?? "—"}`} sub={Number(s?.billing.pendingUsd ?? 0) > 0 ? "saldo pendiente" : "✓ todo cobrado"} color={Number(s?.billing.pendingUsd ?? 0) > 0 ? "red" : "green"} loading={summary.isLoading} />
-        <KpiCard label="Unidades"  value={String(s?.occupancy.total ?? "—")} sub={`${s?.occupancy.owned ?? 0} con dueño · ${s?.occupancy.rented ?? 0} arrendadas`} color="slate" loading={summary.isLoading} />
+        <KpiCard
+          label="Recibos emitidos"
+          value={`Bs ${toBs(s?.billing.totalUsd ?? 0)}`}
+          sub={`≈ $${s?.billing.totalUsd ?? "—"} · ${s?.billing.invoiceCount ?? 0} recibos`}
+          color="slate" loading={summary.isLoading}
+        />
+        <KpiCard
+          label="Cobrado en recibos"
+          value={`Bs ${toBs(s?.billing.paidUsd ?? 0)}`}
+          sub={`≈ $${s?.billing.paidUsd ?? "—"} · ${s?.billing.collectionRate ?? 0}% cobranza`}
+          color={Number(s?.billing.collectionRate ?? 0) >= 80 ? "green" : Number(s?.billing.collectionRate ?? 0) >= 40 ? "amber" : "red"}
+          loading={summary.isLoading}
+        />
+        <KpiCard
+          label="Por cobrar"
+          value={`Bs ${toBs(s?.billing.pendingUsd ?? 0)}`}
+          sub={Number(s?.billing.pendingUsd ?? 0) > 0 ? `≈ $${s?.billing.pendingUsd}` : "✓ todo cobrado"}
+          color={Number(s?.billing.pendingUsd ?? 0) > 0 ? "red" : "green"}
+          loading={summary.isLoading}
+        />
+        <KpiCard
+          label="Unidades"
+          value={String(s?.occupancy.total ?? "—")}
+          sub={`${s?.occupancy.owned ?? 0} con dueño · ${s?.occupancy.rented ?? 0} arrendadas`}
+          color="slate" loading={summary.isLoading}
+        />
       </div>
 
       {/* ── Flujo de caja real ─────────────────────────────── */}
