@@ -1382,6 +1382,10 @@ export type CcInvoicePdfData = {
   totalBss: string;
   paidUsd: string;
   paidBss: string;
+  /** Saldo a favor del local (anticipo no asignado) — aparece como SALDO A FAVOR
+   *  en el bloque de totales y reduce el TOTAL A PAGAR. */
+  creditUsd?: string;
+  creditBss?: string;
   notes?: string | null;
   paymentInstructions?: string | null;
 };
@@ -1568,30 +1572,46 @@ function CcInvoiceDoc({ data }: { data: CcInvoicePdfData }) {
         ),
       ),
 
-      // ── Totales ─────────────────────────────────────────
-      React.createElement(View, { style: cc.totalsBox },
-        React.createElement(View, { style: cc.totalLineRow },
-          React.createElement(Text, { style: cc.totalLineLabel }, "Total de la factura"),
-          React.createElement(Text, { style: cc.totalLineUsd }, fmtUsd(data.totalUsd)),
-          React.createElement(Text, { style: cc.totalLineBss }, fmtBss(data.totalBss)),
-        ),
-        Number(data.paidUsd) > 0.005 && React.createElement(View, { style: cc.deductionRow },
-          React.createElement(Text, { style: cc.deductionLabel }, "(–) Abonos recibidos"),
-          React.createElement(Text, { style: cc.deductionUsd }, `– ${fmtUsd(data.paidUsd)}`),
-          React.createElement(Text, { style: cc.deductionBss }, `– ${fmtBss(data.paidBss)}`),
-        ),
-        isPaid
-          ? React.createElement(View, { style: cc.cancelledRow },
-              React.createElement(Text, { style: cc.cancelledLabel }, "SALDO TOTAL: CANCELADO"),
-              React.createElement(Text, { style: cc.cancelledUsd }, "$0.00"),
-              React.createElement(Text, { style: cc.cancelledBss }, "Bs 0,00"),
-            )
-          : React.createElement(View, { style: cc.grandTotalRow },
-              React.createElement(Text, { style: cc.gtLabel }, isPartial ? "SALDO PENDIENTE" : "TOTAL A PAGAR"),
-              React.createElement(Text, { style: cc.gtUsd }, fmtUsd(pendingUsd)),
-              React.createElement(Text, { style: cc.gtBss }, fmtBss(pendingBss)),
-            ),
-      ),
+      // ── Totales (Total factura → Saldo a Favor → Abonos → Total a Pagar) ──
+      (() => {
+        const creditU = Number(data.creditUsd ?? 0);
+        const creditB = Number(data.creditBss ?? 0);
+        const paidU   = Number(data.paidUsd);
+        const paidB   = Number(data.paidBss);
+        const totalU  = Number(data.totalUsd);
+        const totalB  = Number(data.totalBss);
+        const aPagarU = Math.max(0, totalU - creditU - paidU);
+        const aPagarB = Math.max(0, totalB - creditB - paidB);
+        const isPaidCalc = aPagarU < 0.005;
+        return React.createElement(View, { style: cc.totalsBox },
+          React.createElement(View, { style: cc.totalLineRow },
+            React.createElement(Text, { style: cc.totalLineLabel }, "Total de la factura"),
+            React.createElement(Text, { style: cc.totalLineUsd }, fmtUsd(totalU)),
+            React.createElement(Text, { style: cc.totalLineBss }, fmtBss(totalB)),
+          ),
+          creditU > 0.005 && React.createElement(View, { style: cc.deductionRow },
+            React.createElement(Text, { style: cc.deductionLabel }, "(–) SALDO A FAVOR (anticipo)"),
+            React.createElement(Text, { style: cc.deductionUsd }, `– ${fmtUsd(creditU)}`),
+            React.createElement(Text, { style: cc.deductionBss }, `– ${fmtBss(creditB)}`),
+          ),
+          paidU > 0.005 && React.createElement(View, { style: cc.deductionRow },
+            React.createElement(Text, { style: cc.deductionLabel }, "(–) Abonos recibidos"),
+            React.createElement(Text, { style: cc.deductionUsd }, `– ${fmtUsd(paidU)}`),
+            React.createElement(Text, { style: cc.deductionBss }, `– ${fmtBss(paidB)}`),
+          ),
+          isPaidCalc
+            ? React.createElement(View, { style: cc.cancelledRow },
+                React.createElement(Text, { style: cc.cancelledLabel }, "SALDO TOTAL: CANCELADO"),
+                React.createElement(Text, { style: cc.cancelledUsd }, "$0.00"),
+                React.createElement(Text, { style: cc.cancelledBss }, "Bs 0,00"),
+              )
+            : React.createElement(View, { style: cc.grandTotalRow },
+                React.createElement(Text, { style: cc.gtLabel }, isPartial ? "SALDO PENDIENTE" : "TOTAL A PAGAR"),
+                React.createElement(Text, { style: cc.gtUsd }, fmtUsd(aPagarU)),
+                React.createElement(Text, { style: cc.gtBss }, fmtBss(aPagarB)),
+              ),
+        );
+      })(),
 
       // ── Tasa BCV ────────────────────────────────────────
       React.createElement(View, { style: cc.rateBox },

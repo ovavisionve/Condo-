@@ -486,6 +486,16 @@ export const comercialRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
+        // Bloqueo: mes cerrado por workflow Cierre de Mes (paridad con residencial).
+        const closeCheck = await ctx.db.ccMonthClose.findUnique({
+          where: { mallId_year_month: { mallId: input.mallId, year: input.periodYear, month: input.periodMonth } },
+        });
+        if (closeCheck) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: `El mes ${input.periodMonth}/${input.periodYear} está cerrado. Reabrelo para registrar gastos.`,
+          });
+        }
         // #4 — Bloqueo: si ya hay facturas no anuladas del período, no permitir gastos prorrateables.
         if (!input.isIndividual) {
           const issued = await ctx.db.ccInvoice.findFirst({
@@ -995,6 +1005,27 @@ export const comercialRouter = router({
           orderBy: { startDate: "desc" },
         });
 
+        // Saldo a favor del local: pagos sin allocations (paridad con residencial).
+        const ccPaymentsForCredit = await ctx.db.ccPayment.findMany({
+          where: { localId: inv.localId, voidedAt: null },
+          select: {
+            amountUsd: true, amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        let creditUsdInv = 0, creditBssInv = 0;
+        for (const p of ccPaymentsForCredit) {
+          const tU = Number(p.amountUsd), tB = Number(p.amountBss);
+          const aU = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+          const aB = p.allocations.reduce((s, a) => s + Number(a.amountBss), 0);
+          if (tU - aU > 0.005) creditUsdInv += tU - aU;
+          if (tB - aB > 0.005) creditBssInv += tB - aB;
+        }
+        const totalUsdInv = Number(inv.totalUsd);
+        const totalBssInv = Number(inv.totalBss);
+        creditUsdInv = Math.min(creditUsdInv, totalUsdInv);
+        creditBssInv = Math.min(creditBssInv, totalBssInv);
+
         const { generateCcInvoicePdf } = await import("@/server/services/pdf");
 
         const buffer = await generateCcInvoicePdf({
@@ -1028,6 +1059,8 @@ export const comercialRouter = router({
           totalBss: inv.totalBss.toString(),
           paidUsd: inv.paidUsd.toString(),
           paidBss: inv.paidBss.toString(),
+          creditUsd: creditUsdInv > 0.005 ? creditUsdInv.toFixed(2) : undefined,
+          creditBss: creditBssInv > 0.005 ? creditBssInv.toFixed(2) : undefined,
           notes: inv.notes,
           paymentInstructions: mall.notes,
         });
@@ -2147,6 +2180,25 @@ export const comercialRouter = router({
           amountUsd: alloc.amountUsd.toString(),
         }));
 
+        // Saldo a favor del local: pagos sin allocations (anticipos).
+        // Mismo cálculo que en residencial, para mostrar "APLICADO A: ..." y
+        // "SALDO A FAVOR" en el bauche CC.
+        const allPaymentsLocal = await ctx.db.ccPayment.findMany({
+          where: { localId: payload.localId, voidedAt: null },
+          select: {
+            amountUsd: true, amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        let creditUsdCc = 0, creditBssCc = 0;
+        for (const p of allPaymentsLocal) {
+          const tU = Number(p.amountUsd), tB = Number(p.amountBss);
+          const aU = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+          const aB = p.allocations.reduce((s, a) => s + Number(a.amountBss), 0);
+          if (tU - aU > 0.005) creditUsdCc += tU - aU;
+          if (tB - aB > 0.005) creditBssCc += tB - aB;
+        }
+
         const { generatePaymentVoucherPdf } = await import("@/server/services/pdf");
         const buffer = await generatePaymentVoucherPdf({
           communityName: mall.name, communityAddress: mall.address ?? undefined,
@@ -2158,6 +2210,8 @@ export const comercialRouter = router({
           exchangeRate: payment.exchangeRate.toString(),
           method: payment.method, reference: payment.reference ?? undefined,
           paidAt: payment.paidAt, invoices: invoicesData,
+          creditUsd: creditUsdCc > 0.005 ? creditUsdCc.toFixed(2) : undefined,
+          creditBss: creditBssCc > 0.005 ? creditBssCc.toFixed(2) : undefined,
         });
         return { base64: buffer.toString("base64"), fileName: `Bauche-CC-${payment.id.slice(-8).toUpperCase()}.pdf`, mimeType: "application/pdf" };
       }),
@@ -2639,6 +2693,20 @@ export const comercialRouter = router({
           orderBy: [{ year: "desc" }, { month: "desc" }],
         }),
       ),
+
+    /** Verifica si un mes está cerrado (para validaciones de UI). */
+    isOpen: orgProcedure
+      .input(orgIdInput.extend({
+        mallId: z.string(),
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        const close = await ctx.db.ccMonthClose.findUnique({
+          where: { mallId_year_month: { mallId: input.mallId, year: input.year, month: input.month } },
+        });
+        return { closed: !!close, closedAt: close?.closedAt ?? null };
+      }),
 
     /** Crea el snapshot de cierre para el mes indicado */
     close: orgProcedure

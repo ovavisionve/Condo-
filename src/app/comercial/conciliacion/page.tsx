@@ -100,15 +100,40 @@ function splitCSVLine(line: string, sep: string): string[] {
   return res;
 }
 
+/**
+ * Busca la fila de cabecera entre las primeras N filas (bancos VE meten título arriba).
+ */
+function findHeader(allRows: string[][], maxRows = 10): { idx: number; cols: ReturnType<typeof detectCols> } | null {
+  const upTo = Math.min(maxRows, allRows.length);
+  for (let i = 0; i < upTo; i++) {
+    const row = (allRows[i] ?? []).map(String);
+    const c = detectCols(row);
+    if (c.fecha !== -1 && c.monto !== -1) return { idx: i, cols: c };
+  }
+  return null;
+}
+
+/** Rellena con "" hasta minCols celdas para evitar "campos corridos" al renderizar. */
+function padRow(cells: unknown[], minCols: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(cells.length, minCols); i++) {
+    const v = cells[i];
+    out.push(v === undefined || v === null ? "" : String(v));
+  }
+  return out;
+}
+
 function parseCSV(text: string): BankRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   if (lines.length < 2) return [];
   const sep = parseSep(lines[0]!);
-  const headers = splitCSVLine(lines[0]!, sep);
-  const cols = detectCols(headers);
-  if (cols.fecha === -1 || cols.monto === -1) return [];
-  return lines.slice(1).flatMap((line) => {
-    const cells = splitCSVLine(line, sep);
+  const allRows = lines.map((l) => splitCSVLine(l, sep));
+  const header = findHeader(allRows);
+  if (!header) return [];
+  const { idx, cols } = header;
+  const colCount = (allRows[idx] ?? []).length;
+  return allRows.slice(idx + 1).flatMap((rawCells) => {
+    const cells = padRow(rawCells, colCount);
     const monto = parseMoney(cells[cols.monto] ?? "");
     if (monto <= 0) return [];
     return [{ fecha: cells[cols.fecha] ?? "", referencia: cols.referencia >= 0 ? (cells[cols.referencia] ?? "") : "", monto, descripcion: cols.descripcion >= 0 ? (cells[cols.descripcion] ?? "") : "" }];
@@ -120,15 +145,18 @@ async function parseExcel(file: File): Promise<BankRow[]> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array", cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]!]!;
-  const rows = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: "" });
-  if (rows.length < 2) return [];
-  const headers = (rows[0] as string[]).map(String);
-  const cols = detectCols(headers);
-  if (cols.fecha === -1 || cols.monto === -1) return [];
-  return (rows.slice(1) as string[][]).flatMap((cells) => {
-    const monto = parseMoney(String(cells[cols.monto] ?? ""));
+  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: "" });
+  if (rawRows.length < 2) return [];
+  const allRows = (rawRows as unknown[][]).map((r) => r.map((v) => (v === undefined || v === null ? "" : String(v))));
+  const header = findHeader(allRows);
+  if (!header) return [];
+  const { idx, cols } = header;
+  const colCount = (allRows[idx] ?? []).length;
+  return allRows.slice(idx + 1).flatMap((rawCells) => {
+    const cells = padRow(rawCells, colCount);
+    const monto = parseMoney(cells[cols.monto] ?? "");
     if (monto <= 0) return [];
-    return [{ fecha: String(cells[cols.fecha] ?? ""), referencia: cols.referencia >= 0 ? String(cells[cols.referencia] ?? "") : "", monto, descripcion: cols.descripcion >= 0 ? String(cells[cols.descripcion] ?? "") : "" }];
+    return [{ fecha: cells[cols.fecha] ?? "", referencia: cols.referencia >= 0 ? (cells[cols.referencia] ?? "") : "", monto, descripcion: cols.descripcion >= 0 ? (cells[cols.descripcion] ?? "") : "" }];
   });
 }
 
