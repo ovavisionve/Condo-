@@ -155,9 +155,13 @@ export default function InvoicesPage() {
     (acc, inv) => ({
       usd: acc.usd + Number(inv.totalUsd.toString()),
       paidUsd: acc.paidUsd + Number(inv.paidUsd.toString()),
+      bss: acc.bss + Number(inv.totalBss.toString()),
+      paidBss: acc.paidBss + Number(inv.paidBss.toString()),
     }),
-    { usd: 0, paidUsd: 0 },
+    { usd: 0, paidUsd: 0, bss: 0, paidBss: 0 },
   );
+  const fmtBsLocal = (n: number) =>
+    n.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
     <div className="space-y-4">
@@ -165,9 +169,20 @@ export default function InvoicesPage() {
         <div>
           <h2 className="text-lg font-semibold">Recibos de Condominio</h2>
           <p className="text-sm text-muted-foreground">
-            Período {month}/{year} ·
-            {totals && ` Emitido $${totals.usd.toFixed(2)} · Cobrado $${totals.paidUsd.toFixed(2)} · Pendiente $${(totals.usd - totals.paidUsd).toFixed(2)}`}
-            {totals && todayRate > 0 && ` · Bs pendiente hoy: ${((totals.usd - totals.paidUsd) * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}`}
+            Período {month}/{year}
+            {totals && (
+              <>
+                {" · "}
+                Emitido <strong>Bs {fmtBsLocal(totals.bss)}</strong>
+                <span className="text-xs"> (≈${totals.usd.toFixed(2)})</span>
+                {" · "}
+                Cobrado <strong className="text-green-700">Bs {fmtBsLocal(totals.paidBss)}</strong>
+                <span className="text-xs"> (≈${totals.paidUsd.toFixed(2)})</span>
+                {" · "}
+                Pendiente <strong className="text-amber-700">Bs {fmtBsLocal(totals.bss - totals.paidBss)}</strong>
+                <span className="text-xs"> (≈${(totals.usd - totals.paidUsd).toFixed(2)})</span>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-end gap-2">
@@ -262,10 +277,10 @@ export default function InvoicesPage() {
             <tr>
               <th className="px-3 py-2"># Recibo</th>
               <th className="px-3 py-2">Unidad</th>
-              <th className="px-3 py-2 text-right">Total USD</th>
-              <th className="px-3 py-2 text-right">Pagado USD</th>
-              <th className="px-3 py-2 text-right">Pendiente USD</th>
-              <th className="px-3 py-2 text-right">Pendiente Bs (hoy)</th>
+              <th className="px-3 py-2 text-right">Total Bs</th>
+              <th className="px-3 py-2 text-right">Pagado Bs</th>
+              <th className="px-3 py-2 text-right">Pendiente Bs</th>
+              <th className="px-3 py-2 text-right">≈ USD</th>
               <th className="px-3 py-2">Estado</th>
               <th className="px-3 py-2">Vence</th>
               <th className="px-3 py-2"></th>
@@ -287,19 +302,19 @@ export default function InvoicesPage() {
                     {inv.invoiceNumber}
                   </td>
                   <td className="px-3 py-2">{inv.unit.code}</td>
-                  <td className="px-3 py-2 text-right">${Number(inv.totalUsd.toString()).toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right text-green-700">${Number(inv.paidUsd.toString()).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right">Bs {fmtBsLocal(Number(inv.totalBss.toString()))}</td>
+                  <td className="px-3 py-2 text-right text-green-700">Bs {fmtBsLocal(Number(inv.paidBss.toString()))}</td>
                   {(() => {
-                    const pending = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
-                    const pendingBsHoy = pending * todayRate;
+                    const pendingUsd = Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString());
+                    const pendingBss = Number(inv.totalBss.toString()) - Number(inv.paidBss.toString());
                     return (
                       <>
-                        <td className={`px-3 py-2 text-right ${pending > 0.005 ? "font-medium text-destructive" : "text-green-600"}`}>
-                          ${pending.toFixed(2)}
+                        <td className={`px-3 py-2 text-right ${pendingUsd > 0.005 ? "font-medium text-destructive" : "text-green-600"}`}>
+                          Bs {fmtBsLocal(pendingBss)}
                         </td>
                         <td className="px-3 py-2 text-right text-xs text-muted-foreground">
-                          {pending > 0.005 && todayRate > 0
-                            ? `Bs ${pendingBsHoy.toLocaleString("es-VE", { maximumFractionDigits: 2 })}`
+                          {pendingUsd > 0.005
+                            ? `≈ $${pendingUsd.toFixed(2)}`
                             : "—"}
                         </td>
                       </>

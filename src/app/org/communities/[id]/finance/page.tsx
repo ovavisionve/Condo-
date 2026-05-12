@@ -118,6 +118,9 @@ export default function FinanceDashboard() {
 
   return (
     <div className="space-y-6">
+      {/* ── Cierre de Mes ──────────────────────────────────────── */}
+      <MonthCloseCard organizationId={organizationId} communityId={communityId} />
+
       {/* ── Cuota mensual ──────────────────────────────────────── */}
       <Card>
         <CardHeader>
@@ -896,5 +899,182 @@ function AgingCell({
         Bs {Number(data?.bss ?? 0).toFixed(2)} · {data?.count ?? 0} recibo(s)
       </div>
     </div>
+  );
+}
+
+// ─── Cierre de Mes ──────────────────────────────────────────────
+const MONTHS_LABEL = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+function MonthCloseCard({ organizationId, communityId }: { organizationId: string; communityId: string }) {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
+
+  const status = trpc.finance.monthClose.isOpen.useQuery({ organizationId, communityId, year, month });
+  const history = trpc.finance.monthClose.list.useQuery({ organizationId, communityId });
+  const close = trpc.finance.monthClose.close.useMutation();
+  const reopen = trpc.finance.monthClose.reopen.useMutation();
+
+  const handleClose = async () => {
+    setError(null);
+    try {
+      await close.mutateAsync({ organizationId, communityId, year, month, notes: notes || undefined });
+      setNotes("");
+      await Promise.all([
+        utils.finance.monthClose.isOpen.invalidate(),
+        utils.finance.monthClose.list.invalidate(),
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const handleReopen = async (y: number, m: number) => {
+    if (!confirm(`¿Reabrir ${MONTHS_LABEL[m - 1]} ${y}? Permitirá modificar gastos/ingresos de ese mes.`)) return;
+    setError(null);
+    try {
+      await reopen.mutateAsync({ organizationId, communityId, year: y, month: m });
+      await Promise.all([
+        utils.finance.monthClose.isOpen.invalidate(),
+        utils.finance.monthClose.list.invalidate(),
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error");
+    }
+  };
+
+  const isClosed = status.data?.closed;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">🔒 Cierre de mes</CardTitle>
+        <CardDescription>
+          Cerrar un mes bloquea modificaciones de gastos e ingresos para garantizar la integridad de los recibos emitidos. Reabrible en caso de necesidad.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <Label className="text-xs">Mes</Label>
+            <select
+              className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={month}
+              onChange={(e) => setMonth(Number(e.target.value))}
+            >
+              {MONTHS_LABEL.map((m, i) => (
+                <option key={i + 1} value={i + 1}>{m}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Label className="text-xs">Año</Label>
+            <select
+              className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+            >
+              {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i).map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <Label className="text-xs">Notas (opcional)</Label>
+            <Input
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Ej: Cierre con auditoría pendiente"
+              disabled={isClosed}
+            />
+          </div>
+        </div>
+
+        {status.isLoading ? (
+          <div className="text-sm text-muted-foreground">Verificando estado...</div>
+        ) : isClosed ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+            <div className="font-semibold text-amber-900">
+              🔒 {MONTHS_LABEL[month - 1]} {year} está CERRADO
+            </div>
+            <div className="text-xs text-amber-700 mt-1">
+              Cerrado el {status.data?.closedAt ? new Date(status.data.closedAt).toLocaleString("es-VE") : ""}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-2"
+              onClick={() => handleReopen(year, month)}
+              disabled={reopen.isPending}
+            >
+              🔓 Reabrir mes
+            </Button>
+          </div>
+        ) : (
+          <div className="rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm">
+            <div className="font-semibold text-emerald-900">
+              ✏️ {MONTHS_LABEL[month - 1]} {year} está ABIERTO
+            </div>
+            <div className="text-xs text-emerald-700 mt-1">
+              Se pueden registrar gastos e ingresos para este mes.
+            </div>
+            <Button
+              size="sm"
+              className="mt-2 bg-amber-600 hover:bg-amber-700"
+              onClick={handleClose}
+              disabled={close.isPending}
+            >
+              {close.isPending ? "Cerrando..." : `🔒 Cerrar ${MONTHS_LABEL[month - 1]} ${year}`}
+            </Button>
+          </div>
+        )}
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
+
+        {/* Historial de cierres */}
+        {history.data && history.data.length > 0 && (
+          <div className="mt-2">
+            <Label className="text-xs">Historial de cierres</Label>
+            <div className="mt-1 max-h-48 overflow-y-auto rounded border">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/40 sticky top-0">
+                  <tr>
+                    <th className="px-2 py-1 text-left">Período</th>
+                    <th className="px-2 py-1 text-left">Cerrado por</th>
+                    <th className="px-2 py-1 text-left">Fecha</th>
+                    <th className="px-2 py-1 text-right">% Cobro</th>
+                    <th className="px-2 py-1"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.data.map((h) => {
+                    const sum = h.summary as { collectionRate?: number; totalInvoicedUsd?: string };
+                    return (
+                      <tr key={h.id} className="border-t">
+                        <td className="px-2 py-1 font-medium">{MONTHS_LABEL[h.month - 1]} {h.year}</td>
+                        <td className="px-2 py-1 text-muted-foreground">{h.closedBy?.name ?? h.closedBy?.email ?? "—"}</td>
+                        <td className="px-2 py-1 text-muted-foreground">{new Date(h.closedAt).toLocaleDateString("es-VE")}</td>
+                        <td className="px-2 py-1 text-right">{sum?.collectionRate ?? 0}%</td>
+                        <td className="px-2 py-1 text-right">
+                          <button
+                            onClick={() => handleReopen(h.year, h.month)}
+                            className="text-xs text-blue-600 hover:underline"
+                          >
+                            🔓 Reabrir
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

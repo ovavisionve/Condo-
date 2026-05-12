@@ -227,9 +227,20 @@ export const financeRouter = router({
           recurringTemplateId: z.string().optional().nullable(),
         }),
       )
-      .mutation(async ({ ctx, input }) =>
-        registerExpense({ ...input, createdById: ctx.user.id }),
-      ),
+      .mutation(async ({ ctx, input }) => {
+        // No permitir crear gastos en un mes ya cerrado (workflow Cierre de Mes).
+        // Si la admin cerró el mes, debe reabrirlo antes de modificar nada.
+        const close = await ctx.db.monthClose.findUnique({
+          where: { communityId_year_month: { communityId: input.communityId, year: input.periodYear, month: input.periodMonth } },
+        });
+        if (close) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: `El mes ${input.periodMonth}/${input.periodYear} está cerrado. Reabrelo para registrar nuevos gastos.`,
+          });
+        }
+        return registerExpense({ ...input, createdById: ctx.user.id });
+      }),
 
     /** Emite un cargo directo (EXTRA_FEE) para un gasto individual ya registrado
      *  pero cuyo período tiene facturas emitidas (no se puede re-emitir el mes). */
@@ -1719,6 +1730,34 @@ export const financeRouter = router({
           },
         });
       }),
+
+    /** Reabre un mes cerrado para permitir nuevas modificaciones. */
+    reopen: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const close = await ctx.db.monthClose.findUnique({
+          where: { communityId_year_month: { communityId: input.communityId, year: input.year, month: input.month } },
+        });
+        if (!close) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "El mes no está cerrado" });
+        }
+        await ctx.db.monthClose.delete({ where: { id: close.id } });
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "MonthClose",
+            entityId: close.id,
+            after: { action: "REOPENED", year: input.year, month: input.month },
+          },
+        });
+        return { ok: true };
+      }),
   }),
 
   // ─── Pagos ─────────────────────────────────────────────────────
@@ -2173,13 +2212,23 @@ export const financeRouter = router({
           affectsInvoice: z.boolean().default(false),
         }),
       )
-      .mutation(async ({ ctx, input }) =>
-        registerIncome({
+      .mutation(async ({ ctx, input }) => {
+        // Bloqueo en mes cerrado
+        const close = await ctx.db.monthClose.findUnique({
+          where: { communityId_year_month: { communityId: input.communityId, year: input.periodYear, month: input.periodMonth } },
+        });
+        if (close) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: `El mes ${input.periodMonth}/${input.periodYear} está cerrado. Reabrelo para registrar ingresos.`,
+          });
+        }
+        return registerIncome({
           ...input,
           exchangeSource: "MANUAL",
           createdById: ctx.user.id,
-        }),
-      ),
+        });
+      }),
     voidOne: orgProcedure
       .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3) }))
       .mutation(async ({ input }) =>
