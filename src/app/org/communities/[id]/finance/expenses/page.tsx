@@ -397,7 +397,9 @@ function RecurringTemplatesPanel({
   onMutated: () => void;
 }) {
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({
+  // Edición de plantillas existentes
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const blankForm = {
     category: "ELECTRICITY" as (typeof CATS)[number],
     customCategory: "",
     description: "",
@@ -408,26 +410,74 @@ function RecurringTemplatesPanel({
     towerScope: "",
     notes: "",
     isProvision: false,
-  });
+  };
+  const [form, setForm] = useState(blankForm);
   const [error, setError] = useState<string | null>(null);
+
+  const startEdit = (tpl: TplRecord) => {
+    setEditingId(tpl.id);
+    const t = tpl as unknown as {
+      category: typeof CATS[number]; customCategory?: string | null;
+      description: string; supplierName?: string | null; amountUsd: { toString(): string };
+      amountBss?: { toString(): string } | null; currencyPrimary?: "USD" | "VES";
+      towerScope?: string | null; notes?: string | null; isProvision: boolean;
+    };
+    const cp = (t.currencyPrimary ?? "USD") as "USD" | "VES";
+    const amount = cp === "VES" && t.amountBss
+      ? Number(t.amountBss.toString()).toString()
+      : Number(t.amountUsd.toString()).toString();
+    setForm({
+      category: t.category,
+      customCategory: t.customCategory ?? "",
+      description: t.description,
+      supplierName: t.supplierName ?? "",
+      amountUsd: amount,
+      currencyPrimary: cp,
+      towerScope: t.towerScope ?? "",
+      notes: t.notes ?? "",
+      isProvision: t.isProvision,
+    });
+    setShowNew(true);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm(blankForm);
+    setShowNew(false);
+    setError(null);
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      await createTpl.mutateAsync({
-        organizationId, communityId,
-        category: form.category,
-        customCategory: form.customCategory.trim() || undefined,
-        description: form.description,
-        supplierName: form.supplierName || undefined,
-        amount: Number(form.amountUsd),
-        currencyPrimary: form.currencyPrimary,
-        towerScope: form.towerScope || null,
-        notes: form.notes || undefined,
-        isProvision: form.isProvision,
-      });
-      setForm({ category: "ELECTRICITY", customCategory: "", description: "", supplierName: "", amountUsd: "", currencyPrimary: "VES", towerScope: "", notes: "", isProvision: false });
+      if (editingId) {
+        await updateTpl.mutateAsync({
+          organizationId, id: editingId,
+          description: form.description,
+          supplierName: form.supplierName || undefined,
+          amount: Number(form.amountUsd),
+          currencyPrimary: form.currencyPrimary,
+          towerScope: form.towerScope || null,
+          notes: form.notes || undefined,
+          isProvision: form.isProvision,
+        });
+      } else {
+        await createTpl.mutateAsync({
+          organizationId, communityId,
+          category: form.category,
+          customCategory: form.customCategory.trim() || undefined,
+          description: form.description,
+          supplierName: form.supplierName || undefined,
+          amount: Number(form.amountUsd),
+          currencyPrimary: form.currencyPrimary,
+          towerScope: form.towerScope || null,
+          notes: form.notes || undefined,
+          isProvision: form.isProvision,
+        });
+      }
+      setForm(blankForm);
+      setEditingId(null);
       setShowNew(false);
       onMutated();
     } catch (err: unknown) {
@@ -500,6 +550,14 @@ function RecurringTemplatesPanel({
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap gap-1">
                     <button
+                      className="text-xs text-blue-700 hover:text-blue-900 font-medium"
+                      onClick={() => startEdit(tpl)}
+                      title="Editar todos los campos de la plantilla"
+                    >
+                      ✏️ Editar
+                    </button>
+                    <span className="text-muted-foreground">·</span>
+                    <button
                       className="text-xs text-amber-700 hover:text-amber-900"
                       onClick={async () => {
                         await updateTpl.mutateAsync({
@@ -547,18 +605,24 @@ function RecurringTemplatesPanel({
       {showNew && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="mb-4 font-semibold">Nueva plantilla recurrente</h3>
+            <h3 className="mb-4 font-semibold">
+              {editingId ? "✏️ Editar plantilla recurrente" : "+ Nueva plantilla recurrente"}
+            </h3>
             <form onSubmit={onSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>Categoría</Label>
+                  <Label>Categoría base</Label>
                   <select
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={form.category}
                     onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number] }))}
+                    disabled={!!editingId}
                   >
                     {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
                   </select>
+                  {editingId && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5">No se puede cambiar al editar</p>
+                  )}
                 </div>
                 <div>
                   <Label>Proveedor</Label>
@@ -566,13 +630,22 @@ function RecurringTemplatesPanel({
                 </div>
               </div>
               <div>
-                <Label>Subcategoría / Nombre específico <span className="text-muted-foreground text-xs">(opcional — visible en el recibo)</span></Label>
+                <Label>
+                  Nombre / Subcategoría personalizada{" "}
+                  <span className="text-muted-foreground text-xs">(opcional — éste es el nombre que aparece en el recibo)</span>
+                </Label>
                 <Input
-                  placeholder="Ej: Piscina, Planta eléctrica, Pintura..."
+                  placeholder="Ej: Hidrocapital, Servicios Generales $70, Piscina..."
                   value={form.customCategory}
                   onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
                   maxLength={80}
+                  disabled={!!editingId}
                 />
+                {editingId && (
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Para cambiar el nombre, elimina y crea una nueva plantilla
+                  </p>
+                )}
               </div>
               <div>
                 <Label>Descripción</Label>
@@ -637,9 +710,9 @@ function RecurringTemplatesPanel({
 
               {error && <p className="text-sm text-destructive">{error}</p>}
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setShowNew(false)}>Cancelar</Button>
-                <Button type="submit" disabled={createTpl.isPending}>
-                  {createTpl.isPending ? "..." : "Guardar plantilla"}
+                <Button type="button" variant="outline" onClick={cancelEdit}>Cancelar</Button>
+                <Button type="submit" disabled={createTpl.isPending || updateTpl.isPending}>
+                  {(createTpl.isPending || updateTpl.isPending) ? "..." : (editingId ? "💾 Guardar cambios" : "+ Crear plantilla")}
                 </Button>
               </div>
             </form>
@@ -671,6 +744,8 @@ function NewExpenseDialog({
   create: ReturnType<typeof trpc.finance.expenses.create.useMutation>;
   units: Array<{ id: string; code: string; tower?: string | null }>;
 }) {
+  // Default date: hoy en formato YYYY-MM-DD para input type="date"
+  const todayStr = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     category: "ELECTRICITY" as (typeof CATS)[number],
     customCategory: "",
@@ -682,6 +757,8 @@ function NewExpenseDialog({
     supplierName: "",
     invoiceNumber: "",
     notes: "",
+    // Fecha completa del comprobante — calendario. Año y mes del período se derivan.
+    receiptDate: todayStr,
     periodYear: defaultYear,
     periodMonth: defaultMonth,
     towerScope: "",
@@ -694,6 +771,11 @@ function NewExpenseDialog({
     e.preventDefault();
     setError(null);
     try {
+      // El período (year/month) se deriva de la fecha del comprobante
+      // — el gasto se factura en el mes del comprobante.
+      const d = new Date(form.receiptDate + "T12:00:00");
+      const py = d.getFullYear();
+      const pm = d.getMonth() + 1;
       await create.mutateAsync({
         organizationId,
         communityId,
@@ -703,8 +785,9 @@ function NewExpenseDialog({
         // "Crear nuevas categorías en los gastos").
         customCategory: form.customCategory.trim() || undefined,
         description: form.description,
-        periodYear: form.periodYear,
-        periodMonth: form.periodMonth,
+        periodYear: py,
+        periodMonth: pm,
+        receiptDate: d,
         amount: Number(form.amount),
         currencyPrimary: form.currencyPrimary,
         supplierName: form.supplierName || undefined,
@@ -762,18 +845,27 @@ function NewExpenseDialog({
             <Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Año</Label>
-              <Input type="number" value={form.periodYear} onChange={(e) => setForm((f) => ({ ...f, periodYear: Number(e.target.value) }))} required />
+              <Label>📅 Fecha del comprobante</Label>
+              <Input
+                type="date"
+                value={form.receiptDate}
+                onChange={(e) => setForm((f) => ({ ...f, receiptDate: e.target.value }))}
+                required
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                El gasto se carga al mes de esta fecha
+                {form.receiptDate && (() => {
+                  const dt = new Date(form.receiptDate + "T12:00:00");
+                  const MONTHS_LBL = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+                  return ` (${MONTHS_LBL[dt.getMonth()]} ${dt.getFullYear()})`;
+                })()}
+              </p>
             </div>
             <div>
-              <Label>Mes</Label>
-              <Input type="number" min={1} max={12} value={form.periodMonth} onChange={(e) => setForm((f) => ({ ...f, periodMonth: Number(e.target.value) }))} required />
-            </div>
-            <div>
-              <Label># Factura</Label>
-              <Input value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} />
+              <Label># Factura del proveedor</Label>
+              <Input value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} placeholder="Opcional" />
             </div>
           </div>
 

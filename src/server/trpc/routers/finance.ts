@@ -751,17 +751,79 @@ export const financeRouter = router({
         }
 
         // Excluir REGULAR de plantilla isProvision (igual que issueMonthlyInvoices)
-        const expenses = expensesAll.filter(
+        const expensesBase = expensesAll.filter(
           (e) => !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true),
         );
+
+        // Tasa BCV (usado tanto por proyección de plantillas como por cálculos abajo).
+        const rateRecord = await getCurrentRate("BCV", new Date(input.year, input.month, 0));
+        const usdRate = new Decimal(rateRecord.vesPerUsd);
+
+        // PROYECCIÓN: incluir plantillas activas que aún NO se han aplicado al mes.
+        // Pedido del cliente: "Las plantillas recurrentes no se están viendo bien
+        // reflejadas en los recibos previsuales". Antes, si no apretabas "Aplicar
+        // al mes" primero, el preview salía vacío. Ahora el preview proyecta
+        // automáticamente las plantillas como si ya se hubieran aplicado.
+        const activeTemplates = await ctx.db.recurringExpenseTemplate.findMany({
+          where: { communityId: input.communityId, organizationId: input.organizationId, active: true },
+        });
+        const appliedTplIds = new Set(
+          expensesBase
+            .filter((e) => e.recurringTemplateId)
+            .map((e) => e.recurringTemplateId as string),
+        );
+        type ExpenseProjection = (typeof expensesBase)[number];
+        const projectedExpenses: ExpenseProjection[] = [];
+        for (const tpl of activeTemplates) {
+          if (appliedTplIds.has(tpl.id)) continue;
+          // Calcular monto en USD y BSS según moneda primaria de la plantilla
+          const tplIsVes = tpl.currencyPrimary === "VES" && tpl.amountBss != null;
+          const amountUsd = tplIsVes
+            ? new Decimal(tpl.amountBss!.toString()).div(usdRate)
+            : new Decimal(tpl.amountUsd.toString());
+          const amountBss = tplIsVes
+            ? new Decimal(tpl.amountBss!.toString())
+            : new Decimal(tpl.amountUsd.toString()).mul(usdRate);
+          // Construir un objeto "Expense-like" para que la lógica de prorrateo lo trate igual
+          projectedExpenses.push({
+            id: `proj-${tpl.id}`,
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            category: tpl.category,
+            customCategory: tpl.customCategory,
+            description: tpl.isProvision ? `Provisión ${tpl.description}` : tpl.description,
+            supplierName: tpl.supplierName,
+            periodYear: input.year,
+            periodMonth: input.month,
+            amountUsd: amountUsd.toFixed(2) as never,
+            amountBss: amountBss.toFixed(2) as never,
+            exchangeRate: usdRate.toFixed(8) as never,
+            exchangeSource: rateRecord.source as never,
+            currencyPrimary: tpl.currencyPrimary,
+            towerScope: tpl.towerScope,
+            isIndividual: false,
+            targetUnitId: null,
+            recurringTemplateId: tpl.id,
+            recurringTemplate: { id: tpl.id, description: tpl.description, isProvision: tpl.isProvision },
+            kind: tpl.isProvision ? "PROVISION_BASE" : "REGULAR",
+            invoiceNumber: null,
+            receiptDate: null,
+            notes: null,
+            invoicedAt: null,
+            voidedAt: null,
+            voidedById: null,
+            voidReason: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            createdById: ctx.user.id,
+          } as ExpenseProjection);
+        }
+        const expenses = [...expensesBase, ...projectedExpenses];
 
         const ownership = await ctx.db.ownership.findFirst({
           where: { unitId: targetUnit.id, endDate: null },
           include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
         });
-
-        const rateRecord = await getCurrentRate("BCV", new Date(input.year, input.month, 0));
-        const usdRate = new Decimal(rateRecord.vesPerUsd);
 
         // ── Calcular líneas para la unidad target ───────────────────────
         type Line = { description: string; baseBss: Decimal; cuotaUsd: Decimal; cuotaBss: Decimal; section: "common" | "tower" | "individual" };
