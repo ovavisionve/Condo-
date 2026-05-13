@@ -55,6 +55,22 @@ export const financeRouter = router({
   exchange: router({
     current: orgProcedure.input(orgIdInput).query(async () => {
       const rate = await getCurrentRate("BCV");
+      // Auto-refresh inteligente: si la tasa guardada NO es de HOY, intentamos
+      // refrescar en background (fire-and-forget). Esto compensa que el cron de
+      // Vercel Hobby solo corre 1×/día — cuando un admin visita cualquier pantalla
+      // de finanzas, si la tasa es vieja se intenta actualizar automáticamente.
+      const todayMidnight = new Date(); todayMidnight.setUTCHours(0, 0, 0, 0);
+      const rateDay = new Date(rate.date); rateDay.setUTCHours(0, 0, 0, 0);
+      if (rateDay.getTime() < todayMidnight.getTime()) {
+        void (async () => {
+          try {
+            const { refreshBcvRate } = await import("@/server/services/exchange");
+            await refreshBcvRate();
+          } catch {
+            // BCV puede estar caído — no es crítico, la tasa anterior sigue válida
+          }
+        })();
+      }
       return {
         date: rate.date,
         source: rate.source,
