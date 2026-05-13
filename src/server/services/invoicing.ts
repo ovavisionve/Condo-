@@ -79,8 +79,22 @@ export type CreateExpenseInput = {
  * porque tienen el flujo de cargo directo.
  */
 export async function registerExpense(input: CreateExpenseInput) {
+  // Si está vinculado a plantilla de provisión: es gasto REAL del condominio que
+  // no se factura al residente, solo se usa para calcular el AJUSTE del mes siguiente.
+  // No aplicar el bloqueo "ya emitido" — siempre se puede registrar el real aunque
+  // ya se haya emitido el recibo del mes con la PROVISION.
+  let linkedTpl: { isProvision: boolean; active: boolean } | null = null;
+  if (input.recurringTemplateId) {
+    linkedTpl = await db.recurringExpenseTemplate.findUnique({
+      where: { id: input.recurringTemplateId },
+      select: { isProvision: true, active: true },
+    });
+  }
+  const isProvisionRealCost = linkedTpl?.isProvision === true;
+
   // Bloqueo #4: no aceptar gastos prorrateables después de emitir el recibo del período.
-  if (!input.isIndividual) {
+  // Excepciones: gastos individuales (cargo directo) o gastos contra provisión (no se facturan).
+  if (!input.isIndividual && !isProvisionRealCost) {
     const issued = await db.invoice.findFirst({
       where: {
         communityId: input.communityId,
@@ -93,7 +107,7 @@ export async function registerExpense(input: CreateExpenseInput) {
     if (issued) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. No se pueden añadir gastos comunes a un período cerrado. Marca el gasto como individual o anula las facturas para re-emitirlas.`,
+        message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. No se pueden añadir gastos comunes a un período cerrado. Marca el gasto como individual, vinculalo a una plantilla de provisión, o anula las facturas para re-emitirlas.`,
       });
     }
   }
@@ -180,14 +194,15 @@ export async function issueMonthlyInvoices(params: {
 
   const allExpenses = await db.expense.findMany({
     where: { communityId, periodYear: year, periodMonth: month, invoicedAt: null, voidedAt: null },
-    include: { recurringTemplate: { select: { id: true, description: true, isProvision: true } } },
+    include: { recurringTemplate: { select: { id: true, description: true, isProvision: true, active: true } } },
   });
-  // Excluir gastos REGULAR vinculados a plantilla isProvision: esos son trackeo del real
-  // del mes, no se facturan al residente. Solo se usan para calcular AJUSTE el mes siguiente.
-  // El residente paga la PROVISION_BASE (estimación fija) + PROVISION_ADJUSTMENT (correción
-  // del mes anterior).
+  // Excluir:
+  //  - REGULAR vinculado a plantilla isProvision (trackeo real del mes, no se factura)
+  //  - Expenses cuya plantilla está INACTIVA (no debe facturarse — pedido cliente)
   const expenses = allExpenses.filter(
-    (e) => !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true),
+    (e) =>
+      !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true) &&
+      !(e.recurringTemplate && e.recurringTemplate.active === false),
   );
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)

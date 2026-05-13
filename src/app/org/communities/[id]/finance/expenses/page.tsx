@@ -748,8 +748,20 @@ function NewExpenseDialog({
     towerScope: "",
     isIndividual: false,
     targetUnitId: "",
+    // CRÍTICO: vinculación de gasto REAL contra plantilla de provisión.
+    // El admin elige aquí cuál provisión cubre este gasto (Hidrocapital, Luz, etc.)
+    // → el sistema calcula automáticamente el AJUSTE PROVISION del mes siguiente.
+    recurringTemplateId: "",
   });
   const [error, setError] = useState<string | null>(null);
+
+  // Lista de plantillas de PROVISIÓN activas — para vincular el gasto real
+  // contra el cargo de provisión existente.
+  const provisionTemplatesQ = trpc.finance.recurringTemplates.list.useQuery({
+    organizationId, communityId,
+  });
+  const provisionTemplates = (provisionTemplatesQ.data ?? [])
+    .filter((t) => t.isProvision && t.active);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -780,6 +792,7 @@ function NewExpenseDialog({
         towerScope: form.isIndividual ? null : (form.towerScope || null),
         isIndividual: form.isIndividual,
         targetUnitId: form.isIndividual && form.targetUnitId ? form.targetUnitId : null,
+        recurringTemplateId: form.recurringTemplateId || null,
       });
       onCreated();
     } catch (err: unknown) {
@@ -851,6 +864,47 @@ function NewExpenseDialog({
               <Label># Factura del proveedor</Label>
               <Input value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} placeholder="Opcional" />
             </div>
+          </div>
+
+          {/* CRÍTICO: vincular gasto real contra plantilla de provisión */}
+          <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3">
+            <Label className="font-semibold text-amber-900">
+              📊 ¿Es el gasto real de alguna provisión?
+            </Label>
+            <p className="mb-2 text-[11px] text-amber-700">
+              Si este gasto es el cobro real de un servicio que ya tenés provisionado (Hidrocapital, Luz, etc.),
+              vinculalo aquí. El sistema lo usa para calcular el <strong>AJUSTE PROVISIÓN</strong> del mes siguiente
+              (diferencia entre lo estimado y lo real).
+            </p>
+            <select
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={form.recurringTemplateId}
+              onChange={(e) => setForm((f) => ({ ...f, recurringTemplateId: e.target.value }))}
+            >
+              <option value="">— No es contra provisión (gasto normal) —</option>
+              {provisionTemplates.map((t) => {
+                const cp = t.currencyPrimary;
+                const amount = cp === "VES" && t.amountBss
+                  ? `Bs ${Number(t.amountBss.toString()).toLocaleString("es-VE", { maximumFractionDigits: 0 })}`
+                  : `$${Number(t.amountUsd.toString()).toFixed(2)}`;
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.description} (provisión {amount}/mes)
+                  </option>
+                );
+              })}
+            </select>
+            {provisionTemplates.length === 0 && (
+              <p className="mt-1 text-[10px] text-muted-foreground italic">
+                No hay plantillas de provisión activas. Crealas en la pestaña "Plantillas Recurrentes".
+              </p>
+            )}
+            {form.recurringTemplateId && (
+              <p className="mt-1 text-[11px] text-emerald-700">
+                ✓ Este gasto NO se facturará al residente (ya pagaron la provisión).
+                Se usará para calcular el ajuste del mes siguiente.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">

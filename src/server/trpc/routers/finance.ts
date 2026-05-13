@@ -750,9 +750,26 @@ export const financeRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "Unidad no encontrada" });
         }
 
-        // Excluir REGULAR de plantilla isProvision (igual que issueMonthlyInvoices)
+        // Identificar plantillas INACTIVAS — sus Expenses no deben aparecer
+        // en el preview (pedido cliente Reinaldo: "Revisa el recibo de abril,
+        // trae información de plantillas que no están activos").
+        const inactiveTpls = await ctx.db.recurringExpenseTemplate.findMany({
+          where: {
+            communityId: input.communityId,
+            organizationId: input.organizationId,
+            active: false,
+          },
+          select: { id: true },
+        });
+        const inactiveTplIds = new Set(inactiveTpls.map((t) => t.id));
+
+        // Excluir:
+        //  - REGULAR de plantilla isProvision (real vs provisión, no se factura)
+        //  - Expenses cuya plantilla está inactiva (obsoleta)
         const expensesBase = expensesAll.filter(
-          (e) => !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true),
+          (e) =>
+            !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true) &&
+            !(e.recurringTemplateId && inactiveTplIds.has(e.recurringTemplateId)),
         );
 
         // Tasa BCV (usado tanto por proyección de plantillas como por cálculos abajo).
