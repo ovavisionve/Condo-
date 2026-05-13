@@ -150,8 +150,12 @@ export default function MaintenancePage() {
                       {wo.unit.tower && <span className="ml-1 text-xs">T{wo.unit.tower}</span>}
                       {wo.unit.floor != null && <span className="ml-1 text-xs">P{wo.unit.floor}</span>}
                     </span>
+                  ) : wo.towerScope ? (
+                    <span className="text-xs rounded bg-blue-100 px-2 py-0.5 text-blue-800">
+                      🏗️ Torre {wo.towerScope}
+                    </span>
                   ) : (
-                    <span className="text-xs">Área común</span>
+                    <span className="text-xs">🏢 Todo el condominio</span>
                   )}
                 </td>
                 <td className="px-3 py-2 text-xs">{EXPENSE_CAT_LABELS[wo.category] ?? wo.category}</td>
@@ -238,6 +242,8 @@ function NewWorkOrderDialog({
     category: "REPAIRS" as (typeof EXPENSE_CATEGORIES)[number],
     priority: "MEDIUM" as WOPriority,
     unitId: "",
+    // Alcance por torre: "" = todo el condominio, "A"/"B" = torre específica
+    towerScope: "",
     estimatedCostUsd: "",
     notes: "",
   });
@@ -255,6 +261,7 @@ function NewWorkOrderDialog({
         category: form.category,
         priority: form.priority,
         unitId: form.unitId || undefined,
+        towerScope: form.unitId ? null : (form.towerScope || null),
         estimatedCostUsd: form.estimatedCostUsd ? Number(form.estimatedCostUsd) : undefined,
         notes: form.notes || undefined,
       });
@@ -308,13 +315,20 @@ function NewWorkOrderDialog({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Unidad (dejar vacío si es área común)</Label>
-              <SearchableSelect
-                value={form.unitId}
-                onChange={(v) => setForm((f) => ({ ...f, unitId: v }))}
-                placeholder="Área común / buscar unidad..."
-                options={(units.data ?? []).map((u) => ({ value: u.id, label: u.code }))}
-              />
+              <Label>Alcance</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.towerScope}
+                onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value, unitId: "" }))}
+                disabled={Boolean(form.unitId)}
+              >
+                <option value="">🏢 Todo el condominio</option>
+                <option value="A">🏗️ Solo Torre A</option>
+                <option value="B">🏗️ Solo Torre B</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                Para mantenimientos a nivel de torre (ej. limpieza de tanques de la Torre A).
+              </p>
             </div>
             <div>
               <Label>Costo estimado USD</Label>
@@ -325,6 +339,15 @@ function NewWorkOrderDialog({
                 onChange={(e) => setForm((f) => ({ ...f, estimatedCostUsd: e.target.value }))}
               />
             </div>
+          </div>
+          <div>
+            <Label>Unidad específica <span className="text-muted-foreground text-xs">(opcional — solo si afecta a UNA unidad)</span></Label>
+            <SearchableSelect
+              value={form.unitId}
+              onChange={(v) => setForm((f) => ({ ...f, unitId: v, towerScope: v ? "" : f.towerScope }))}
+              placeholder="Dejar vacío para usar el alcance de arriba..."
+              options={(units.data ?? []).map((u) => ({ value: u.id, label: u.code }))}
+            />
           </div>
           <div>
             <Label>Notas</Label>
@@ -447,7 +470,11 @@ function WorkOrderDetailDialog({
           <div>
             <h3 className="text-lg font-semibold">{data.title}</h3>
             <p className="text-sm text-muted-foreground">
-              {data.unit ? `Unidad ${data.unit.code}` : "Área común"} ·{" "}
+              {data.unit
+                ? `Unidad ${data.unit.code}`
+                : data.towerScope
+                  ? `🏗️ Torre ${data.towerScope}`
+                  : "🏢 Todo el condominio"} ·{" "}
               <span className={`rounded px-1.5 py-0.5 text-xs ${STATUS_COLORS[data.status as WOStatus]}`}>
                 {STATUS_LABELS[data.status as WOStatus]}
               </span>{" "}

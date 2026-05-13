@@ -941,6 +941,9 @@ model WorkOrder {
   community        Community         @relation(fields: [communityId], references: [id], onDelete: Cascade)
   unitId           String?           // null si es área común
   unit             Unit?             @relation(fields: [unitId], references: [id])
+  /// Torre afectada: null = todo el condominio / área común general; "A"/"B" = torre específica.
+  /// Permite mantenimientos a nivel de torre (ej. "Limpieza de tanques Torre A").
+  towerScope       String?
   title            String
   description      String
   category         ExpenseCategory

@@ -5,6 +5,7 @@ interface CreateWorkOrderInput {
   organizationId: string;
   communityId: string;
   unitId?: string;
+  towerScope?: string | null;
   title: string;
   description: string;
   category: ExpenseCategory;
@@ -21,6 +22,7 @@ export async function createWorkOrder(input: CreateWorkOrderInput) {
       organizationId: input.organizationId,
       communityId: input.communityId,
       unitId: input.unitId,
+      towerScope: input.towerScope ?? null,
       title: input.title,
       description: input.description,
       category: input.category,

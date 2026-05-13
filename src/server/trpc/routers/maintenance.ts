@@ -128,6 +128,8 @@ export const maintenanceRouter = router({
         orgIdInput.extend({
           communityId: z.string(),
           unitId: z.string().optional(),
+          /** Torre: null=general, "A" o "B" para mantenimiento específico de torre. */
+          towerScope: z.string().max(20).optional().nullable(),
           title: z.string().min(3),
           description: z.string().min(5),
           category: z.enum(EXPENSE_CATEGORIES),
