@@ -555,6 +555,73 @@ function RecurringTemplatesPanel({
         <Button size="sm" onClick={() => setShowNew(true)}>+ Nueva plantilla</Button>
       </div>
 
+      {/* Explicación del modelo Provisión + Ajuste mes siguiente (Modelo A) */}
+      <details className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 text-sm">
+        <summary className="cursor-pointer font-semibold text-blue-900">
+          📖 ¿Cómo funcionan las provisiones? (modelo de Arrayanes)
+        </summary>
+        <div className="mt-3 space-y-3 text-blue-900/90">
+          <p>
+            Las plantillas marcadas como <strong>📊 Provisión</strong> usan el modelo estándar de contabilidad
+            de condominios venezolanos: <strong>provisión fija mensual + ajuste al mes siguiente</strong>.
+          </p>
+          <div className="rounded bg-white/70 p-3 text-xs">
+            <p className="font-semibold mb-2">Ejemplo concreto — Hidrocapital con provisión Bs 20.000:</p>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-blue-200 text-left">
+                  <th className="pb-1 font-medium">Mes</th>
+                  <th className="pb-1 font-medium">Provisión cobrada</th>
+                  <th className="pb-1 font-medium">Real gastado</th>
+                  <th className="pb-1 font-medium">Ajuste mes siguiente</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                <tr className="border-b border-blue-100">
+                  <td className="py-1">Enero</td>
+                  <td className="py-1">Bs 20.000</td>
+                  <td className="py-1">Bs 25.000</td>
+                  <td className="py-1 text-amber-700">→ Febrero: +Bs 5.000</td>
+                </tr>
+                <tr className="border-b border-blue-100">
+                  <td className="py-1">Febrero</td>
+                  <td className="py-1">Bs 20.000 +5.000 ajuste</td>
+                  <td className="py-1">Bs 18.000</td>
+                  <td className="py-1 text-emerald-700">→ Marzo: −Bs 2.000</td>
+                </tr>
+                <tr>
+                  <td className="py-1">Marzo</td>
+                  <td className="py-1">Bs 20.000 −2.000 ajuste</td>
+                  <td className="py-1">Bs 22.000</td>
+                  <td className="py-1 text-amber-700">→ Abril: +Bs 2.000</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            <strong>¿Por qué este modelo y no cobrar el real directo?</strong> Porque el recibo se emite el día 1 del
+            mes (necesitás cobrar para pagar facturas durante el mes) y las facturas reales (Hidrocapital, Luz, etc.)
+            llegan después. La provisión garantiza liquidez; el ajuste corrige al mes siguiente cuando ya se conoce el
+            costo real.
+          </p>
+          <div className="rounded bg-white/70 p-3 text-xs">
+            <p className="font-semibold mb-1">Flujo operativo:</p>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>Crear la plantilla con monto fijo (ej. Bs 20.000) y marcar <strong>📊 Tratar como provisión</strong>.</li>
+              <li>Cada mes, apretar <strong>"⚡ Aplicar plantillas recurrentes"</strong> → genera la línea
+                <em> "Provisión X"</em> + la línea <em>"Ajuste Provisión X mes anterior"</em> automáticamente.</li>
+              <li>Cuando llegue la factura real del mes (ej. Hidrocapital), registrar el gasto y
+                <strong> elegir la plantilla en el selector "📊 ¿Es el gasto real de alguna provisión?"</strong>.
+                Este gasto NO se factura al residente — solo sirve para calcular el ajuste del mes siguiente.</li>
+              <li>El próximo mes, al aplicar plantillas, el sistema usa el real registrado para calcular el ajuste.</li>
+            </ol>
+          </div>
+          <p className="text-xs italic">
+            Si una plantilla NO está marcada como provisión, el sistema simplemente cobra el monto fijo cada mes sin ajustes.
+          </p>
+        </div>
+      </details>
+
       <div className="overflow-hidden rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left">
