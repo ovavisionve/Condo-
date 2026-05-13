@@ -41,43 +41,38 @@ export function ReceiptPreviewWidget() {
     { enabled: Boolean(communityId && open) },
   );
 
-  // Generación on-demand del PDF preview
-  const previewMut = trpc.finance.invoices.previewReceiptPdf.useMutation();
+  // Generación on-demand del PDF preview — ahora como useQuery para que se
+  // pueda invalidar globalmente cuando se cree un gasto y refresque en vivo.
+  const targetUnitId = selectedUnitId ?? unitsQ.data?.[0]?.id ?? null;
+  const previewQ = trpc.finance.invoices.previewReceiptPdf.useQuery(
+    {
+      organizationId,
+      communityId: communityId ?? "",
+      year,
+      month,
+      unitId: targetUnitId ?? undefined,
+    },
+    {
+      enabled: Boolean(open && communityId && targetUnitId),
+      staleTime: 0,           // siempre refetch al abrir
+      refetchOnWindowFocus: true,
+      refetchOnMount: true,
+    },
+  );
+
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<{ unitCode: string; totalUsd: string; totalBss: string } | null>(null);
 
-  // Cuando cambia unidad, mes o año → regenerar PDF
   useEffect(() => {
-    if (!open || !communityId) return;
-    if (!selectedUnitId && (unitsQ.data?.length ?? 0) === 0) return;
-    let cancelled = false;
-    const run = async () => {
-      // Si no hay unidad seleccionada todavía, tomar la primera
-      const uid = selectedUnitId ?? unitsQ.data?.[0]?.id;
-      if (!uid) return;
-      try {
-        const res = await previewMut.mutateAsync({
-          organizationId, communityId, year, month, unitId: uid,
-        });
-        if (cancelled) return;
-        // data: URI es más compatible que blob: URL en algunos browsers/contextos
-        // (algunos bloquean blob URLs en iframes por CSP/sandbox). Usamos data URI
-        // que renderiza el PDF inline sin depender del PDF viewer del browser
-        // sobre un blob.
-        const dataUrl = `data:application/pdf;base64,${res.base64}`;
-        setPdfUrl((prev) => {
-          if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
-          return dataUrl;
-        });
-        setPreviewMeta({ unitCode: res.unitCode, totalUsd: res.totalUsd, totalBss: res.totalBss });
-      } catch {
-        // El componente maneja los errores abajo
-      }
-    };
-    void run();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, communityId, selectedUnitId, year, month, unitsQ.data?.length]);
+    if (!previewQ.data) return;
+    const dataUrl = `data:application/pdf;base64,${previewQ.data.base64}`;
+    setPdfUrl(dataUrl);
+    setPreviewMeta({
+      unitCode: previewQ.data.unitCode,
+      totalUsd: previewQ.data.totalUsd,
+      totalBss: previewQ.data.totalBss,
+    });
+  }, [previewQ.data]);
 
   // Cleanup blob URL al cerrar
   useEffect(() => {
@@ -244,20 +239,20 @@ export function ReceiptPreviewWidget() {
 
       {/* PDF Preview */}
       <div className="flex-1 bg-slate-100 relative">
-        {previewMut.isPending && (
+        {previewQ.isLoading && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground bg-slate-100/80 z-10">
             ⏳ Generando preview del recibo...
           </div>
         )}
-        {previewMut.error && !previewMut.isPending && (
+        {previewQ.error && !previewQ.isLoading && (
           <div className="p-6 text-sm text-destructive">
-            <strong>Error:</strong> {previewMut.error.message}
+            <strong>Error:</strong> {previewQ.error.message}
             <p className="mt-2 text-xs text-muted-foreground">
               Verificá que haya gastos cargados para {MONTHS[month - 1]} {year} y que la tasa BCV esté disponible.
             </p>
           </div>
         )}
-        {pdfUrl && !previewMut.isPending && (
+        {pdfUrl && !previewQ.isLoading && (
           <>
             {/* Botón flotante "Ver más grande / Reducir" sobre el PDF */}
             <button
@@ -284,7 +279,7 @@ export function ReceiptPreviewWidget() {
             </object>
           </>
         )}
-        {!pdfUrl && !previewMut.isPending && !previewMut.error && (
+        {!pdfUrl && !previewQ.isLoading && !previewQ.error && (
           <div className="p-6 text-center text-sm text-muted-foreground">
             Seleccioná una unidad de la lista para ver su recibo.
           </div>

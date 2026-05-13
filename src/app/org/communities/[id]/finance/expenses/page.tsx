@@ -68,7 +68,13 @@ export default function ExpensesPage() {
 
   const utils = trpc.useUtils();
   const create = trpc.finance.expenses.create.useMutation();
+  const updateExpense = trpc.finance.expenses.update.useMutation();
+  const voidExpense = trpc.finance.expenses.voidOne.useMutation();
   const issueDirectCharge = trpc.finance.expenses.issueDirectCharge.useMutation();
+
+  // Estado para diálogo de edición de gasto
+  type ExpenseRow = NonNullable<typeof list.data>[number];
+  const [editExpense, setEditExpense] = useState<ExpenseRow | null>(null);
 
   // Dialog "Emitir cargo directo"
   const [directChargeExpense, setDirectChargeExpense] = useState<{
@@ -206,6 +212,7 @@ export default function ExpensesPage() {
                   <th className="px-3 py-2">Alcance</th>
                   <th className="px-3 py-2 text-right">USD</th>
                   <th className="px-3 py-2 text-right">Bs</th>
+                  <th className="px-3 py-2 text-xs">Fecha registro</th>
                   <th className="px-3 py-2">Estado</th>
                   <th className="px-3 py-2"></th>
                 </tr>
@@ -233,6 +240,12 @@ export default function ExpensesPage() {
                       </td>
                       <td className="px-3 py-2 text-right font-mono">${Number(e.amountUsd.toString()).toFixed(2)}</td>
                       <td className="px-3 py-2 text-right font-mono text-muted-foreground">{Number(e.amountBss.toString()).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(e.createdAt).toLocaleDateString("es-VE")}
+                        <div className="text-[10px] opacity-70">
+                          {new Date(e.createdAt).toLocaleTimeString("es-VE", { hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-xs">
                         {e.voidedAt
                           ? <span className="text-red-600">Anulado</span>
@@ -242,26 +255,50 @@ export default function ExpensesPage() {
                         }
                       </td>
                       <td className="px-3 py-2">
-                        {exp.isIndividual && exp.targetUnit && !e.invoicedAt && !e.voidedAt && (
-                          <button
-                            className="rounded bg-purple-600 px-2 py-1 text-xs font-medium text-white hover:bg-purple-700 whitespace-nowrap"
-                            onClick={() => setDirectChargeExpense({
-                              id: e.id,
-                              description: e.description,
-                              customCategory: exp.customCategory,
-                              amountUsd: e.amountUsd.toString(),
-                            })}
-                          >
-                            ⚡ Emitir cargo
-                          </button>
-                        )}
+                        <div className="flex flex-wrap gap-1">
+                          {!e.invoicedAt && !e.voidedAt && (
+                            <button
+                              className="text-xs text-blue-700 hover:text-blue-900 font-medium"
+                              onClick={() => setEditExpense(e)}
+                              title="Editar gasto"
+                            >
+                              ✏️ Editar
+                            </button>
+                          )}
+                          {!e.invoicedAt && !e.voidedAt && (
+                            <button
+                              className="text-xs text-destructive hover:opacity-80"
+                              onClick={async () => {
+                                if (!confirm("¿Anular este gasto?")) return;
+                                await voidExpense.mutateAsync({ organizationId, id: e.id });
+                                void list.refetch();
+                              }}
+                              title="Anular gasto"
+                            >
+                              🗑️
+                            </button>
+                          )}
+                          {exp.isIndividual && exp.targetUnit && !e.invoicedAt && !e.voidedAt && (
+                            <button
+                              className="rounded bg-purple-600 px-2 py-1 text-xs font-medium text-white hover:bg-purple-700 whitespace-nowrap"
+                              onClick={() => setDirectChargeExpense({
+                                id: e.id,
+                                description: e.description,
+                                customCategory: exp.customCategory,
+                                amountUsd: e.amountUsd.toString(),
+                              })}
+                            >
+                              ⚡ Emitir cargo
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
                 {list.data?.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="px-3 py-8 text-center text-muted-foreground">
                       Sin gastos con los filtros seleccionados
                     </td>
                   </tr>
@@ -304,9 +341,27 @@ export default function ExpensesPage() {
           onCreated={() => {
             setShowNew(false);
             void list.refetch();
+            // Invalidar el preview del recibo para que refleje el nuevo gasto en vivo
+            void utils.finance.invoices.previewReceiptPdf.invalidate();
           }}
           create={create}
           units={units.data ?? []}
+        />
+      )}
+
+      {/* Dialog editar gasto */}
+      {editExpense && (
+        <EditExpenseDialog
+          organizationId={organizationId}
+          communityId={communityId}
+          expense={editExpense}
+          onClose={() => setEditExpense(null)}
+          onSaved={() => {
+            setEditExpense(null);
+            void list.refetch();
+            void utils.finance.invoices.previewReceiptPdf.invalidate();
+          }}
+          updateExpense={updateExpense}
         />
       )}
 
@@ -454,6 +509,9 @@ function RecurringTemplatesPanel({
       if (editingId) {
         await updateTpl.mutateAsync({
           organizationId, id: editingId,
+          // Cliente pidió poder editar categoría también
+          category: form.category,
+          customCategory: form.customCategory.trim() || null,
           description: form.description,
           supplierName: form.supplierName || undefined,
           amount: Number(form.amountUsd),
@@ -617,14 +675,10 @@ function RecurringTemplatesPanel({
                     communityId={communityId}
                     category={form.category}
                     customCategory={form.customCategory}
-                    disabled={!!editingId}
                     onChange={(category, customCategory) =>
                       setForm((f) => ({ ...f, category, customCategory }))
                     }
                   />
-                  {editingId && (
-                    <p className="text-[10px] text-muted-foreground mt-0.5">No se puede cambiar al editar</p>
-                  )}
                 </div>
                 <div>
                   <Label>Proveedor</Label>
@@ -1090,5 +1144,186 @@ function CategoryCombobox({
         <option value="__new__">➕ Crear nueva categoría…</option>
       )}
     </select>
+  );
+}
+
+// ─── Editar gasto ──────────────────────────────────────────────
+type EditExpenseRow = {
+  id: string;
+  category: string;
+  description: string;
+  amountUsd: { toString(): string };
+  amountBss: { toString(): string };
+  currencyPrimary: string;
+  receiptDate: Date | null;
+  supplierName?: string | null;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  towerScope?: string | null;
+  recurringTemplateId?: string | null;
+  customCategory?: string | null;
+  isIndividual?: boolean;
+};
+
+function EditExpenseDialog({
+  organizationId,
+  communityId,
+  expense,
+  onClose,
+  onSaved,
+  updateExpense,
+}: {
+  organizationId: string;
+  communityId: string;
+  expense: EditExpenseRow;
+  onClose: () => void;
+  onSaved: () => void;
+  updateExpense: ReturnType<typeof trpc.finance.expenses.update.useMutation>;
+}) {
+  const cp = (expense.currencyPrimary === "VES" ? "VES" : "USD") as "USD" | "VES";
+  const initialAmount = cp === "VES"
+    ? Number(expense.amountBss.toString())
+    : Number(expense.amountUsd.toString());
+  const initialDate = expense.receiptDate
+    ? new Date(expense.receiptDate).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+
+  const [form, setForm] = useState({
+    description: expense.description,
+    customCategory: expense.customCategory ?? "",
+    supplierName: expense.supplierName ?? "",
+    invoiceNumber: expense.invoiceNumber ?? "",
+    notes: expense.notes ?? "",
+    amount: initialAmount.toString(),
+    currencyPrimary: cp,
+    receiptDate: initialDate,
+    towerScope: expense.towerScope ?? "",
+    recurringTemplateId: expense.recurringTemplateId ?? "",
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  // Plantillas de provisión activas (para re-vincular)
+  const provisionTemplatesQ = trpc.finance.recurringTemplates.list.useQuery({
+    organizationId, communityId,
+  });
+  const provisionTemplates = (provisionTemplatesQ.data ?? [])
+    .filter((t) => t.isProvision && t.active);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      await updateExpense.mutateAsync({
+        organizationId,
+        id: expense.id,
+        description: form.description,
+        customCategory: form.customCategory.trim() || null,
+        supplierName: form.supplierName || null,
+        invoiceNumber: form.invoiceNumber || null,
+        notes: form.notes || null,
+        amount: Number(form.amount),
+        currencyPrimary: form.currencyPrimary,
+        receiptDate: new Date(form.receiptDate + "T12:00:00"),
+        towerScope: form.towerScope || null,
+        recurringTemplateId: form.recurringTemplateId || null,
+      });
+      onSaved();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg overflow-y-auto max-h-[90vh]">
+        <h3 className="mb-4 text-lg font-semibold">✏️ Editar gasto</h3>
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div>
+            <Label>Descripción</Label>
+            <Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Proveedor</Label>
+              <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Subcategoría / nombre</Label>
+              <Input value={form.customCategory} onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))} maxLength={80} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>📅 Fecha</Label>
+              <Input type="date" value={form.receiptDate} onChange={(e) => setForm((f) => ({ ...f, receiptDate: e.target.value }))} required />
+            </div>
+            <div>
+              <Label># Factura</Label>
+              <Input value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Monto</Label>
+              <Input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} />
+            </div>
+            <div>
+              <Label>Moneda</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.currencyPrimary}
+                onChange={(e) => setForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+              >
+                <option value="VES">Bs — Bolívares</option>
+                <option value="USD">USD — Dólares</option>
+              </select>
+            </div>
+          </div>
+          {!expense.isIndividual && (
+            <div>
+              <Label>Alcance</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.towerScope}
+                onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
+              >
+                <option value="">🏢 General (todas las unidades)</option>
+                <option value="A">🏗️ Torre A</option>
+                <option value="B">🏗️ Torre B</option>
+              </select>
+            </div>
+          )}
+          <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3">
+            <Label className="font-semibold text-amber-900 text-sm">
+              📊 ¿Contra qué provisión?
+            </Label>
+            <select
+              className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={form.recurringTemplateId}
+              onChange={(e) => setForm((f) => ({ ...f, recurringTemplateId: e.target.value }))}
+            >
+              <option value="">— No es contra provisión (gasto normal) —</option>
+              {provisionTemplates.map((t) => {
+                const amt = t.currencyPrimary === "VES" && t.amountBss
+                  ? `Bs ${Number(t.amountBss.toString()).toLocaleString("es-VE", { maximumFractionDigits: 0 })}`
+                  : `$${Number(t.amountUsd.toString()).toFixed(2)}`;
+                return <option key={t.id} value={t.id}>{t.description} ({amt}/mes)</option>;
+              })}
+            </select>
+          </div>
+          <div>
+            <Label>Notas</Label>
+            <Input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" disabled={updateExpense.isPending}>
+              {updateExpense.isPending ? "..." : "💾 Guardar cambios"}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

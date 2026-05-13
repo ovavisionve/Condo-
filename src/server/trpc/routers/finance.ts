@@ -242,6 +242,92 @@ export const financeRouter = router({
         return registerExpense({ ...input, createdById: ctx.user.id });
       }),
 
+    /** Edita un gasto NO facturado. Si ya está facturado, hay que anular el recibo
+     *  para poder editarlo (integridad legal). */
+    update: orgProcedure
+      .input(
+        orgIdInput.extend({
+          id: z.string(),
+          description: z.string().min(2).optional(),
+          customCategory: z.string().max(80).optional().nullable(),
+          supplierName: z.string().optional().nullable(),
+          invoiceNumber: z.string().optional().nullable(),
+          notes: z.string().optional().nullable(),
+          amount: z.coerce.number().positive().optional(),
+          currencyPrimary: z.enum(["VES", "USD"]).optional(),
+          receiptDate: z.coerce.date().optional(),
+          towerScope: z.string().max(20).optional().nullable(),
+          recurringTemplateId: z.string().optional().nullable(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const exp = await ctx.db.expense.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+        });
+        if (exp.invoicedAt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "El gasto ya fue facturado. Anula el recibo para poder editarlo.",
+          });
+        }
+        if (exp.voidedAt) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "El gasto está anulado" });
+        }
+
+        // Si cambió el monto o la moneda primaria, recalcular bimonetario con la tasa
+        // del comprobante (si cambió la fecha, tomamos la nueva).
+        const data: Record<string, unknown> = {};
+        if (input.description !== undefined) data.description = input.description;
+        if (input.customCategory !== undefined) data.customCategory = input.customCategory;
+        if (input.supplierName !== undefined) data.supplierName = input.supplierName;
+        if (input.invoiceNumber !== undefined) data.invoiceNumber = input.invoiceNumber;
+        if (input.notes !== undefined) data.notes = input.notes;
+        if (input.towerScope !== undefined) data.towerScope = input.towerScope;
+        if (input.recurringTemplateId !== undefined) data.recurringTemplateId = input.recurringTemplateId;
+
+        if (input.amount !== undefined || input.currencyPrimary !== undefined || input.receiptDate !== undefined) {
+          const cp = input.currencyPrimary ?? exp.currencyPrimary;
+          const rDate = input.receiptDate ?? exp.receiptDate ?? new Date();
+          const newAmount = input.amount ?? Number(cp === "VES" ? exp.amountBss : exp.amountUsd);
+          const rate = await getCurrentRate("BCV", rDate);
+          const { buildBimonetary } = await import("@/server/services/invoicing");
+          const { amountBss, amountUsd } = buildBimonetary(newAmount, cp, rate.vesPerUsd);
+          data.amountBss = amountBss.toFixed(2);
+          data.amountUsd = amountUsd.toFixed(2);
+          data.exchangeRate = rate.vesPerUsd.toFixed(8);
+          data.exchangeSource = rate.source;
+          data.currencyPrimary = cp;
+          if (input.receiptDate) {
+            data.receiptDate = rDate;
+            // Re-asociar período si cambió la fecha
+            const d = new Date(rDate);
+            data.periodYear = d.getUTCFullYear();
+            data.periodMonth = d.getUTCMonth() + 1;
+          }
+        }
+
+        return ctx.db.expense.update({ where: { id: exp.id }, data });
+      }),
+
+    /** Anula un gasto NO facturado. */
+    voidOne: orgProcedure
+      .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const exp = await ctx.db.expense.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+        });
+        if (exp.invoicedAt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "El gasto ya fue facturado. Anula el recibo para revertirlo.",
+          });
+        }
+        return ctx.db.expense.update({
+          where: { id: exp.id },
+          data: { voidedAt: new Date(), voidReason: input.reason ?? null },
+        });
+      }),
+
     /** Emite un cargo directo (EXTRA_FEE) para un gasto individual ya registrado
      *  pero cuyo período tiene facturas emitidas (no se puede re-emitir el mes). */
     issueDirectCharge: orgProcedure
@@ -700,7 +786,7 @@ export const financeRouter = router({
           unitId: z.string().optional(),
         }),
       )
-      .mutation(async ({ ctx, input }) => {
+      .query(async ({ ctx, input }) => {
         const { prorate } = await import("@/lib/proration");
         const { generateInvoicePdf } = await import("@/server/services/pdf");
 
@@ -3579,6 +3665,9 @@ export const financeRouter = router({
       .input(
         orgIdInput.extend({
           id: z.string(),
+          // El cliente pidió poder editar la categoría también
+          category: z.enum(EXPENSE_CATEGORIES).optional(),
+          customCategory: z.string().max(80).optional().nullable(),
           description: z.string().min(2).optional(),
           supplierName: z.string().optional(),
           amount: z.coerce.number().positive().optional(),
