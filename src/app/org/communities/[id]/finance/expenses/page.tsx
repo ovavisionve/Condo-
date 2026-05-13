@@ -611,15 +611,17 @@ function RecurringTemplatesPanel({
             <form onSubmit={onSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>Categoría base</Label>
-                  <select
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    value={form.category}
-                    onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number] }))}
+                  <Label>Categoría</Label>
+                  <CategoryCombobox
+                    organizationId={organizationId}
+                    communityId={communityId}
+                    category={form.category}
+                    customCategory={form.customCategory}
                     disabled={!!editingId}
-                  >
-                    {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
-                  </select>
+                    onChange={(category, customCategory) =>
+                      setForm((f) => ({ ...f, category, customCategory }))
+                    }
+                  />
                   {editingId && (
                     <p className="text-[10px] text-muted-foreground mt-0.5">No se puede cambiar al editar</p>
                   )}
@@ -628,24 +630,6 @@ function RecurringTemplatesPanel({
                   <Label>Proveedor</Label>
                   <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
                 </div>
-              </div>
-              <div>
-                <Label>
-                  Nombre / Subcategoría personalizada{" "}
-                  <span className="text-muted-foreground text-xs">(opcional — éste es el nombre que aparece en el recibo)</span>
-                </Label>
-                <Input
-                  placeholder="Ej: Hidrocapital, Servicios Generales $70, Piscina..."
-                  value={form.customCategory}
-                  onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
-                  maxLength={80}
-                  disabled={!!editingId}
-                />
-                {editingId && (
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    Para cambiar el nombre, elimina y crea una nueva plantilla
-                  </p>
-                )}
               </div>
               <div>
                 <Label>Descripción</Label>
@@ -941,5 +925,116 @@ function NewExpenseDialog({
         </form>
       </div>
     </div>
+  );
+}
+
+// ─── CategoryCombobox ──────────────────────────────────────────────
+// Combobox que muestra:
+//   • Las 15 categorías base del enum (Electricidad, Agua, …)
+//   • Las categorías personalizadas ya en uso en esta comunidad
+//   • Opción "+ Crear nueva categoría…" que abre input libre
+// Internamente sigue mapeando a (category enum + customCategory string).
+function CategoryCombobox({
+  organizationId,
+  communityId,
+  category,
+  customCategory,
+  disabled,
+  onChange,
+}: {
+  organizationId: string;
+  communityId: string;
+  category: (typeof CATS)[number];
+  customCategory: string;
+  disabled?: boolean;
+  onChange: (category: (typeof CATS)[number], customCategory: string) => void;
+}) {
+  const customCatsQ = trpc.finance.recurringTemplates.customCategories.useQuery(
+    { organizationId, communityId },
+    { staleTime: 30_000 },
+  );
+  const [mode, setMode] = useState<"select" | "create">("select");
+  const [newName, setNewName] = useState("");
+
+  // Valor mostrado en el select: si hay customCategory, ese es el valor "virtual"
+  const selectValue = customCategory
+    ? `custom:${customCategory}`
+    : `base:${category}`;
+
+  if (mode === "create") {
+    return (
+      <div className="flex gap-1">
+        <Input
+          autoFocus
+          placeholder="Nombre de la nueva categoría"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          maxLength={80}
+        />
+        <button
+          type="button"
+          className="text-xs rounded border px-2 hover:bg-emerald-50"
+          onClick={() => {
+            if (newName.trim()) {
+              // Guardar como OTHER + customCategory para que aparezca el nombre nuevo
+              onChange("OTHER", newName.trim());
+            }
+            setMode("select");
+            setNewName("");
+          }}
+          title="Confirmar nueva categoría"
+        >
+          ✓
+        </button>
+        <button
+          type="button"
+          className="text-xs rounded border px-2 hover:bg-slate-50"
+          onClick={() => { setMode("select"); setNewName(""); }}
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <select
+      className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+      value={selectValue}
+      disabled={disabled}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v === "__new__") {
+          setMode("create");
+          return;
+        }
+        if (v.startsWith("custom:")) {
+          const name = v.slice(7);
+          // Buscar la categoría enum original de esta custom (si existe)
+          const found = customCatsQ.data?.find((c) => c.customCategory === name);
+          onChange((found?.category as (typeof CATS)[number]) ?? "OTHER", name);
+        } else if (v.startsWith("base:")) {
+          onChange(v.slice(5) as (typeof CATS)[number], "");
+        }
+      }}
+    >
+      <optgroup label="Categorías base">
+        {CATS.map((c) => (
+          <option key={c} value={`base:${c}`}>{CAT_LABELS[c]}</option>
+        ))}
+      </optgroup>
+      {(customCatsQ.data?.length ?? 0) > 0 && (
+        <optgroup label="Categorías personalizadas">
+          {customCatsQ.data?.map((c) => (
+            <option key={c.customCategory} value={`custom:${c.customCategory}`}>
+              ✨ {c.customCategory}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {!disabled && (
+        <option value="__new__">➕ Crear nueva categoría…</option>
+      )}
+    </select>
   );
 }

@@ -3463,6 +3463,49 @@ export const financeRouter = router({
         }),
       ),
 
+    /**
+     * Lista las categorías personalizadas YA EN USO en la comunidad
+     * (de plantillas activas y de gastos no anulados). Las muestra el form de
+     * "Nueva plantilla" como opciones reutilizables además del enum base.
+     * Pedido del cliente: poder crear/reusar categorías nuevas.
+     */
+    customCategories: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const [fromTemplates, fromExpenses] = await Promise.all([
+          ctx.db.recurringExpenseTemplate.findMany({
+            where: {
+              organizationId: input.organizationId,
+              communityId: input.communityId,
+              customCategory: { not: null },
+            },
+            select: { customCategory: true, category: true },
+            distinct: ["customCategory"],
+          }),
+          ctx.db.expense.findMany({
+            where: {
+              organizationId: input.organizationId,
+              communityId: input.communityId,
+              voidedAt: null,
+              customCategory: { not: null },
+            },
+            select: { customCategory: true, category: true },
+            distinct: ["customCategory"],
+            take: 100,
+          }),
+        ]);
+        // Dedupe por (customCategory||category)
+        const map = new Map<string, { customCategory: string; category: string }>();
+        for (const r of [...fromTemplates, ...fromExpenses]) {
+          if (!r.customCategory) continue;
+          const key = r.customCategory.trim().toLowerCase();
+          if (!map.has(key)) {
+            map.set(key, { customCategory: r.customCategory.trim(), category: r.category });
+          }
+        }
+        return Array.from(map.values()).sort((a, b) => a.customCategory.localeCompare(b.customCategory));
+      }),
+
     create: orgProcedure
       .input(
         orgIdInput.extend({
