@@ -2061,7 +2061,103 @@ REGLAS CRÍTICAS:
 - Minimiza las llamadas a funciones: si ya tienes la información para responder, responde de inmediato sin hacer llamadas extra.
 - Para buscar por nombre/cédula/email usa search_resident (incluye deuda automáticamente).
 - Para detalles adicionales de una unidad (vehículos, facturas desglosadas, órdenes de trabajo) usa get_unit_detail.
-- Para buscar por piso/torre usa get_units.`;
+- Para buscar por piso/torre usa get_units.
+
+═══════════════════════════════════════════════════════════════════
+GUÍA DE PROCESOS (para asistir al admin paso a paso)
+═══════════════════════════════════════════════════════════════════
+Cuando el admin pregunte "cómo hago X" o "no me sale Y", usa esta guía
+para responder con instrucciones precisas. Cita el menú exacto y el flujo.
+
+━━━ 1. CICLO MENSUAL DE FACTURACIÓN ━━━
+Flujo ideal cada mes:
+  1° del mes: Aplicar plantillas recurrentes (Finanzas → Gastos → tab
+    Plantillas → ⚡ Aplicar plantillas recurrentes). Esto crea PROVISION_BASE
+    del mes + AJUSTE PROVISION del mes anterior automáticamente.
+  Durante el mes: Registrar gastos reales. Si es factura real de un servicio
+    provisionado (Hidrocapital, Luz, etc.), VINCULAR a la plantilla en la
+    caja ámbar "📊 ¿Es el gasto real de alguna provisión?".
+  Fin de mes: Emitir recibos (Finanzas → Recibos → ✨ Emitir recibos).
+  Cierre: Finanzas → General → 🔒 Cerrar mes (bloquea modificaciones).
+
+━━━ 2. PROVISIONES (Modelo A — el que usa Arrayanes) ━━━
+La provisión = monto fijo estimado que se cobra cada mes (ej. Bs 20.000
+de Hidrocapital). Durante el mes, los gastos REALES vinculados sirven solo
+para calcular el AJUSTE del mes siguiente (real − provisión).
+Si real > provisión → ajuste positivo (se cobra extra al residente).
+Si real < provisión → ajuste negativo (crédito al residente).
+Las provisiones NO se cobran "el real del mismo mes" — eso es otro modelo
+(reembolso). El sistema implementa el Modelo A (provisión + ajuste mes siguiente)
+porque coincide con el PDF Aviso de Cobro tradicional de Arrayanes.
+
+━━━ 3. FONDO DE RESERVA AUTOMÁTICO ━━━
+Cada Community tiene reserveFundPct (default 0.10 = 10%). El sistema
+calcula 10% del subtotal de gastos comunes prorrateados y agrega línea
+"Fondo de Reserva (10%)" al final de GASTOS COMUNES. Si ya hay un Expense
+manual con category=RESERVE_FUND, NO duplica.
+
+━━━ 4. PREVIEW EN VIVO ━━━
+Botón flotante 📄 (esquina inferior izquierda, en cualquier pantalla admin).
+Muestra el PDF del recibo del mes con el formato real que verá el residente.
+Se actualiza automáticamente cuando: creás/editás gastos, plantillas,
+ingresos, cierras/reabres mes. Si no refresca: Ctrl+Shift+R.
+
+━━━ 5. CONCILIACIÓN BANCARIA ━━━
+Finanzas → Conciliación → subir CSV/Excel/OFX del banco. El sistema detecta
+formato, separador y cabecera. Matchea por: referencia exacta, referencia
+parcial, código de unidad, monto en Bs. Etiqueta comisiones (1% banca,
+mantenimiento de cuenta) e IGTF 3% automáticamente.
+
+━━━ 6. TASA BCV ━━━
+Se actualiza por cron diario (6pm Caracas) + auto-refresh en background
+cuando el admin entra a /finance y la tasa no es de hoy. Manualmente:
+Finanzas → General → 🔄 Actualizar desde BCV. Si BCV no responde, se puede
+cargar tasa manual (queda marcada como source=MANUAL).
+Hay 85+ tasas históricas cargadas desde enero 2026: cuando se registra
+un pago con fecha pasada, se usa la tasa histórica correcta automáticamente.
+
+━━━ 7. CIERRE DE MES ━━━
+Finanzas → General → card 🔒 Cierre de mes. Cerrar bloquea creación/edición
+de gastos e ingresos para ese período. Excepción: gastos vinculados a
+plantilla de provisión SÍ se pueden registrar aunque el mes esté cerrado
+(no se facturan, solo sirven para ajuste). Reabrir: mismo card, botón
+🔓 Reabrir mes.
+
+━━━ 8. MANTENIMIENTO CON ALCANCE TORRE ━━━
+Mantenimiento → + Nueva orden → selector Alcance: 🏢 Todo / 🏗️ Torre A /
+🏗️ Torre B. Para una unidad específica, usar el campo "Unidad específica"
+(deshabilita el selector de torre).
+
+━━━ 9. VISITANTES DESDE PORTAL RESIDENTE ━━━
+El residente entra al portal → tab Visitantes → + Solicitar. El sistema
+crea Visitor con accessCode único. El vigilante en /security ve la lista
+con PENDING primero (fondo ámbar destacado) y reloj en tiempo real arriba.
+Apreta ✓ Ingreso al llegar (status → CHECKED_IN) y ↑ Salida al salir.
+
+━━━ 10. RECIBO COMO TÍTULO EJECUTIVO ART. 14 LPH ━━━
+Los recibos emitidos tienen fuerza ejecutiva según Art. 14 LPH. Para
+cobranza extrajudicial: Finanzas → Recibos → seleccionar deudor → 📜
+Generar carta legal. El PDF incluye: monto adeudado, días de mora,
+intimación según LPH, plazo de pago.
+
+━━━ 11. PLANTILLAS CON CATEGORÍAS NUEVAS ━━━
+Las 15 categorías del enum (Electricidad, Agua, etc.) están fijas, pero
+podés crear "categorías virtuales" usando el dropdown CategoryCombobox:
+seleccionar "+ Crear nueva categoría", escribir el nombre (ej. "Hidrocapital"),
+se guarda como category=OTHER + customCategory="Hidrocapital". El nombre
+aparece en el recibo y queda disponible en futuras plantillas/gastos.
+
+━━━ 12. ERRORES COMUNES Y CÓMO RESOLVERLOS ━━━
+"Total no puede ser negativo" → era un bug ya arreglado en preview.
+  Si aparece: Ctrl+Shift+R.
+"Ya se emitieron facturas para X/Y" → el mes ya tiene recibos emitidos.
+  Para agregar gasto: marcar isIndividual o vincular a plantilla de provisión.
+"El mes X/Y está cerrado" → Reabrir desde Finanzas → General.
+"Ya existe un registro con el mismo valor en: userId" → 2 personas comparten
+  email. El sistema desvincula automáticamente al anterior — solo notificar.
+"No están saliendo las provisiones del mes" → bug ya corregido (provision y
+  ajuste se colapsaban en una línea). Ctrl+Shift+R.
+`;
 
   const toolDeclarations: Tool[] = [
     { functionDeclarations: isCommercial ? COMMERCIAL_TOOLS : RESIDENTIAL_TOOLS },
