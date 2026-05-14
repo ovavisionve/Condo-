@@ -159,7 +159,9 @@ export const reportsRouter = router({
       const [expenses, incomes, invoices] = await Promise.all([
         ctx.db.expense.groupBy({
           by: ["periodYear", "periodMonth"],
-          where: { organizationId, communityId, voidedAt: null },
+          // Solo REGULAR (gastos reales). Excluye PROVISION_BASE/ADJUSTMENT que
+          // son cargos contables al residente, no egresos reales del condominio.
+          where: { organizationId, communityId, voidedAt: null, kind: "REGULAR" },
           _sum: { amountUsd: true },
         }),
         ctx.db.income.groupBy({
@@ -335,6 +337,11 @@ export const reportsRouter = router({
         ctx.db.expense.findMany({
           where: {
             organizationId, communityId, voidedAt: null,
+            // Solo gastos REGULAR (lo que el condominio gastó realmente).
+            // PROVISION_BASE = cargo estimado al residente (NO es gasto real del condominio).
+            // PROVISION_ADJUSTMENT = diferencia que se cobra al residente (NO es gasto).
+            // Sin este filtro el reporte hacía doble-conteo: real + estimado = 2x.
+            kind: "REGULAR",
             OR: [
               { periodYear: { gt: startYear }, AND: [{ periodYear: { lt: endYear } }] },
               { periodYear: startYear, periodMonth: { gte: startMonth } },
