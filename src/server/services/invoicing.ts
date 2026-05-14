@@ -436,6 +436,42 @@ export async function issueMonthlyInvoices(params: {
     }
   }
 
+  // FONDO DE RESERVA auto-calculado (10% del subtotal de gastos comunes prorrateados).
+  // Solo si community.reserveFundPct > 0 y no hay un Expense manual de RESERVE_FUND
+  // para el mismo período (evita doble cobro).
+  const reservePctRec = (community as { reserveFundPct?: { toString(): string } }).reserveFundPct;
+  const reservePct = new Decimal(reservePctRec?.toString() ?? "0.10");
+  const hasManualReserveExpense = expenses.some((e) => e.category === "RESERVE_FUND");
+  if (reservePct.gt(0) && !hasManualReserveExpense) {
+    // Por cada unidad: sumar las líneas de "common" (excluyendo fee y descuentos),
+    // calcular X% y agregar línea Fondo de Reserva.
+    for (const u of units) {
+      const commonLinesForUnit = draftLines.filter(
+        (l) =>
+          l.unitId === u.id &&
+          l.sortOrder <= 4 && // 1=prov/ajuste, 4=gasto general
+          l.description !== "Cuota de condominio mensual",
+      );
+      const subtotalUsd = commonLinesForUnit.reduce((s, l) => s.plus(l.usd), new Decimal(0));
+      const subtotalBss = commonLinesForUnit.reduce((s, l) => s.plus(l.bss), new Decimal(0));
+      const reserveUsd = subtotalUsd.mul(reservePct);
+      const reserveBss = subtotalBss.mul(reservePct);
+      if (reserveUsd.gt("0.005")) {
+        draftLines.push({
+          unitId: u.id,
+          expenseId: null,
+          description: `Fondo de Reserva (${reservePct.mul(100).toFixed(0)}%)`,
+          usd: reserveUsd,
+          bss: reserveBss,
+          aliquot: new Decimal(u.aliquot.toString()),
+          sortOrder: 4,
+          groupKey: "z-reserve-fund",
+          subOrder: 99,
+        });
+      }
+    }
+  }
+
   // ── Construir datos de invoices + items con IDs pre-generados ─────────────
   // Usar IDs generados aquí permite usar createMany (1 query) en lugar de
   // 188 create() secuenciales (188 round-trips). Reduce de ~8s a <1s.

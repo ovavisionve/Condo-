@@ -811,7 +811,7 @@ export const financeRouter = router({
         const [community, units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
           ctx.db.community.findFirstOrThrow({
             where: { id: input.communityId, organizationId: input.organizationId },
-            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true },
+            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true },
           }),
           ctx.db.unit.findMany({
             where: { communityId: input.communityId, active: true, deletedAt: null },
@@ -1122,6 +1122,35 @@ export const financeRouter = router({
             cuotaBss: feeBss,
             section: "common",
           });
+        }
+
+        // 5. FONDO DE RESERVA auto-calculado (10% del subtotal de gastos comunes)
+        // Práctica venezolana: el fondo de reserva es un porcentaje (típicamente
+        // 10%) del total de gastos comunes del mes. Coincide con el PDF Arrayanes:
+        // SUBTOTAL GASTOS COMUNES 1.084.566,33 × 10% = 108.456,63 FONDO RESERVA.
+        const reservePct = new Decimal(community.reserveFundPct?.toString() ?? "0.10");
+        if (reservePct.gt(0)) {
+          // Verificar que NO haya ya un Expense de categoría RESERVE_FUND para el
+          // período (evita doble cobro si el admin ya lo cargó manualmente).
+          const hasManualReserve = expenses.some((e) => e.category === "RESERVE_FUND");
+          if (!hasManualReserve) {
+            // Sumar las cuotas USD/Bss de gastos comunes (sección "common")
+            // SIN incluir Cuota mensual ni torre — solo gastos prorrateados generales.
+            const commonLines = lines.filter((l) => l.section === "common" && l.description !== "Cuota de condominio mensual");
+            const subtotalUsd = commonLines.reduce((s, l) => s.plus(l.cuotaUsd), new Decimal(0));
+            const subtotalBss = commonLines.reduce((s, l) => s.plus(l.cuotaBss), new Decimal(0));
+            const reserveUsd = subtotalUsd.mul(reservePct);
+            const reserveBss = subtotalBss.mul(reservePct);
+            if (reserveUsd.gt(0.005)) {
+              lines.push({
+                description: `Fondo de Reserva (${reservePct.mul(100).toFixed(0)}%)`,
+                baseBss: reserveBss.div(targetUnit.aliquot.toString()).mul(100), // estimación monto base condominio
+                cuotaUsd: reserveUsd,
+                cuotaBss: reserveBss,
+                section: "common",
+              });
+            }
+          }
         }
 
         // ── Armar sections para el PDF ──────────────────────────────────

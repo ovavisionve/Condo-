@@ -148,6 +148,10 @@ model Community {
   monthlyFeeSetAt     DateTime?
   // Configuración de facturación
   dueDaysAfterIssue   Int       @default(5)  // días desde emisión hasta vencimiento de la factura
+  /// Porcentaje del Fondo de Reserva auto-calculado sobre el subtotal de Gastos Comunes.
+  /// Por defecto 10% (estándar venezolano según práctica de condominios). Si se setea en 0,
+  /// el fondo de reserva no se agrega automáticamente y debe cargarse manualmente.
+  reserveFundPct      Decimal   @default("0.10") @db.Decimal(5, 4)
   // Metadata
   foundedAt       DateTime?
   notes           String?
