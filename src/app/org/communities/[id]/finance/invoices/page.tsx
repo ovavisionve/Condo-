@@ -35,6 +35,7 @@ export default function InvoicesPage() {
     { refetchInterval: 60_000 }, // refresca cada 60 s
   );
   const issue        = trpc.finance.invoices.issueMonth.useMutation();
+  const reissue      = trpc.finance.invoices.reissueMonth.useMutation();
   const publishDrafts = trpc.finance.invoices.publishDrafts.useMutation();
   const sendBatch    = trpc.finance.invoices.sendEmailBatch.useMutation();
   const sendEmail    = trpc.finance.invoices.sendByEmail.useMutation();
@@ -55,6 +56,43 @@ export default function InvoicesPage() {
   );
 
   const draftCount = list.data?.filter(inv => inv.status === "DRAFT").length ?? 0;
+
+  // Facturas activas (no anuladas, no borrador) del período — sirven para saber
+  // si ya se emitió. Si hay facturas activas pero NINGUNA cobrada, se puede
+  // re-emitir para incluir nuevos gastos sin perder integridad.
+  const activeIssued = list.data?.filter(
+    inv => inv.status !== "VOIDED" && inv.status !== "DRAFT",
+  ) ?? [];
+  const hasActiveIssued = activeIssued.length > 0;
+  const anyPaid = activeIssued.some(
+    inv => Number(inv.paidUsd) > 0 || Number(inv.paidBss) > 0,
+  );
+  const canReissue = hasActiveIssued && !anyPaid;
+
+  const onReissue = async () => {
+    if (!canReissue) return;
+    if (!window.confirm(
+      `¿Re-emitir todos los recibos de ${String(month).padStart(2, "0")}/${year}?\n\n` +
+      `• Se anularán los ${activeIssued.length} recibo(s) actuales\n` +
+      `• Los gastos del período quedan disponibles otra vez\n` +
+      `• Se generarán recibos nuevos incluyendo cualquier gasto agregado\n\n` +
+      `Solo se permite si ningún recibo tiene pagos asignados.`,
+    )) return;
+    setError(null); setSuccess(null);
+    try {
+      const due = new Date(); due.setDate(due.getDate() + 7);
+      const r = await reissue.mutateAsync({
+        organizationId, communityId, year, month,
+        dueDate: due,
+      });
+      setSuccess(`🔄 Re-emitidos ${r.invoicesCount} recibo(s) para ${String(month).padStart(2, "0")}/${year}.`);
+      void list.refetch();
+      void utils.finance.aging.invalidate();
+      void utils.finance.invoices.previewReceiptPdf.invalidate();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error al re-emitir");
+    }
+  };
 
   const onPublishDrafts = async () => {
     setError(null); setSuccess(null);
@@ -197,9 +235,25 @@ export default function InvoicesPage() {
           <Button variant="outline" onClick={() => onIssue(true)} disabled={issue.isPending} title="Crea los Recibos de Condominio en borrador. Se publicarán y enviarán por email el día 1 del mes siguiente automáticamente.">
             {issue.isPending ? "..." : "📋 Preparar borrador"}
           </Button>
-          <Button onClick={() => setShowWizard(true)} disabled={issue.isPending}>
-            ✨ Emitir recibos
-          </Button>
+          {canReissue ? (
+            <Button
+              onClick={onReissue}
+              disabled={reissue.isPending}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              title="Anula los recibos actuales y los vuelve a generar incluyendo cualquier gasto agregado después de la emisión. Solo posible si NADIE ha pagado todavía."
+            >
+              {reissue.isPending ? "Re-emitiendo..." : "🔄 Re-emitir período"}
+            </Button>
+          ) : (
+            <Button onClick={() => setShowWizard(true)} disabled={issue.isPending}>
+              ✨ Emitir recibos
+            </Button>
+          )}
+          {hasActiveIssued && anyPaid && (
+            <p className="text-xs text-muted-foreground self-center max-w-[180px]">
+              ℹ️ Para agregar gastos al período, anula primero los pagos recibidos.
+            </p>
+          )}
         </div>
       </div>
 

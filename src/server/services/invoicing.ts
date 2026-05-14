@@ -96,6 +96,22 @@ export type CreateExpenseInput = {
  * porque tienen el flujo de cargo directo.
  */
 export async function registerExpense(input: CreateExpenseInput) {
+  // Normalizar towerScope: si el edificio tiene UNA sola torre y el admin marca
+  // ese mismo nombre, lo guardamos como NULL (= "general"). Evita que el gasto
+  // se trate como "de torre" cuando en realidad cubre a todas las unidades.
+  // Pedido cliente Castaños: "Es una sola torre, es la Torre B".
+  if (input.towerScope) {
+    const distinctTowers = await db.unit.findMany({
+      where: { communityId: input.communityId, active: true, deletedAt: null, tower: { not: null } },
+      select: { tower: true },
+      distinct: ["tower"],
+    });
+    const towerNames = distinctTowers.map((u) => u.tower).filter((t): t is string => !!t);
+    if (towerNames.length <= 1) {
+      input.towerScope = null;
+    }
+  }
+
   // Si está vinculado a plantilla de provisión: es gasto REAL del condominio que
   // no se factura al residente, solo se usa para calcular el AJUSTE del mes siguiente.
   // No aplicar el bloqueo "ya emitido" — siempre se puede registrar el real aunque

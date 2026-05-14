@@ -217,7 +217,10 @@ export const financeRouter = router({
         }
         return ctx.db.expense.findMany({
           where: where as import("@prisma/client").Prisma.ExpenseWhereInput,
-          include: { targetUnit: { select: { code: true } } },
+          include: {
+            targetUnit: { select: { code: true } },
+            recurringTemplate: { select: { description: true, isProvision: true } },
+          },
           orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { createdAt: "desc" }],
         });
       }),
@@ -555,6 +558,100 @@ export const financeRouter = router({
           actorId: ctx.user.id,
         }),
       ),
+
+    /**
+     * Re-emite las facturas del período: anula todas las facturas activas del mes
+     * (siempre que ninguna tenga pagos asignados), reabre los Expense vinculados
+     * (`invoicedAt=null`), y vuelve a llamar a issueMonthlyInvoices. Útil cuando
+     * el admin necesita agregar un gasto común después de haber emitido pero antes
+     * de cobrar nada (caso Reinaldo en demo Castaños).
+     */
+    reissueMonth: orgProcedure
+      .input(
+        orgIdInput.extend({
+          communityId: z.string(),
+          year: z.number().int().min(2020).max(2100),
+          month: z.number().int().min(1).max(12),
+          dueDate: z.coerce.date().transform((d) =>
+            new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0))
+          ),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        // 1. Cargar facturas activas del período
+        const activeInvoices = await ctx.db.invoice.findMany({
+          where: {
+            communityId: input.communityId,
+            organizationId: input.organizationId,
+            periodYear: input.year,
+            periodMonth: input.month,
+            status: { not: "VOIDED" },
+          },
+          select: { id: true, paidUsd: true, paidBss: true, payments: { select: { id: true } } },
+        });
+        if (activeInvoices.length === 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `No hay facturas emitidas para ${String(input.month).padStart(2, "0")}/${input.year}. Usa "Emitir recibos del mes" directamente.`,
+          });
+        }
+        // 2. Verificar que ninguna tenga pagos
+        const withPayments = activeInvoices.filter(
+          (i) => Number(i.paidUsd) > 0 || Number(i.paidBss) > 0 || i.payments.length > 0,
+        );
+        if (withPayments.length > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `No se puede re-emitir: ${withPayments.length} factura(s) ya tienen pagos asignados. Anula los pagos primero.`,
+          });
+        }
+        // 3. Recolectar IDs de Expense incluidos en los invoiceItems
+        const invoiceIds = activeInvoices.map((i) => i.id);
+        const items = await ctx.db.invoiceItem.findMany({
+          where: { invoiceId: { in: invoiceIds } },
+          select: { expenseId: true },
+        });
+        const expenseIds = Array.from(
+          new Set(items.map((i) => i.expenseId).filter((id): id is string => !!id)),
+        );
+        // 4. Anular facturas + reabrir Expenses en transacción
+        await ctx.db.$transaction(async (tx) => {
+          await tx.invoice.updateMany({
+            where: { id: { in: invoiceIds } },
+            data: {
+              status: "VOIDED",
+              voidedAt: new Date(),
+              voidReason: "Re-emisión del período por cambios en gastos",
+            },
+          });
+          if (expenseIds.length > 0) {
+            await tx.expense.updateMany({
+              where: { id: { in: expenseIds } },
+              data: { invoicedAt: null },
+            });
+          }
+          await tx.auditLog.create({
+            data: {
+              organizationId: input.organizationId,
+              actorId: ctx.user.id,
+              action: "INVOICE_VOIDED",
+              entityType: "Community",
+              entityId: input.communityId,
+              before: { invoicesVoided: activeInvoices.length, expensesReopened: expenseIds.length },
+              after: { year: input.year, month: input.month },
+            },
+          });
+        });
+        // 5. Re-emitir (fuera de transacción — issueMonthlyInvoices abre la suya)
+        return issueMonthlyInvoices({
+          organizationId: input.organizationId,
+          communityId: input.communityId,
+          year: input.year,
+          month: input.month,
+          dueDate: input.dueDate,
+          createdById: ctx.user.id,
+        });
+      }),
 
     /** Genera el PDF del recibo y lo devuelve como base64 para descarga en el cliente. */
     downloadPdf: orgProcedure

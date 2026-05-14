@@ -94,6 +94,18 @@ export default function ExpensesPage() {
   // Unidades para gastos individuales
   const units = trpc.org.units.list.useQuery({ organizationId, communityId });
 
+  // Torres ÚNICAS reales del edificio. Si solo hay 1 (o ninguna), todos los gastos
+  // se tratan como "General" automáticamente — no tiene sentido elegir torre.
+  // Pedido del cliente: "En los castaños es una sola torre, es la Torre B".
+  const towers = Array.from(
+    new Set(
+      (units.data ?? [])
+        .map((u) => (u as { tower?: string | null }).tower)
+        .filter((t): t is string => !!t),
+    ),
+  ).sort();
+  const multipleTowers = towers.length > 1;
+
   const totalUsd  = list.data?.reduce((s, e) => s + Number(e.amountUsd.toString()), 0) ?? 0;
   const pendingUsd = list.data?.filter(e => !e.invoicedAt && !e.voidedAt)
     .reduce((s, e) => s + Number(e.amountUsd.toString()), 0) ?? 0;
@@ -153,19 +165,22 @@ export default function ExpensesPage() {
                 {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
               </select>
             </div>
-            <div>
-              <Label className="text-xs">Torre / Alcance</Label>
-              <select
-                className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
-                value={filterTower}
-                onChange={(e) => setFilterTower(e.target.value)}
-              >
-                <option value="">Todas</option>
-                <option value="__general__">Solo generales</option>
-                <option value="A">Torre A</option>
-                <option value="B">Torre B</option>
-              </select>
-            </div>
+            {multipleTowers && (
+              <div>
+                <Label className="text-xs">Torre / Alcance</Label>
+                <select
+                  className="flex h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={filterTower}
+                  onChange={(e) => setFilterTower(e.target.value)}
+                >
+                  <option value="">Todas</option>
+                  <option value="__general__">Solo generales</option>
+                  {towers.map((t) => (
+                    <option key={t} value={t}>Torre {t}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <Label className="text-xs">Estado</Label>
               <select
@@ -227,11 +242,23 @@ export default function ExpensesPage() {
                     towerScope?: string | null;
                     isIndividual?: boolean;
                     targetUnit?: { code: string } | null;
+                    recurringTemplate?: { description: string; isProvision: boolean } | null;
                   };
+                  const linkedToProvision = !!exp.recurringTemplate?.isProvision;
                   return (
                     <tr key={e.id} className="border-t hover:bg-muted/30">
                       <td className="px-3 py-2">{categoryLabel(e.category, exp.customCategory)}</td>
-                      <td className="px-3 py-2">{e.description}</td>
+                      <td className="px-3 py-2">
+                        {e.description}
+                        {linkedToProvision && (
+                          <span
+                            className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                            title={`Vinculado a la provisión "${exp.recurringTemplate?.description}". Este gasto NO se cobra al residente — se usa para calcular el AJUSTE del mes siguiente (real vs. provisionado).`}
+                          >
+                            🔗 Provisión {exp.recurringTemplate?.description} (no se cobra)
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-muted-foreground">{e.supplierName ?? "—"}</td>
                       <td className="px-3 py-2 text-xs">
                         {exp.isIndividual && exp.targetUnit
@@ -330,6 +357,7 @@ export default function ExpensesPage() {
           createTpl={createTpl}
           deleteTpl={deleteTpl}
           updateTpl={updateTpl}
+          towers={towers}
           onMutated={() => {
             void templates.refetch();
             void list.refetch();
@@ -356,6 +384,7 @@ export default function ExpensesPage() {
           }}
           create={create}
           units={units.data ?? []}
+          towers={towers}
         />
       )}
 
@@ -372,6 +401,7 @@ export default function ExpensesPage() {
             void utils.finance.invoices.previewReceiptPdf.invalidate();
           }}
           updateExpense={updateExpense}
+          towers={towers}
         />
       )}
 
@@ -451,6 +481,7 @@ function RecurringTemplatesPanel({
   deleteTpl,
   updateTpl,
   onMutated,
+  towers,
 }: {
   organizationId: string;
   communityId: string;
@@ -460,7 +491,9 @@ function RecurringTemplatesPanel({
   deleteTpl: ReturnType<typeof trpc.finance.recurringTemplates.delete.useMutation>;
   updateTpl: ReturnType<typeof trpc.finance.recurringTemplates.update.useMutation>;
   onMutated: () => void;
+  towers: string[];
 }) {
+  const multipleTowers = towers.length > 1;
   const [showNew, setShowNew] = useState(false);
   // Edición de plantillas existentes
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -783,18 +816,25 @@ function RecurringTemplatesPanel({
                     <option value="USD">USD — Dólares</option>
                   </select>
                 </div>
-                <div>
-                  <Label>Alcance</Label>
-                  <select
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    value={form.towerScope}
-                    onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
-                  >
-                    <option value="">General</option>
-                    <option value="A">Torre A</option>
-                    <option value="B">Torre B</option>
-                  </select>
-                </div>
+                {multipleTowers ? (
+                  <div>
+                    <Label>Alcance</Label>
+                    <select
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={form.towerScope}
+                      onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
+                    >
+                      <option value="">General</option>
+                      {towers.map((t) => (
+                        <option key={t} value={t}>Torre {t}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground flex items-end pb-2">
+                    Alcance: General (1 torre)
+                  </div>
+                )}
               </div>
               <p className="text-xs text-muted-foreground -mt-1">
                 💡 Si elegís <strong>Bs</strong>, el monto se mantiene fijo en bolívares cada mes
@@ -849,6 +889,7 @@ function NewExpenseDialog({
   onCreated,
   create,
   units,
+  towers,
 }: {
   organizationId: string;
   communityId: string;
@@ -858,7 +899,9 @@ function NewExpenseDialog({
   onCreated: () => void;
   create: ReturnType<typeof trpc.finance.expenses.create.useMutation>;
   units: Array<{ id: string; code: string; tower?: string | null }>;
+  towers: string[];
 }) {
+  const multipleTowers = towers.length > 1;
   // Default date: hoy en formato YYYY-MM-DD para input type="date"
   const todayStr = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
@@ -1081,7 +1124,7 @@ function NewExpenseDialog({
                   }))}
                 />
               </div>
-            ) : (
+            ) : multipleTowers ? (
               <div>
                 <Label className="text-xs">Torre (solo si aplica a una torre)</Label>
                 <select
@@ -1090,10 +1133,15 @@ function NewExpenseDialog({
                   onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
                 >
                   <option value="">General — todas las unidades</option>
-                  <option value="A">Torre A</option>
-                  <option value="B">Torre B</option>
+                  {towers.map((t) => (
+                    <option key={t} value={t}>Torre {t}</option>
+                  ))}
                 </select>
               </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                ℹ️ Este edificio tiene una sola torre — el gasto se aplica a todas las unidades.
+              </p>
             )}
           </div>
 
@@ -1249,6 +1297,7 @@ function EditExpenseDialog({
   onClose,
   onSaved,
   updateExpense,
+  towers,
 }: {
   organizationId: string;
   communityId: string;
@@ -1256,7 +1305,9 @@ function EditExpenseDialog({
   onClose: () => void;
   onSaved: () => void;
   updateExpense: ReturnType<typeof trpc.finance.expenses.update.useMutation>;
+  towers: string[];
 }) {
+  const multipleTowers = towers.length > 1;
   const cp = (expense.currencyPrimary === "VES" ? "VES" : "USD") as "USD" | "VES";
   const initialAmount = cp === "VES"
     ? Number(expense.amountBss.toString())
@@ -1356,7 +1407,7 @@ function EditExpenseDialog({
               </select>
             </div>
           </div>
-          {!expense.isIndividual && (
+          {!expense.isIndividual && multipleTowers && (
             <div>
               <Label>Alcance</Label>
               <select
@@ -1365,8 +1416,9 @@ function EditExpenseDialog({
                 onChange={(e) => setForm((f) => ({ ...f, towerScope: e.target.value }))}
               >
                 <option value="">🏢 General (todas las unidades)</option>
-                <option value="A">🏗️ Torre A</option>
-                <option value="B">🏗️ Torre B</option>
+                {towers.map((t) => (
+                  <option key={t} value={t}>🏗️ Torre {t}</option>
+                ))}
               </select>
             </div>
           )}
