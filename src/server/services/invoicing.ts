@@ -26,6 +26,23 @@ export function buildBimonetary(
   return { amountBss: a, amountUsd: a.div(r), rate: r };
 }
 
+/**
+ * Prorratea respetando signo. Necesario para PROVISION_ADJUSTMENT donde
+ * el ajuste puede ser negativo (real < provisión = crédito al residente).
+ * El prorate base lanza error con totales negativos.
+ */
+export function prorateSignedExported<K extends string>(
+  total: Decimal.Value,
+  parts: ReadonlyArray<{ key: K; aliquot: Decimal.Value }>,
+): Map<K, Decimal> {
+  const d = new Decimal(total);
+  if (d.gte(0)) return prorate(d.toFixed(2), parts);
+  const abs = prorate(d.abs().toFixed(2), parts);
+  const out = new Map<K, Decimal>();
+  for (const [k, v] of abs) out.set(k, v.neg());
+  return out;
+}
+
 export type CreateExpenseInput = {
   organizationId: string;
   communityId: string;
@@ -325,20 +342,8 @@ export async function issueMonthlyInvoices(params: {
     });
   }
 
-  /** Helper: prorratea respetando signo. Necesario para PROVISION_ADJUSTMENT
-   *  donde el ajuste puede ser negativo (real < provisión = crédito al residente). */
-  function prorateSigned<K extends string>(
-    total: Decimal.Value,
-    parts: ReadonlyArray<{ key: K; aliquot: Decimal.Value }>,
-  ): Map<K, Decimal> {
-    const d = new Decimal(total);
-    if (d.gte(0)) return prorate(d.toFixed(2), parts);
-    // Negativo: prorratear el valor absoluto y negar el resultado de cada participante
-    const abs = prorate(d.abs().toFixed(2), parts);
-    const out = new Map<K, Decimal>();
-    for (const [k, v] of abs) out.set(k, v.neg());
-    return out;
-  }
+  // Helper local que usa la función exportada (mantenido para no cambiar la firma del inner code).
+  const prorateSigned = prorateSignedExported;
 
   // 2. Gastos por torre → se prorratean solo entre unidades de esa torre
   for (const exp of towerExpenses) {

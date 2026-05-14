@@ -805,6 +805,7 @@ export const financeRouter = router({
       .query(async ({ ctx, input }) => {
         const { prorate } = await import("@/lib/proration");
         const { generateInvoicePdf } = await import("@/server/services/pdf");
+        const { prorateSignedExported } = await import("@/server/services/invoicing");
 
         // ── Cargar datos ────────────────────────────────────────────────
         const [community, units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
@@ -937,6 +938,84 @@ export const financeRouter = router({
             createdById: ctx.user.id,
           } as ExpenseProjection);
         }
+
+        // PROYECCIÓN DEL AJUSTE PROVISIÓN MES ANTERIOR.
+        // Si Reinaldo cargó provisiones en marzo y al previsualizar abril
+        // no ve el AJUSTE, es porque no apretó "Aplicar plantillas" en abril.
+        // Aquí lo proyectamos automáticamente: por cada plantilla isProvision,
+        // miramos las Expenses del mes anterior (PROVISION_BASE + REGULAR del
+        // mismo templateId) y calculamos el ajuste = sumReal − base.
+        const prevMonth = input.month === 1 ? 12 : input.month - 1;
+        const prevYear  = input.month === 1 ? input.year - 1 : input.year;
+        const prevExpenses = await ctx.db.expense.findMany({
+          where: {
+            communityId: input.communityId,
+            periodYear: prevYear,
+            periodMonth: prevMonth,
+            voidedAt: null,
+            recurringTemplateId: { not: null },
+          },
+          include: { recurringTemplate: { select: { isProvision: true, active: true } } },
+        });
+        // Set de templateIds que YA tienen un PROVISION_ADJUSTMENT creado para
+        // el mes actual (no duplicar si Reinaldo ya apretó "Aplicar al mes").
+        const existingAjusteTplIds = new Set(
+          expensesBase
+            .filter((e) => e.kind === "PROVISION_ADJUSTMENT" && e.recurringTemplateId)
+            .map((e) => e.recurringTemplateId as string),
+        );
+        for (const tpl of activeTemplates) {
+          if (!tpl.isProvision) continue;
+          if (existingAjusteTplIds.has(tpl.id)) continue;
+          // Sumar base + reales del mes anterior linked a esta plantilla
+          const linked = prevExpenses.filter((e) => e.recurringTemplateId === tpl.id);
+          const baseRec = linked.find((e) => e.kind === "PROVISION_BASE");
+          if (!baseRec) continue; // sin base mes anterior, no hay ajuste
+          const realSumUsd = linked
+            .filter((e) => e.kind === "REGULAR")
+            .reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+          const realSumBss = linked
+            .filter((e) => e.kind === "REGULAR")
+            .reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+          const baseUsd = new Decimal(baseRec.amountUsd.toString());
+          const baseBss = new Decimal(baseRec.amountBss.toString());
+          const adjUsd  = realSumUsd.minus(baseUsd);
+          const adjBss  = realSumBss.minus(baseBss);
+          if (adjUsd.abs().lt("0.01")) continue; // ajuste despreciable, skip
+          projectedExpenses.push({
+            id: `proj-adj-${tpl.id}`,
+            organizationId: input.organizationId,
+            communityId: input.communityId,
+            category: tpl.category,
+            customCategory: tpl.customCategory,
+            description: `Ajuste Provisión ${tpl.description} — mes anterior`,
+            supplierName: tpl.supplierName,
+            periodYear: input.year,
+            periodMonth: input.month,
+            amountUsd: adjUsd.toFixed(2) as never,
+            amountBss: adjBss.toFixed(2) as never,
+            exchangeRate: usdRate.toFixed(8) as never,
+            exchangeSource: rateRecord.source as never,
+            currencyPrimary: tpl.currencyPrimary,
+            towerScope: tpl.towerScope,
+            isIndividual: false,
+            targetUnitId: null,
+            recurringTemplateId: tpl.id,
+            recurringTemplate: { id: tpl.id, description: tpl.description, isProvision: tpl.isProvision },
+            kind: "PROVISION_ADJUSTMENT",
+            invoiceNumber: null,
+            receiptDate: null,
+            notes: null,
+            invoicedAt: null,
+            voidedAt: null,
+            voidedById: null,
+            voidReason: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            createdById: ctx.user.id,
+          } as ExpenseProjection);
+        }
+
         const expenses = [...expensesBase, ...projectedExpenses];
 
         const ownership = await ctx.db.ownership.findFirst({
@@ -973,8 +1052,10 @@ export const financeRouter = router({
         if (towerUnits.length > 0) {
           const participants = towerUnits.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
           for (const e of towerExpenses) {
-            const usdDist = prorate(e.amountUsd.toString(), participants);
-            const bssDist = prorate(e.amountBss.toString(), participants);
+            // prorateSignedExported maneja montos negativos (PROVISION_ADJUSTMENT
+            // crédito cuando real < provisión). Antes hacía crash el preview.
+            const usdDist = prorateSignedExported(e.amountUsd.toString(), participants);
+            const bssDist = prorateSignedExported(e.amountBss.toString(), participants);
             const cuotaUsd = new Decimal(usdDist.get(targetUnit.id)?.toString() ?? 0);
             const cuotaBss = new Decimal(bssDist.get(targetUnit.id)?.toString() ?? 0);
             if (cuotaUsd.eq(0) && cuotaBss.eq(0)) continue;
@@ -1017,8 +1098,9 @@ export const financeRouter = router({
         for (const g of grouped.values()) {
           const adjUsd = g.sumUsd.mul(new Decimal(1).minus(deductionFactor));
           const adjBss = g.sumBss.mul(new Decimal(1).minus(deductionFactor));
-          const usdDist = prorate(adjUsd.toFixed(2), allParticipants);
-          const bssDist = prorate(adjBss.toFixed(2), allParticipants);
+          // Signed: maneja PROVISION_ADJUSTMENT negativo (real < provisión).
+          const usdDist = prorateSignedExported(adjUsd.toFixed(2), allParticipants);
+          const bssDist = prorateSignedExported(adjBss.toFixed(2), allParticipants);
           const cuotaUsd = new Decimal(usdDist.get(targetUnit.id)?.toString() ?? 0);
           const cuotaBss = new Decimal(bssDist.get(targetUnit.id)?.toString() ?? 0);
           if (cuotaUsd.eq(0) && cuotaBss.eq(0)) continue;

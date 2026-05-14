@@ -189,9 +189,12 @@ export default function ExpensesPage() {
               disabled={applyTpl.isPending}
               onClick={async () => {
                 const r = await applyTpl.mutateAsync({ organizationId, communityId, year: filterYear, month: filterMonth });
+                void list.refetch();
+                void utils.finance.invoices.previewReceiptPdf.invalidate();
                 if (r.created > 0) {
-                  void list.refetch();
-                  alert(`✅ ${r.created} gasto(s) creados desde plantillas`);
+                  alert(`✅ ${r.created} gasto(s) creados desde plantillas${r.adjustments ? ` + ${r.adjustments} ajuste(s) mes anterior` : ""}`);
+                } else if (r.adjustments && r.adjustments > 0) {
+                  alert(`✅ ${r.adjustments} ajuste(s) de provisión del mes anterior creados`);
                 } else {
                   alert("Sin plantillas pendientes para este período");
                 }
@@ -327,7 +330,14 @@ export default function ExpensesPage() {
           createTpl={createTpl}
           deleteTpl={deleteTpl}
           updateTpl={updateTpl}
-          onMutated={() => void templates.refetch()}
+          onMutated={() => {
+            void templates.refetch();
+            void list.refetch();
+            // Pedido cliente: "Si elimino una plantilla el recibo no se actualiza"
+            // → invalidamos el preview para que se regenere con las plantillas vigentes.
+            void utils.finance.invoices.previewReceiptPdf.invalidate();
+            void utils.finance.recurringTemplates.customCategories.invalidate();
+          }}
         />
       )}
 
