@@ -1095,10 +1095,18 @@ export const financeRouter = router({
         // Agrupar por (category|customCategory) para evitar 10 líneas del mismo sector
         const grouped = new Map<string, { description: string; sumUsd: Decimal; sumBss: Decimal; kind: string }>();
         for (const e of generalExpenses) {
+          // BUG arreglado: si PROVISION_BASE y PROVISION_ADJUSTMENT comparten templateId,
+          // sus keys eran iguales → se colapsaban en UNA línea (solo se veía AJUSTE,
+          // no la PROVISION). Ahora cada kind tiene su propio key → 2 líneas
+          // separadas en el recibo (Provisión X / Ajuste Provisión X mes anterior).
           const key = e.recurringTemplateId
-            ? `tpl-${e.recurringTemplateId}`
+            ? (e.kind === "PROVISION_BASE"
+                ? `tpl-prov-${e.recurringTemplateId}`
+                : e.kind === "PROVISION_ADJUSTMENT"
+                  ? `tpl-adj-${e.recurringTemplateId}`
+                  : `tpl-${e.recurringTemplateId}`)
             : (e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT")
-              ? `iso-${e.id}`  // cada provisión su propia línea
+              ? `iso-${e.id}`
               : `cat-${e.category}|${e.customCategory ?? ""}`;
           const desc = e.recurringTemplate?.description
             ? (e.kind === "PROVISION_BASE" ? `Provisión ${e.recurringTemplate.description}`
