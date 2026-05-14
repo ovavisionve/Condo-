@@ -110,6 +110,14 @@ export default function ExpensesPage() {
   const pendingUsd = list.data?.filter(e => !e.invoicedAt && !e.voidedAt)
     .reduce((s, e) => s + Number(e.amountUsd.toString()), 0) ?? 0;
 
+  // ¿Hay recibos ya emitidos del período? → si el admin agregó gastos extraordinarios
+  // después de emitir, mostramos banner sugiriendo "Re-emitir período".
+  const issuedQ = trpc.finance.invoices.list.useQuery({ organizationId, communityId, year: filterYear, month: filterMonth });
+  const issuedActive = (issuedQ.data ?? []).filter(i => i.status !== "VOIDED" && i.status !== "DRAFT");
+  const hasPendingAfterIssue = issuedActive.length > 0 && (list.data ?? []).some(
+    e => !e.invoicedAt && !e.voidedAt && !(e as { recurringTemplate?: { isProvision: boolean } | null }).recurringTemplate?.isProvision,
+  );
+
   return (
     <div className="space-y-4">
       {/* Header y tabs */}
@@ -142,6 +150,29 @@ export default function ExpensesPage() {
 
       {tab === "list" && (
         <>
+          {/* Banner: gastos pendientes en período con recibos emitidos */}
+          {hasPendingAfterIssue && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3">
+              <span className="text-2xl">⚠️</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-900">
+                  Tenés gastos pendientes en un período con recibos ya emitidos
+                </p>
+                <p className="text-xs text-amber-700 mt-1">
+                  Los recibos actuales NO incluyen estos gastos. Para cobrarlos a los residentes andá
+                  a <strong>Recibos de Condominio</strong> y pulsá <strong>🔄 Re-emitir período</strong>
+                  {" "}(solo funciona si nadie ha pagado todavía).
+                </p>
+              </div>
+              <a
+                href={`/org/communities/${communityId}/finance/invoices`}
+                className="rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 whitespace-nowrap"
+              >
+                Ir a Recibos →
+              </a>
+            </div>
+          )}
+
           {/* Filtros */}
           <div className="flex flex-wrap items-end gap-2">
             <div>

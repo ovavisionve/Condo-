@@ -125,25 +125,13 @@ export async function registerExpense(input: CreateExpenseInput) {
   }
   const isProvisionRealCost = linkedTpl?.isProvision === true;
 
-  // Bloqueo #4: no aceptar gastos prorrateables después de emitir el recibo del período.
-  // Excepciones: gastos individuales (cargo directo) o gastos contra provisión (no se facturan).
-  if (!input.isIndividual && !isProvisionRealCost) {
-    const issued = await db.invoice.findFirst({
-      where: {
-        communityId: input.communityId,
-        periodYear: input.periodYear,
-        periodMonth: input.periodMonth,
-        status: { not: "VOIDED" },
-      },
-      select: { id: true },
-    });
-    if (issued) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: `Ya se emitieron facturas para ${String(input.periodMonth).padStart(2, "0")}/${input.periodYear}. No se pueden añadir gastos comunes a un período cerrado. Marca el gasto como individual, vinculalo a una plantilla de provisión, o anula las facturas para re-emitirlas.`,
-      });
-    }
-  }
+  // Antes bloqueábamos crear gastos comunes después de emitir, pero el caso real
+  // es: gasto extraordinario imprevisto (ej. "se dañó el ascensor, $100 de
+  // reparación") que debe entrar al recibo del mes. Ahora lo permitimos: el
+  // Expense queda como Pendiente (`invoicedAt=null`) y el preview lo proyecta
+  // automáticamente. La página de Recibos muestra el botón "🔄 Re-emitir
+  // período" para incluirlo en los recibos reales (siempre que nadie haya
+  // pagado todavía).
 
   const source = input.exchangeSource ?? "BCV";
   // La tasa debe ser la del día del gasto (receiptDate), no la del registro.
