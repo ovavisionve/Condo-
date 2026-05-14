@@ -38,6 +38,7 @@ export default function IncomePage() {
     organizationId, communityId,
     year: filterYear, month: filterMonth,
   });
+  const utils = trpc.useUtils();
 
   const totalUsd = list.data?.reduce((s, i) => s + Number(i.amountUsd.toString()), 0) ?? 0;
   const totalBss = list.data?.reduce((s, i) => s + Number(i.amountBss.toString()), 0) ?? 0;
@@ -140,7 +141,12 @@ export default function IncomePage() {
           defaultYear={filterYear}
           defaultMonth={filterMonth}
           onClose={() => setShowNew(false)}
-          onCreated={() => { setShowNew(false); void list.refetch(); }}
+          onCreated={() => {
+            setShowNew(false);
+            void list.refetch();
+            // Si el ingreso descuenta del recibo (affectsInvoice), el preview debe refrescar
+            void utils.finance.invoices.previewReceiptPdf.invalidate();
+          }}
         />
       )}
     </div>

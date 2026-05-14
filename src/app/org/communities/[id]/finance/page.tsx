@@ -926,6 +926,7 @@ function MonthCloseCard({ organizationId, communityId }: { organizationId: strin
       await Promise.all([
         utils.finance.monthClose.isOpen.invalidate(),
         utils.finance.monthClose.list.invalidate(),
+        utils.finance.invoices.previewReceiptPdf.invalidate(),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
@@ -940,6 +941,7 @@ function MonthCloseCard({ organizationId, communityId }: { organizationId: strin
       await Promise.all([
         utils.finance.monthClose.isOpen.invalidate(),
         utils.finance.monthClose.list.invalidate(),
+        utils.finance.invoices.previewReceiptPdf.invalidate(),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");

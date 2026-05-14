@@ -795,90 +795,26 @@ export const portalRouter = router({
       ]);
       const unitIds = new Set([...ownerships.map((o) => o.unitId), ...tenancies.map((t) => t.unitId)]);
 
-      const inv = await ctx.db.invoice.findFirstOrThrow({
+      // Validar acceso del residente a este recibo antes de generar el PDF
+      const invAccess = await ctx.db.invoice.findFirstOrThrow({
         where: { id: input.invoiceId },
-        include: {
-          unit: true,
-          items: { orderBy: { description: "asc" } },
-          payments: {
-            include: {
-              payment: {
-                select: { paidAt: true, method: true, amountUsd: true, amountBss: true, reference: true },
-              },
-            },
-          },
-        },
+        select: { unitId: true, invoiceNumber: true },
       });
-
-      if (!unitIds.has(inv.unitId)) {
+      if (!unitIds.has(invAccess.unitId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a este recibo" });
       }
 
-      const [community, ownership, bankAccounts] = await Promise.all([
-        ctx.db.community.findFirstOrThrow({
-          where: { id: inv.communityId },
-          select: { name: true, address: true, rif: true },
-        }),
-        ctx.db.ownership.findFirst({
-          where: { unitId: inv.unitId, endDate: null },
-          include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
-        }),
-        ctx.db.bankAccount.findMany({
-          where: { communityId: inv.communityId, active: true },
-          select: {
-            bankName: true, accountNumber: true, accountHolder: true,
-            accountType: true, currency: true,
-          },
-        }),
-      ]);
-
+      // Usa el mismo builder que el admin para garantizar paridad de contenido:
+      // secciones con SUBTOTAL/TOTAL, Fondo de Reserva acumulado del edificio,
+      // Saldo a Favor del residente, formato Aviso de Cobro.
+      const { buildInvoicePdfData } = await import("@/server/services/invoice-pdf-builder");
       const { generateInvoicePdf } = await import("@/server/services/pdf");
-      const buffer = await generateInvoicePdf({
-        communityName: community.name,
-        communityAddress: community.address ?? "",
-        communityRif: community.rif,
-        invoiceNumber: inv.invoiceNumber,
-        periodYear: inv.periodYear,
-        periodMonth: inv.periodMonth,
-        issuedAt: inv.issuedAt,
-        dueDate: inv.dueDate,
-        status: inv.status,
-        exchangeRate: inv.exchangeRate.toString(),
-        exchangeSource: inv.exchangeSource,
-        unitCode: inv.unit.code,
-        unitFloor: inv.unit.floor,
-        unitTower: inv.unit.tower,
-        ownerName: ownership?.person
-          ? `${ownership.person.firstName} ${ownership.person.lastName}`
-          : "Sin propietario",
-        ownerIdType: ownership?.person?.idType,
-        ownerIdNumber: ownership?.person?.idNumber,
-        items: inv.items.map((it) => ({
-          description: it.description,
-          aliquot: it.aliquot?.toString(),
-          amountUsd: it.amountUsd.toString(),
-          amountBss: it.amountBss.toString(),
-        })),
-        totalUsd: inv.totalUsd.toString(),
-        totalBss: inv.totalBss.toString(),
-        paidUsd: inv.paidUsd.toString(),
-        paidBss: inv.paidBss.toString(),
-        paymentsApplied: inv.payments.map((pa) => ({
-          paidAt: pa.payment.paidAt,
-          method: pa.payment.method,
-          amountUsd: pa.payment.amountUsd.toString(),
-          amountBss: pa.payment.amountBss.toString(),
-          reference: pa.payment.reference,
-        })),
-        bankAccounts: bankAccounts.map((b) => ({
-          bankName: b.bankName, accountNumber: b.accountNumber,
-          accountHolder: b.accountHolder, accountType: b.accountType, currency: b.currency,
-        })),
-      });
+      const data = await buildInvoicePdfData(input.invoiceId);
+      const buffer = await generateInvoicePdf(data);
 
       return {
         base64: buffer.toString("base64"),
-        fileName: `Recibo-${inv.invoiceNumber}.pdf`,
+        fileName: `Recibo-${invAccess.invoiceNumber}.pdf`,
         mimeType: "application/pdf",
       };
     }),

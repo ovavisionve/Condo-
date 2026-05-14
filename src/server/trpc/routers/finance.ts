@@ -560,6 +560,29 @@ export const financeRouter = router({
     downloadPdf: orgProcedure
       .input(orgIdInput.extend({ id: z.string() }))
       .mutation(async ({ ctx, input }) => {
+        // Validar que la factura pertenece a la organización antes de armar el PDF
+        const inv = await ctx.db.invoice.findFirstOrThrow({
+          where: { id: input.id, organizationId: input.organizationId },
+          select: { id: true, invoiceNumber: true },
+        });
+
+        // Usar el builder compartido para garantizar paridad con el portal residente
+        const { buildInvoicePdfData } = await import("@/server/services/invoice-pdf-builder");
+        const { generateInvoicePdf } = await import("@/server/services/pdf");
+        const data = await buildInvoicePdfData(inv.id);
+        const buffer = await generateInvoicePdf(data);
+        const base64 = buffer.toString("base64");
+        return {
+          base64,
+          fileName: `Recibo-${inv.invoiceNumber}.pdf`,
+          mimeType: "application/pdf",
+        };
+      }),
+
+    /** Versión interna del downloadPdf usando código legacy — preservada por si acaso. */
+    _legacyDownloadPdf: orgProcedure
+      .input(orgIdInput.extend({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
         const inv = await ctx.db.invoice.findFirstOrThrow({
           where: { id: input.id, organizationId: input.organizationId },
           include: {
