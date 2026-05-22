@@ -152,6 +152,9 @@ model Community {
   /// Por defecto 10% (estándar venezolano según práctica de condominios). Si se setea en 0,
   /// el fondo de reserva no se agrega automáticamente y debe cargarse manualmente.
   reserveFundPct      Decimal   @default("0.10") @db.Decimal(5, 4)
+  /// URL del logo del condominio (para personalizar el header del recibo PDF).
+  /// Acepta cualquier URL pública o data URL base64. Si null, el PDF no muestra logo.
+  logoUrl             String?
   // Metadata
   foundedAt       DateTime?
   notes           String?

@@ -2,7 +2,7 @@
  * Generación de PDFs usando @react-pdf/renderer en el servidor.
  * Devuelve un Buffer listo para enviar como respuesta HTTP o guardar en storage.
  */
-import { renderToBuffer, Document, Page, Text, View, StyleSheet, Font } from "@react-pdf/renderer";
+import { renderToBuffer, Document, Page, Text, View, Image, StyleSheet, Font } from "@react-pdf/renderer";
 import React from "react";
 
 const styles = StyleSheet.create({
@@ -238,6 +238,10 @@ const inv = StyleSheet.create({
   header: { marginBottom: 12, borderBottomWidth: 2, borderBottomColor: BK, paddingBottom: 10 },
   headerTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   headerLeft: {},
+  // Logo del condominio en el header (60x60 circular si la imagen ya viene recortada)
+  logoBox: { flexDirection: "row", alignItems: "center" },
+  logoImg: { width: 56, height: 56, marginRight: 10, objectFit: "contain" },
+  headerLeftText: { flex: 1 },
   communityName: { fontSize: 14, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 0.3, marginBottom: 3 },
   communityMeta: { fontSize: 8, color: MID, lineHeight: 1.5 },
   headerRight: { alignItems: "flex-end" },
@@ -341,6 +345,8 @@ export type InvoicePdfData = {
   communityAddress: string;
   communityRif?: string | null;
   communityPhone?: string | null;
+  /** URL pública del logo (PNG/JPG). Si está, se renderiza arriba-izquierda en el recibo. */
+  communityLogoUrl?: string | null;
   // Factura
   invoiceNumber: string;
   periodYear: number;
@@ -467,12 +473,17 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
       // ── Membrete ───────────────────────────────────────────────
       React.createElement(View, { style: inv.header },
         React.createElement(View, { style: inv.headerTop },
-          React.createElement(View, { style: inv.headerLeft },
-            React.createElement(Text, { style: inv.communityName }, data.communityName.toUpperCase()),
-            React.createElement(Text, { style: inv.communityMeta },
-              "JUNTA DE CONDOMINIO" + (data.communityRif ? "   RIF: " + data.communityRif : "")),
-            React.createElement(Text, { style: { ...inv.communityMeta, marginTop: 1 } },
-              [data.communityAddress, data.communityPhone].filter(Boolean).join("   ")),
+          React.createElement(View, { style: inv.logoBox },
+            data.communityLogoUrl
+              ? React.createElement(Image, { src: data.communityLogoUrl, style: inv.logoImg })
+              : null,
+            React.createElement(View, { style: inv.headerLeftText },
+              React.createElement(Text, { style: inv.communityName }, data.communityName.toUpperCase()),
+              React.createElement(Text, { style: inv.communityMeta },
+                "JUNTA DE CONDOMINIO" + (data.communityRif ? "   RIF: " + data.communityRif : "")),
+              React.createElement(Text, { style: { ...inv.communityMeta, marginTop: 1 } },
+                [data.communityAddress, data.communityPhone].filter(Boolean).join("   ")),
+            ),
           ),
           React.createElement(View, { style: inv.headerRight },
             React.createElement(Text, { style: inv.headerDocLabel }, "Número de Recibo"),

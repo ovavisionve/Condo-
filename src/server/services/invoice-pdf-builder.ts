@@ -42,7 +42,7 @@ export async function buildInvoicePdfData(invoiceId: string): Promise<InvoicePdf
   const [community, ownership, bankAccounts] = await Promise.all([
     db.community.findFirstOrThrow({
       where: { id: inv.communityId },
-      select: { name: true, address: true, rif: true, phone: true },
+      select: { name: true, address: true, rif: true, phone: true, logoUrl: true },
     }),
     db.ownership.findFirst({
       where: { unitId: inv.unitId, endDate: null },
@@ -158,6 +158,7 @@ export async function buildInvoicePdfData(invoiceId: string): Promise<InvoicePdf
 
   return {
     communityName: community.name,
+    communityLogoUrl: community.logoUrl,
     communityAddress: community.address ?? "",
     communityRif: community.rif,
     communityPhone: community.phone,

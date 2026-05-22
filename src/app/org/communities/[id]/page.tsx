@@ -141,13 +141,14 @@ function EditCommunityForm({
     phone?: string;
     email?: string;
     website?: string;
+    logoUrl?: string | null;
     floorsCount?: number | null;
     towersCount?: number;
   }) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
 }) {
-  const c = community as CommunityData & { rif?: string | null; phone?: string | null; email?: string | null; website?: string | null };
+  const c = community as CommunityData & { rif?: string | null; phone?: string | null; email?: string | null; website?: string | null; logoUrl?: string | null };
 
   const [name, setName] = useState(c.name);
   const [rif, setRif] = useState(c.rif ?? "");
@@ -157,6 +158,7 @@ function EditCommunityForm({
   const [phone, setPhone] = useState(c.phone ?? "");
   const [email, setEmail] = useState(c.email ?? "");
   const [website, setWebsite] = useState(c.website ?? "");
+  const [logoUrl, setLogoUrl] = useState(c.logoUrl ?? "");
   const [floorsCount, setFloorsCount] = useState(c.floorsCount != null ? String(c.floorsCount) : "");
   const [towersCount, setTowersCount] = useState(String(c.towersCount ?? 1));
   const [err, setErr] = useState<string | null>(null);
@@ -177,6 +179,7 @@ function EditCommunityForm({
         phone: phone.trim() || undefined,
         email: email.trim() || undefined,
         website: website.trim() || undefined,
+        logoUrl: logoUrl.trim() ? logoUrl.trim() : null,
         floorsCount: floorsCount ? Number(floorsCount) : null,
         towersCount: towersCount ? Number(towersCount) : undefined,
       });
@@ -247,6 +250,40 @@ function EditCommunityForm({
               <Label htmlFor="c-website">Página web / Instagram / Red social</Label>
               <Input id="c-website" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://..." disabled={isSaving} />
             </div>
+          </div>
+        </div>
+
+        {/* Branding */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Logo del condominio</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto]">
+            <div className="space-y-1.5">
+              <Label htmlFor="c-logo">URL del logo (PNG / JPG)</Label>
+              <Input
+                id="c-logo"
+                value={logoUrl}
+                onChange={(e) => setLogoUrl(e.target.value)}
+                placeholder="https://i.imgur.com/abc.png"
+                disabled={isSaving}
+              />
+              <p className="text-xs text-muted-foreground">
+                Aparecerá arriba a la izquierda en todos los recibos PDF emitidos.
+                Subí tu logo a un host público (Imgur, Cloudinary, Supabase Storage) y pegá el link aquí.
+              </p>
+            </div>
+            {logoUrl.trim() && (
+              <div className="flex items-center justify-center rounded border bg-muted/30 p-2 min-w-[80px]">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={logoUrl.trim()}
+                  alt="Preview logo"
+                  className="h-16 w-16 object-contain"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.opacity = "0.2";
+                  }}
+                />
+              </div>
+            )}
           </div>
         </div>
 

@@ -88,6 +88,7 @@ export const orgRouter = router({
           towersCount: z.coerce.number().int().positive().optional(),
           active: z.boolean().optional(),
           dueDaysAfterIssue: z.coerce.number().int().min(1).max(365).optional(),
+          logoUrl: z.string().max(2048).nullable().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {

@@ -931,7 +931,7 @@ export const financeRouter = router({
         const [community, units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
           ctx.db.community.findFirstOrThrow({
             where: { id: input.communityId, organizationId: input.organizationId },
-            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true },
+            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true, logoUrl: true },
           }),
           ctx.db.unit.findMany({
             where: { communityId: input.communityId, active: true, deletedAt: null },
@@ -1389,6 +1389,7 @@ export const financeRouter = router({
           communityAddress: community.address ?? "",
           communityRif: community.rif,
           communityPhone: community.phone,
+          communityLogoUrl: community.logoUrl,
           invoiceNumber: `PREVIEW-${input.year}${String(input.month).padStart(2, "0")}-${targetUnit.code}`,
           periodYear: input.year,
           periodMonth: input.month,
