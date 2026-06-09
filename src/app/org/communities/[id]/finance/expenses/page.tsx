@@ -283,10 +283,10 @@ export default function ExpensesPage() {
                         {e.description}
                         {linkedToProvision && (
                           <span
-                            className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
-                            title={`Vinculado a la provisión "${exp.recurringTemplate?.description}". Este gasto NO se cobra al residente — se usa para calcular el AJUSTE del mes siguiente (real vs. provisionado).`}
+                            className="ml-2 inline-block rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800"
+                            title={`Vinculado a la provisión "${exp.recurringTemplate?.description}". Este monto REAL se cobra al residente y reemplaza el estimado de la provisión.`}
                           >
-                            🔗 Provisión {exp.recurringTemplate?.description} (no se cobra)
+                            🔗 Real de {exp.recurringTemplate?.description} (se cobra)
                           </span>
                         )}
                       </td>

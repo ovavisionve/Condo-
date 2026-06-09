@@ -994,14 +994,31 @@ export const financeRouter = router({
         });
         const inactiveTplIds = new Set(inactiveTpls.map((t) => t.id));
 
-        // Excluir:
-        //  - REGULAR de plantilla isProvision (real vs provisión, no se factura)
-        //  - Expenses cuya plantilla está inactiva (obsoleta)
-        const expensesBase = expensesAll.filter(
-          (e) =>
-            !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true) &&
-            !(e.recurringTemplateId && inactiveTplIds.has(e.recurringTemplateId)),
+        // NUEVA LÓGICA (8/jun/2026, pedido cliente): "Quiero que esos que no salen
+        // actualmente porque no se cobran ya se ajusten a la realidad". Antes los
+        // gastos REGULAR vinculados a una provisión se excluían del cobro (solo se
+        // usaban para calcular un ajuste posterior). Ahora:
+        //   • Si hay REGULAR(es) vinculado(s) a una plantilla isProvision → SE COBRAN
+        //     (es la realidad de lo que se gastó), y la PROVISION_BASE de esa misma
+        //     plantilla NO se cobra (sería doble cobro).
+        //   • Si NO hay REGULAR para esa plantilla → se cobra la PROVISION_BASE
+        //     (estimado, fallback).
+        //   • Ya no hay PROVISION_ADJUSTMENT — el ajuste es automático porque se
+        //     cobra el real directamente, no la base.
+        const realesPorTpl = new Set<string>(
+          expensesAll
+            .filter((e) => e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true && e.recurringTemplateId)
+            .map((e) => e.recurringTemplateId as string),
         );
+        const expensesBase = expensesAll.filter((e) => {
+          // Excluir plantillas inactivas (obsoletas)
+          if (e.recurringTemplateId && inactiveTplIds.has(e.recurringTemplateId)) return false;
+          // Excluir PROVISION_BASE cuando hay reales vinculados — el real ya se cobra
+          if (e.kind === "PROVISION_BASE" && e.recurringTemplateId && realesPorTpl.has(e.recurringTemplateId)) return false;
+          // Excluir ajustes viejos (PROVISION_ADJUSTMENT) — la nueva lógica no los usa
+          if (e.kind === "PROVISION_ADJUSTMENT") return false;
+          return true;
+        });
 
         // Tasa BCV (usado tanto por proyección de plantillas como por cálculos abajo).
         const rateRecord = await getCurrentRate("BCV", new Date(input.year, input.month, 0));
@@ -1023,6 +1040,9 @@ export const financeRouter = router({
         type ExpenseProjection = (typeof expensesBase)[number];
         const projectedExpenses: ExpenseProjection[] = [];
         for (const tpl of activeTemplates) {
+          // Si esta plantilla isProvision tiene reales cargados → NO proyectar la
+          // base estimada: los reales ya están en expensesBase y se cobran ellos.
+          if (tpl.isProvision && realesPorTpl.has(tpl.id)) continue;
           if (appliedTplIds.has(tpl.id)) continue;
           // Calcular monto en USD y BSS según moneda primaria de la plantilla
           const tplIsVes = tpl.currencyPrimary === "VES" && tpl.amountBss != null;
@@ -1067,85 +1087,9 @@ export const financeRouter = router({
           } as ExpenseProjection);
         }
 
-        // PROYECCIÓN DEL AJUSTE PROVISIÓN DEL MISMO MES (in-period adjustment).
-        // Pedido cliente Reinaldo (8/jun/2026): "Si yo cargué un gasto en junio,
-        // sea a una provisión o no, debo verlo en el preview del recibo de junio
-        // porque ese recibo se emite en julio". Antes el ajuste se calculaba
-        // sobre el mes ANTERIOR; ahora sobre el MISMO mes — los gastos reales
-        // del mes actual ya cargados generan ajuste visible en este preview.
-        // Set de templateIds que YA tienen un PROVISION_ADJUSTMENT creado para
-        // el mes actual (no duplicar si Reinaldo ya apretó "Aplicar al mes").
-        const existingAjusteTplIds = new Set(
-          expensesBase
-            .filter((e) => e.kind === "PROVISION_ADJUSTMENT" && e.recurringTemplateId)
-            .map((e) => e.recurringTemplateId as string),
-        );
-        // Reales del MISMO mes que SÍ están vinculados a plantilla de provisión.
-        // (expensesAll los trae porque no aplica el filtro invoicedAt; expensesBase
-        // los excluyó porque son REGULAR de provisión — los necesito sin filtrar.)
-        const currentRealsByTpl = new Map<string, { usd: Decimal; bss: Decimal }>();
-        for (const e of expensesAll) {
-          if (e.kind !== "REGULAR") continue;
-          if (!e.recurringTemplateId) continue;
-          if (e.recurringTemplate?.isProvision !== true) continue;
-          const prev = currentRealsByTpl.get(e.recurringTemplateId) ?? { usd: new Decimal(0), bss: new Decimal(0) };
-          prev.usd = prev.usd.plus(e.amountUsd.toString());
-          prev.bss = prev.bss.plus(e.amountBss.toString());
-          currentRealsByTpl.set(e.recurringTemplateId, prev);
-        }
-        for (const tpl of activeTemplates) {
-          if (!tpl.isProvision) continue;
-          if (existingAjusteTplIds.has(tpl.id)) continue;
-          const reals = currentRealsByTpl.get(tpl.id);
-          if (!reals || (reals.usd.eq(0) && reals.bss.eq(0))) continue; // sin reales, no hay ajuste
-          // Base = la PROVISION_BASE del mismo mes (real o proyectada por la plantilla).
-          // Si está en expensesBase la usamos; si no, la proyectada arriba sirve.
-          const baseInBase = expensesBase.find(
-            (e) => e.kind === "PROVISION_BASE" && e.recurringTemplateId === tpl.id,
-          );
-          const baseInProj = projectedExpenses.find(
-            (e) => e.kind === "PROVISION_BASE" && e.recurringTemplateId === tpl.id,
-          );
-          const baseRec = baseInBase ?? baseInProj;
-          if (!baseRec) continue;
-          const baseUsd = new Decimal(baseRec.amountUsd.toString());
-          const baseBss = new Decimal(baseRec.amountBss.toString());
-          const adjUsd  = reals.usd.minus(baseUsd);
-          const adjBss  = reals.bss.minus(baseBss);
-          if (adjUsd.abs().lt("0.01")) continue;
-          projectedExpenses.push({
-            id: `proj-adj-${tpl.id}`,
-            organizationId: input.organizationId,
-            communityId: input.communityId,
-            category: tpl.category,
-            customCategory: tpl.customCategory,
-            description: `Ajuste Provisión ${tpl.description}`,
-            supplierName: tpl.supplierName,
-            periodYear: expensePeriodYear,
-            periodMonth: expensePeriodMonth,
-            amountUsd: adjUsd.toFixed(2) as never,
-            amountBss: adjBss.toFixed(2) as never,
-            exchangeRate: usdRate.toFixed(8) as never,
-            exchangeSource: rateRecord.source as never,
-            currencyPrimary: tpl.currencyPrimary,
-            towerScope: tpl.towerScope,
-            isIndividual: false,
-            targetUnitId: null,
-            recurringTemplateId: tpl.id,
-            recurringTemplate: { id: tpl.id, description: tpl.description, isProvision: tpl.isProvision },
-            kind: "PROVISION_ADJUSTMENT",
-            invoiceNumber: null,
-            receiptDate: null,
-            notes: null,
-            invoicedAt: null,
-            voidedAt: null,
-            voidedById: null,
-            voidReason: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            createdById: ctx.user.id,
-          } as ExpenseProjection);
-        }
+        // Ya no se calcula PROVISION_ADJUSTMENT (cambio 8/jun/2026): cuando hay
+        // reales cargados se cobran directamente en vez de la base, eliminando la
+        // necesidad de un ajuste posterior.
 
         const expenses = [...expensesBase, ...projectedExpenses];
 

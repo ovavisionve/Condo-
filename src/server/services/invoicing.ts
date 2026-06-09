@@ -223,14 +223,24 @@ export async function issueMonthlyInvoices(params: {
     where: { communityId, periodYear: expenseYear, periodMonth: expenseMonth, invoicedAt: null, voidedAt: null },
     include: { recurringTemplate: { select: { id: true, description: true, isProvision: true, active: true } } },
   });
+  // NUEVA LÓGICA (8/jun/2026): cuando hay reales cargados vinculados a una
+  // plantilla isProvision, se cobran ellos en lugar de la PROVISION_BASE
+  // estimada. La base estimada es solo un fallback cuando no hay reales.
   // Excluir:
-  //  - REGULAR vinculado a plantilla isProvision (trackeo real del mes, no se factura)
-  //  - Expenses cuya plantilla está INACTIVA (no debe facturarse — pedido cliente)
-  const expenses = allExpenses.filter(
-    (e) =>
-      !(e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true) &&
-      !(e.recurringTemplate && e.recurringTemplate.active === false),
+  //  - Expenses cuya plantilla está INACTIVA (no debe facturarse)
+  //  - PROVISION_BASE cuando ya hay un REAL para esa misma plantilla
+  //  - PROVISION_ADJUSTMENT (modelo viejo; ya no aplica)
+  const realesPorTpl = new Set<string>(
+    allExpenses
+      .filter((e) => e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true && e.recurringTemplateId)
+      .map((e) => e.recurringTemplateId as string),
   );
+  const expenses = allExpenses.filter((e) => {
+    if (e.recurringTemplate && e.recurringTemplate.active === false) return false;
+    if (e.kind === "PROVISION_BASE" && e.recurringTemplateId && realesPorTpl.has(e.recurringTemplateId)) return false;
+    if (e.kind === "PROVISION_ADJUSTMENT") return false;
+    return true;
+  });
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
   const deductibleIncomes = await db.income.findMany({
