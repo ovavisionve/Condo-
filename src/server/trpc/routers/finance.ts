@@ -1059,24 +1059,12 @@ export const financeRouter = router({
           } as ExpenseProjection);
         }
 
-        // PROYECCIÓN DEL AJUSTE PROVISIÓN MES ANTERIOR.
-        // Si Reinaldo cargó provisiones en marzo y al previsualizar abril
-        // no ve el AJUSTE, es porque no apretó "Aplicar plantillas" en abril.
-        // Aquí lo proyectamos automáticamente: por cada plantilla isProvision,
-        // miramos las Expenses del mes anterior (PROVISION_BASE + REGULAR del
-        // mismo templateId) y calculamos el ajuste = sumReal − base.
-        const prevMonth = input.month === 1 ? 12 : input.month - 1;
-        const prevYear  = input.month === 1 ? input.year - 1 : input.year;
-        const prevExpenses = await ctx.db.expense.findMany({
-          where: {
-            communityId: input.communityId,
-            periodYear: prevYear,
-            periodMonth: prevMonth,
-            voidedAt: null,
-            recurringTemplateId: { not: null },
-          },
-          include: { recurringTemplate: { select: { isProvision: true, active: true } } },
-        });
+        // PROYECCIÓN DEL AJUSTE PROVISIÓN DEL MISMO MES (in-period adjustment).
+        // Pedido cliente Reinaldo (8/jun/2026): "Si yo cargué un gasto en junio,
+        // sea a una provisión o no, debo verlo en el preview del recibo de junio
+        // porque ese recibo se emite en julio". Antes el ajuste se calculaba
+        // sobre el mes ANTERIOR; ahora sobre el MISMO mes — los gastos reales
+        // del mes actual ya cargados generan ajuste visible en este preview.
         // Set de templateIds que YA tienen un PROVISION_ADJUSTMENT creado para
         // el mes actual (no duplicar si Reinaldo ya apretó "Aplicar al mes").
         const existingAjusteTplIds = new Set(
@@ -1084,31 +1072,46 @@ export const financeRouter = router({
             .filter((e) => e.kind === "PROVISION_ADJUSTMENT" && e.recurringTemplateId)
             .map((e) => e.recurringTemplateId as string),
         );
+        // Reales del MISMO mes que SÍ están vinculados a plantilla de provisión.
+        // (expensesAll los trae porque no aplica el filtro invoicedAt; expensesBase
+        // los excluyó porque son REGULAR de provisión — los necesito sin filtrar.)
+        const currentRealsByTpl = new Map<string, { usd: Decimal; bss: Decimal }>();
+        for (const e of expensesAll) {
+          if (e.kind !== "REGULAR") continue;
+          if (!e.recurringTemplateId) continue;
+          if (e.recurringTemplate?.isProvision !== true) continue;
+          const prev = currentRealsByTpl.get(e.recurringTemplateId) ?? { usd: new Decimal(0), bss: new Decimal(0) };
+          prev.usd = prev.usd.plus(e.amountUsd.toString());
+          prev.bss = prev.bss.plus(e.amountBss.toString());
+          currentRealsByTpl.set(e.recurringTemplateId, prev);
+        }
         for (const tpl of activeTemplates) {
           if (!tpl.isProvision) continue;
           if (existingAjusteTplIds.has(tpl.id)) continue;
-          // Sumar base + reales del mes anterior linked a esta plantilla
-          const linked = prevExpenses.filter((e) => e.recurringTemplateId === tpl.id);
-          const baseRec = linked.find((e) => e.kind === "PROVISION_BASE");
-          if (!baseRec) continue; // sin base mes anterior, no hay ajuste
-          const realSumUsd = linked
-            .filter((e) => e.kind === "REGULAR")
-            .reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
-          const realSumBss = linked
-            .filter((e) => e.kind === "REGULAR")
-            .reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+          const reals = currentRealsByTpl.get(tpl.id);
+          if (!reals || (reals.usd.eq(0) && reals.bss.eq(0))) continue; // sin reales, no hay ajuste
+          // Base = la PROVISION_BASE del mismo mes (real o proyectada por la plantilla).
+          // Si está en expensesBase la usamos; si no, la proyectada arriba sirve.
+          const baseInBase = expensesBase.find(
+            (e) => e.kind === "PROVISION_BASE" && e.recurringTemplateId === tpl.id,
+          );
+          const baseInProj = projectedExpenses.find(
+            (e) => e.kind === "PROVISION_BASE" && e.recurringTemplateId === tpl.id,
+          );
+          const baseRec = baseInBase ?? baseInProj;
+          if (!baseRec) continue;
           const baseUsd = new Decimal(baseRec.amountUsd.toString());
           const baseBss = new Decimal(baseRec.amountBss.toString());
-          const adjUsd  = realSumUsd.minus(baseUsd);
-          const adjBss  = realSumBss.minus(baseBss);
-          if (adjUsd.abs().lt("0.01")) continue; // ajuste despreciable, skip
+          const adjUsd  = reals.usd.minus(baseUsd);
+          const adjBss  = reals.bss.minus(baseBss);
+          if (adjUsd.abs().lt("0.01")) continue;
           projectedExpenses.push({
             id: `proj-adj-${tpl.id}`,
             organizationId: input.organizationId,
             communityId: input.communityId,
             category: tpl.category,
             customCategory: tpl.customCategory,
-            description: `Ajuste Provisión ${tpl.description} — mes anterior`,
+            description: `Ajuste Provisión ${tpl.description}`,
             supplierName: tpl.supplierName,
             periodYear: input.year,
             periodMonth: input.month,
@@ -1207,7 +1210,7 @@ export const financeRouter = router({
               : `cat-${e.category}|${e.customCategory ?? ""}`;
           const desc = e.recurringTemplate?.description
             ? (e.kind === "PROVISION_BASE" ? `Provisión ${e.recurringTemplate.description}`
-              : e.kind === "PROVISION_ADJUSTMENT" ? `Ajuste Provisión ${e.recurringTemplate.description} — mes anterior`
+              : e.kind === "PROVISION_ADJUSTMENT" ? `Ajuste Provisión ${e.recurringTemplate.description}`
               : e.recurringTemplate.description)
             : (e.customCategory ?? e.description);
           const existing = grouped.get(key);
@@ -3994,10 +3997,6 @@ export const financeRouter = router({
         const rate = await getCurrentRate("BCV", periodEnd);
         const usdRate = new Decimal(rate.vesPerUsd.toString());
 
-        // Período anterior
-        const prevMonth = month === 1 ? 12 : month - 1;
-        const prevYear = month === 1 ? year - 1 : year;
-
         let created = 0;
         let adjustments = 0;
 
@@ -4030,60 +4029,68 @@ export const financeRouter = router({
             ? new Decimal(tpl.amountBss!.toString())
             : new Decimal(tpl.amountUsd.toString()).mul(usdRate);
 
-          // — AJUSTE PROVISIÓN MES ANTERIOR (solo si tpl.isProvision) —
+          // — AJUSTE PROVISIÓN DEL MISMO MES (in-period). Cambio 8/jun/2026:
+          // antes el ajuste se calculaba sobre el mes anterior; ahora sobre el
+          // mismo mes (pedido cliente: el recibo de junio se emite en julio y
+          // debe incluir todos los gastos cargados durante junio). —
           if (tpl.isProvision) {
-            // 1. Provisión base del mes anterior
-            const prevBase = await ctx.db.expense.findFirst({
+            // Ya hay ajuste para este mes/plantilla? si sí, no duplicar.
+            const existAdj = await ctx.db.expense.findFirst({
               where: {
-                communityId, periodYear: prevYear, periodMonth: prevMonth,
+                communityId, periodYear: year, periodMonth: month,
                 recurringTemplateId: tpl.id,
-                kind: "PROVISION_BASE",
+                kind: "PROVISION_ADJUSTMENT",
                 voidedAt: null,
               },
-              select: { amountUsd: true, amountBss: true },
+              select: { id: true },
             });
-            // 2. Gastos reales del mes anterior con esta plantilla
-            const prevReal = await ctx.db.expense.findMany({
-              where: {
-                communityId, periodYear: prevYear, periodMonth: prevMonth,
-                recurringTemplateId: tpl.id,
-                kind: "REGULAR",
-                voidedAt: null,
-              },
-              select: { amountUsd: true, amountBss: true },
-            });
-            if (prevBase) {
-              const realSumUsd = prevReal.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
-              const realSumBss = prevReal.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
-              const baseUsd = new Decimal(prevBase.amountUsd.toString());
-              const baseBss = new Decimal(prevBase.amountBss.toString());
-              const adjUsd = realSumUsd.minus(baseUsd);
-              const adjBss = realSumBss.minus(baseBss);
-              // Solo crear ajuste si != 0 (>$0.01 de diferencia)
-              if (adjUsd.abs().gt("0.01")) {
-                await ctx.db.expense.create({
-                  data: {
-                    organizationId,
-                    communityId,
-                    category: tpl.category,
-                    customCategory: tpl.customCategory ?? null,
-                    description: `Ajuste Provisión ${tpl.description} — mes anterior`,
-                    supplierName: tpl.supplierName ?? null,
-                    periodYear: year,
-                    periodMonth: month,
-                    amountUsd: adjUsd.toFixed(2),
-                    amountBss: adjBss.toFixed(2),
-                    exchangeRate: usdRate.toFixed(8),
-                    exchangeSource: rate.source,
-                    currencyPrimary: "USD",
-                    towerScope: tpl.towerScope ?? null,
-                    isIndividual: false,
-                    recurringTemplateId: tpl.id,
-                    kind: "PROVISION_ADJUSTMENT",
-                    createdById: ctx.user.id,
-                  },
-                });
-                adjustments++;
+            if (!existAdj) {
+              // Base = la PROVISION_BASE del MISMO mes (la que vamos a crear
+              // abajo si aún no existe, o la que ya existe). Usamos el monto
+              // de la plantilla como referencia — coincide con la base que se
+              // crea/existe.
+              const baseUsd = tplAmountUsd;
+              const baseBss = tplAmountBss;
+              // Reales del MISMO mes vinculados a esta plantilla.
+              const currentReal = await ctx.db.expense.findMany({
+                where: {
+                  communityId, periodYear: year, periodMonth: month,
+                  recurringTemplateId: tpl.id,
+                  kind: "REGULAR",
+                  voidedAt: null,
+                },
+                select: { amountUsd: true, amountBss: true },
+              });
+              if (currentReal.length > 0) {
+                const realSumUsd = currentReal.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+                const realSumBss = currentReal.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+                const adjUsd = realSumUsd.minus(baseUsd);
+                const adjBss = realSumBss.minus(baseBss);
+                if (adjUsd.abs().gt("0.01")) {
+                  await ctx.db.expense.create({
+                    data: {
+                      organizationId,
+                      communityId,
+                      category: tpl.category,
+                      customCategory: tpl.customCategory ?? null,
+                      description: `Ajuste Provisión ${tpl.description}`,
+                      supplierName: tpl.supplierName ?? null,
+                      periodYear: year,
+                      periodMonth: month,
+                      amountUsd: adjUsd.toFixed(2),
+                      amountBss: adjBss.toFixed(2),
+                      exchangeRate: usdRate.toFixed(8),
+                      exchangeSource: rate.source,
+                      currencyPrimary: "USD",
+                      towerScope: tpl.towerScope ?? null,
+                      isIndividual: false,
+                      recurringTemplateId: tpl.id,
+                      kind: "PROVISION_ADJUSTMENT",
+                      createdById: ctx.user.id,
+                    },
+                  });
+                  adjustments++;
+                }
               }
             }
           }
