@@ -155,6 +155,11 @@ model Community {
   /// URL del logo del condominio (para personalizar el header del recibo PDF).
   /// Acepta cualquier URL pública o data URL base64. Si null, el PDF no muestra logo.
   logoUrl             String?
+  /// Shift de meses entre el período del recibo y el período de los gastos que
+  /// cobra. 0 = mismo mes (recibo de julio cobra gastos de julio). 1 = post-mes
+  /// (recibo de julio cobra gastos cargados en junio — práctica venezolana
+  /// estándar). Default 1 porque es lo más común en el mercado.
+  invoicePeriodShift  Int       @default(1)
   // Metadata
   foundedAt       DateTime?
   notes           String?

@@ -1160,25 +1160,24 @@ function DeudaGeneralTab({ communityId, token, unit }: { communityId: string; to
         </p>
       </div>
 
-      {/* Tabla deuda por unidad */}
+      {/* Tabla deuda por unidad — privacidad: solo apartamento, monto y meses,
+          sin nombres de propietarios (pedido cliente 8/jun/2026). */}
       <div>
         <h3 className="text-xl font-bold">Deuda General por Condominio</h3>
-        <p className="text-sm text-[#1e7a5f]">Expresado en US$</p>
+        <p className="text-sm text-[#1e7a5f]">Expresado en US$ — sin identificación personal</p>
         <div className="mt-2 overflow-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[#1e3a5f] text-white text-left">
                 <th className="px-4 py-2 font-semibold">Unidad</th>
-                <th className="px-4 py-2 font-semibold">Propietario</th>
                 <th className="px-4 py-2 font-semibold text-right">Deuda US$</th>
                 <th className="px-4 py-2 font-semibold text-right">Meses vencida</th>
               </tr>
             </thead>
             <tbody>
-              {data.unidades.filter((u: { pendingUsd: string }) => Number(u.pendingUsd) > 0.005).map((u: { unitCode: string; ownerName: string | null; pendingUsd: string; overdueMonths: number }, i: number) => (
+              {data.unidades.filter((u: { pendingUsd: string }) => Number(u.pendingUsd) > 0.005).map((u: { unitCode: string; pendingUsd: string; overdueMonths: number }, i: number) => (
                 <tr key={u.unitCode} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
                   <td className="px-4 py-2 font-medium">{u.unitCode}</td>
-                  <td className="px-4 py-2 text-muted-foreground">{u.ownerName ?? "—"}</td>
                   <td className="px-4 py-2 text-right font-semibold">{Number(u.pendingUsd).toFixed(2)}</td>
                   <td className="px-4 py-2 text-right">{u.overdueMonths}</td>
                 </tr>

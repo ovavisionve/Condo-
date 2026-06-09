@@ -932,10 +932,11 @@ export const portalRouter = router({
         count: agingUnitSets[i]!.size,
       }));
 
+      // Privacidad: no exponemos nombres de propietarios al portal del residente
+      // (pedido cliente 8/jun/2026 para Castaños y Arrayanes). Solo unidad+deuda+mora.
       const unidades = Array.from(unitMap.values())
         .map((u) => ({
           unitCode: u.unitCode,
-          ownerName: u.ownerName,
           pendingUsd: u.pendingUsd.toFixed(2),
           overdueMonths: Math.ceil(u.maxDaysOverdue / 30),
         }))

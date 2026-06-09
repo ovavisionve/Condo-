@@ -927,12 +927,20 @@ export const financeRouter = router({
         const { generateInvoicePdf } = await import("@/server/services/pdf");
         const { prorateSignedExported } = await import("@/server/services/invoicing");
 
-        // ── Cargar datos ────────────────────────────────────────────────
-        const [community, units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
-          ctx.db.community.findFirstOrThrow({
-            where: { id: input.communityId, organizationId: input.organizationId },
-            select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true, logoUrl: true },
-          }),
+        // ── Cargar comunidad primero para conocer el shift ──────────────
+        // Con shift=1 (post-mes), el recibo del mes M cobra gastos del mes M-1
+        // (práctica venezolana). Calculamos expensePeriodYear/Month en base
+        // al shift configurado.
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: input.communityId, organizationId: input.organizationId },
+          select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true, logoUrl: true, invoicePeriodShift: true },
+        });
+        const shift = community.invoicePeriodShift ?? 0;
+        let expensePeriodYear = input.year;
+        let expensePeriodMonth = input.month - shift;
+        while (expensePeriodMonth <= 0) { expensePeriodMonth += 12; expensePeriodYear -= 1; }
+
+        const [units, expensesAll, deductibleIncomes, bankAccounts] = await Promise.all([
           ctx.db.unit.findMany({
             where: { communityId: input.communityId, active: true, deletedAt: null },
             select: { id: true, code: true, aliquot: true, tower: true, floor: true },
@@ -941,8 +949,8 @@ export const financeRouter = router({
           ctx.db.expense.findMany({
             where: {
               communityId: input.communityId,
-              periodYear: input.year,
-              periodMonth: input.month,
+              periodYear: expensePeriodYear,
+              periodMonth: expensePeriodMonth,
               invoicedAt: null,
               voidedAt: null,
             },
@@ -951,8 +959,8 @@ export const financeRouter = router({
           ctx.db.income.findMany({
             where: {
               communityId: input.communityId,
-              periodYear: input.year,
-              periodMonth: input.month,
+              periodYear: expensePeriodYear,
+              periodMonth: expensePeriodMonth,
               affectsInvoice: true,
               voidedAt: null,
             },
@@ -1033,8 +1041,8 @@ export const financeRouter = router({
             customCategory: tpl.customCategory,
             description: tpl.isProvision ? `Provisión ${tpl.description}` : tpl.description,
             supplierName: tpl.supplierName,
-            periodYear: input.year,
-            periodMonth: input.month,
+            periodYear: expensePeriodYear,
+            periodMonth: expensePeriodMonth,
             amountUsd: amountUsd.toFixed(2) as never,
             amountBss: amountBss.toFixed(2) as never,
             exchangeRate: usdRate.toFixed(8) as never,
@@ -1113,8 +1121,8 @@ export const financeRouter = router({
             customCategory: tpl.customCategory,
             description: `Ajuste Provisión ${tpl.description}`,
             supplierName: tpl.supplierName,
-            periodYear: input.year,
-            periodMonth: input.month,
+            periodYear: expensePeriodYear,
+            periodMonth: expensePeriodMonth,
             amountUsd: adjUsd.toFixed(2) as never,
             amountBss: adjBss.toFixed(2) as never,
             exchangeRate: usdRate.toFixed(8) as never,

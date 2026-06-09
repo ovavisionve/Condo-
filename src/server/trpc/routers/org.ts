@@ -89,6 +89,7 @@ export const orgRouter = router({
           active: z.boolean().optional(),
           dueDaysAfterIssue: z.coerce.number().int().min(1).max(365).optional(),
           logoUrl: z.string().max(2048).nullable().optional(),
+          invoicePeriodShift: z.coerce.number().int().min(0).max(3).optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {

@@ -195,6 +195,12 @@ export async function issueMonthlyInvoices(params: {
     where: { id: communityId, organizationId, deletedAt: null },
   });
 
+  // Shift post-mes: el recibo del mes M cobra gastos del mes M-shift.
+  const shift = (community as { invoicePeriodShift?: number }).invoicePeriodShift ?? 0;
+  let expenseYear = year;
+  let expenseMonth = month - shift;
+  while (expenseMonth <= 0) { expenseMonth += 12; expenseYear -= 1; }
+
   const units = await db.unit.findMany({
     where: { communityId, active: true, deletedAt: null },
     orderBy: { code: "asc" },
@@ -214,7 +220,7 @@ export async function issueMonthlyInvoices(params: {
   }
 
   const allExpenses = await db.expense.findMany({
-    where: { communityId, periodYear: year, periodMonth: month, invoicedAt: null, voidedAt: null },
+    where: { communityId, periodYear: expenseYear, periodMonth: expenseMonth, invoicedAt: null, voidedAt: null },
     include: { recurringTemplate: { select: { id: true, description: true, isProvision: true, active: true } } },
   });
   // Excluir:
@@ -228,7 +234,7 @@ export async function issueMonthlyInvoices(params: {
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
   const deductibleIncomes = await db.income.findMany({
-    where: { communityId, periodYear: year, periodMonth: month, affectsInvoice: true, voidedAt: null },
+    where: { communityId, periodYear: expenseYear, periodMonth: expenseMonth, affectsInvoice: true, voidedAt: null },
   });
   const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s.plus(i.amountUsd.toString()), new Decimal(0));
   const totalIncomeDeductionBss = deductibleIncomes.reduce((s, i) => s.plus(i.amountBss.toString()), new Decimal(0));

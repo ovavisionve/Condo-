@@ -142,13 +142,14 @@ function EditCommunityForm({
     email?: string;
     website?: string;
     logoUrl?: string | null;
+    invoicePeriodShift?: number;
     floorsCount?: number | null;
     towersCount?: number;
   }) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
 }) {
-  const c = community as CommunityData & { rif?: string | null; phone?: string | null; email?: string | null; website?: string | null; logoUrl?: string | null };
+  const c = community as CommunityData & { rif?: string | null; phone?: string | null; email?: string | null; website?: string | null; logoUrl?: string | null; invoicePeriodShift?: number };
 
   const [name, setName] = useState(c.name);
   const [rif, setRif] = useState(c.rif ?? "");
@@ -159,6 +160,7 @@ function EditCommunityForm({
   const [email, setEmail] = useState(c.email ?? "");
   const [website, setWebsite] = useState(c.website ?? "");
   const [logoUrl, setLogoUrl] = useState(c.logoUrl ?? "");
+  const [invoicePeriodShift, setInvoicePeriodShift] = useState(String(c.invoicePeriodShift ?? 1));
   const [floorsCount, setFloorsCount] = useState(c.floorsCount != null ? String(c.floorsCount) : "");
   const [towersCount, setTowersCount] = useState(String(c.towersCount ?? 1));
   const [err, setErr] = useState<string | null>(null);
@@ -180,6 +182,7 @@ function EditCommunityForm({
         email: email.trim() || undefined,
         website: website.trim() || undefined,
         logoUrl: logoUrl.trim() ? logoUrl.trim() : null,
+        invoicePeriodShift: Number(invoicePeriodShift),
         floorsCount: floorsCount ? Number(floorsCount) : null,
         towersCount: towersCount ? Number(towersCount) : undefined,
       });
@@ -284,6 +287,28 @@ function EditCommunityForm({
                 />
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Facturación */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Facturación</p>
+          <div className="space-y-1.5 max-w-md">
+            <Label htmlFor="c-shift">Período de gastos vs. recibo</Label>
+            <select
+              id="c-shift"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={invoicePeriodShift}
+              onChange={(e) => setInvoicePeriodShift(e.target.value)}
+              disabled={isSaving}
+            >
+              <option value="0">Mismo mes — recibo de julio cobra gastos de julio</option>
+              <option value="1">Post-mes (Recomendado) — recibo de julio cobra gastos de junio</option>
+              <option value="2">2 meses atrás — recibo de julio cobra gastos de mayo</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Práctica venezolana estándar: <strong>post-mes</strong>. El admin carga los gastos durante el mes (junio) y los cobra en el recibo del mes siguiente (julio).
+            </p>
           </div>
         </div>
 
