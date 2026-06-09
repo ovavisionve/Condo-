@@ -1918,6 +1918,133 @@ export const financeRouter = router({
         return { sent, failed, remaining: pending.length - sent - failed };
       }),
 
+    /**
+     * Envío masivo SIN paginar: agarra TODAS las facturas pendientes del período
+     * y las envía en serie. Cap de seguridad: 500 emails por llamada.
+     * Pedido cliente 8/jun/2026: "haz que los 188 emails se envíen de forma
+     * automática, de un solo golpe, ya investigué y eso no tumbará nada".
+     * Procesa en lotes de 40 internamente con throttle para no saturar SMTP.
+     */
+    sendEmailAllAtOnce: orgProcedure
+      .input(orgIdInput.extend({
+        communityId: z.string(),
+        year:  z.number().int(),
+        month: z.number().int().min(1).max(12),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { organizationId, communityId, year, month } = input;
+        const monthStart = new Date(Date.UTC(year, month - 1, 1));
+        const monthEnd   = new Date(Date.UTC(year, month, 1));
+
+        const alreadySent = await ctx.db.notification.findMany({
+          where: {
+            organizationId, communityId,
+            event: "INVOICE_ISSUED", channel: "EMAIL",
+            status: { in: ["SENT", "FAILED"] },
+            sentAt: { gte: monthStart, lt: monthEnd },
+          },
+          select: { unitId: true },
+        });
+        const sentUnitIds = new Set(alreadySent.map(n => n.unitId).filter(Boolean) as string[]);
+
+        const pending = await ctx.db.invoice.findMany({
+          where: {
+            organizationId, communityId,
+            periodYear: year, periodMonth: month,
+            status: { in: ["ISSUED", "PARTIAL", "PAID", "OVERDUE"] },
+            unitId: { notIn: [...sentUnitIds] },
+          },
+          include: {
+            unit: {
+              select: {
+                id: true, code: true,
+                ownerships: {
+                  where: { endDate: null }, take: 1,
+                  include: { person: { select: { id: true, firstName: true, lastName: true, email: true } } },
+                },
+              },
+            },
+            items: { select: { description: true, amountUsd: true, amountBss: true } },
+          },
+          take: 500, // hard cap
+          orderBy: { invoiceNumber: "asc" },
+        });
+
+        if (pending.length === 0) return { sent: 0, failed: 0, total: 0, message: "Sin pendientes" };
+
+        const { sendEmail, buildInvoiceEmail } = await import("@/server/services/email");
+        const now = new Date();
+        const portalBase = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: communityId, organizationId },
+          select: { name: true, address: true },
+        });
+
+        let sent = 0, failed = 0;
+        // Procesar en grupos de 10 paralelos para no saturar (188/10 ≈ 19 grupos, ~38s total).
+        const CONCURRENCY = 10;
+        for (let i = 0; i < pending.length; i += CONCURRENCY) {
+          const chunk = pending.slice(i, i + CONCURRENCY);
+          await Promise.all(chunk.map(async (inv) => {
+            const person = inv.unit.ownerships[0]?.person;
+            const notifData = {
+              organizationId, communityId,
+              unitId:   inv.unit.id,
+              personId: person?.id ?? null,
+              channel:  "EMAIL" as const,
+              event:    "INVOICE_ISSUED" as const,
+              sentAt:   now,
+            };
+            if (!person?.email) {
+              await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Sin email" } }).catch(() => {/**/});
+              failed++;
+              return;
+            }
+            try {
+              const portalToken = await ctx.db.portalToken.findFirst({
+                where: { personId: person.id, expiresAt: { gt: now } },
+                orderBy: { expiresAt: "desc" },
+              });
+              const portalUrl = portalToken
+                ? `${portalBase}/portal?token=${portalToken.token}`
+                : portalBase;
+              const emailData = buildInvoiceEmail({
+                communityName:    community.name,
+                communityAddress: community.address ?? undefined,
+                personName:       `${person.firstName} ${person.lastName}`,
+                unitCode:         inv.unit.code,
+                invoiceNumber:    inv.invoiceNumber,
+                periodYear:       inv.periodYear,
+                periodMonth:      inv.periodMonth,
+                issuedAt:         inv.issuedAt,
+                dueDate:          inv.dueDate,
+                items:            inv.items.map((item) => ({
+                  description: item.description,
+                  amountUsd:   item.amountUsd.toString(),
+                  amountBss:   item.amountBss.toString(),
+                })),
+                totalUsd:     inv.totalUsd.toString(),
+                totalBss:     inv.totalBss.toString(),
+                paidUsd:      inv.paidUsd.toString(),
+                exchangeRate: inv.exchangeRate.toString(),
+                status:       inv.status,
+                portalUrl,
+              });
+              const result = await sendEmail({ to: person.email, ...emailData });
+              await ctx.db.notification.create({
+                data: { ...notifData, status: result.success ? "SENT" : "FAILED", body: emailData.text ?? "" },
+              }).catch(() => {/**/});
+              if (result.success) sent++; else failed++;
+            } catch {
+              await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Error al enviar" } }).catch(() => {/**/});
+              failed++;
+            }
+          }));
+        }
+
+        return { sent, failed, total: pending.length };
+      }),
+
     /** Preview de lo que se facturaría este mes (sin guardar nada). */
     previewMonth: orgProcedure
       .input(orgIdInput.extend({

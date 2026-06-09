@@ -38,6 +38,7 @@ export default function InvoicesPage() {
   const reissue      = trpc.finance.invoices.reissueMonth.useMutation();
   const publishDrafts = trpc.finance.invoices.publishDrafts.useMutation();
   const sendBatch    = trpc.finance.invoices.sendEmailBatch.useMutation();
+  const sendAll      = trpc.finance.invoices.sendEmailAllAtOnce.useMutation();
   const sendEmail    = trpc.finance.invoices.sendByEmail.useMutation();
   const downloadPdf  = trpc.finance.invoices.downloadPdf.useMutation();
   const voidInvoice  = trpc.finance.invoices.voidOne.useMutation();
@@ -109,6 +110,16 @@ export default function InvoicesPage() {
     try {
       const r = await sendBatch.mutateAsync({ organizationId, communityId, year, month, batchSize: 40 });
       setSuccess(`📧 Lote enviado: ${r.sent} exitosos · ${r.failed} fallidos · ${r.remaining ?? 0} pendientes restantes.`);
+      void emailProgress.refetch();
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Error"); }
+  };
+
+  const onSendAll = async () => {
+    if (!window.confirm("¿Enviar TODOS los recibos pendientes de este período por email en un solo golpe? Esto puede tomar 30-60 segundos.")) return;
+    setError(null); setSuccess(null);
+    try {
+      const r = await sendAll.mutateAsync({ organizationId, communityId, year, month });
+      setSuccess(`🚀 Envío masivo completado: ${r.sent}/${r.total} enviados · ${r.failed} fallidos.`);
       void emailProgress.refetch();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Error"); }
   };
@@ -321,7 +332,9 @@ export default function InvoicesPage() {
         <EmailProgressPanel
           data={emailProgress.data}
           onSendBatch={onSendBatch}
+          onSendAll={onSendAll}
           isSending={sendBatch.isPending}
+          isSendingAll={sendAll.isPending}
         />
       )}
 
@@ -717,11 +730,13 @@ interface EmailProgressData {
 }
 
 function EmailProgressPanel({
-  data, onSendBatch, isSending,
+  data, onSendBatch, isSending, onSendAll, isSendingAll,
 }: {
   data: EmailProgressData;
   onSendBatch: () => void;
   isSending: boolean;
+  onSendAll: () => void;
+  isSendingAll: boolean;
 }) {
   const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
   const canSendMore = data.pending > 0 && !data.complete;
@@ -742,13 +757,23 @@ function EmailProgressPanel({
             Hoy: {data.todaySent}/{data.dailyCap} · Total: {data.sent}/{data.total}
           </span>
           {canSendMore && (
-            <button
-              onClick={onSendBatch}
-              disabled={isSending}
-              className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium px-3 py-1.5 transition-colors"
-            >
-              {isSending ? "Enviando…" : `📤 Enviar lote (hasta 40)`}
-            </button>
+            <>
+              <button
+                onClick={onSendBatch}
+                disabled={isSending || isSendingAll}
+                className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-medium px-3 py-1.5 transition-colors"
+              >
+                {isSending ? "Enviando…" : `📤 Enviar lote (40)`}
+              </button>
+              <button
+                onClick={onSendAll}
+                disabled={isSending || isSendingAll}
+                className="rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-medium px-3 py-1.5 transition-colors"
+                title="Envía TODOS los recibos pendientes del período de un solo golpe (puede tomar 30-60 segundos)"
+              >
+                {isSendingAll ? "Enviando todos…" : `🚀 Enviar TODOS (${data.pending})`}
+              </button>
+            </>
           )}
         </div>
       </div>

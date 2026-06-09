@@ -1544,9 +1544,147 @@ function SeguridadTab({ unit, token }: { unit: UnitData; token?: string }) {
   );
 }
 
+// ─── ONBOARDING OBLIGATORIO ──────────────────────────────────────────────────
+// Pedido cliente 8/jun/2026: la primera vez que un residente entra al portal,
+// debe llenar WhatsApp + email + nombre + apellido SIN poder seguir hasta llenar.
+// La data alimenta el sistema (Person) y habilita el bot WhatsApp + envíos masivos.
+function OnboardingModal({
+  data, token, onComplete,
+}: {
+  data: PortalData;
+  token?: string;
+  onComplete: () => void;
+}) {
+  const [firstName, setFirstName] = useState(data.person.firstName ?? "");
+  const [lastName, setLastName] = useState(data.person.lastName ?? "");
+  const [whatsapp, setWhatsapp] = useState(data.person.whatsapp ?? data.person.phone ?? "");
+  const [email, setEmail] = useState(data.person.email ?? "");
+  const [emailSecondary, setEmailSecondary] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const updateProfile = trpc.portal.updateOwnProfile.useMutation();
+
+  const unit = data.units[0];
+  const ok =
+    firstName.trim().length >= 2 &&
+    lastName.trim().length >= 2 &&
+    whatsapp.replace(/\D/g, "").length >= 10 &&
+    /^[^@]+@[^@]+\.[^@]+$/.test(email);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ok) { setError("Completá todos los campos obligatorios correctamente."); return; }
+    setError(null);
+    try {
+      await updateProfile.mutateAsync({
+        token,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        whatsapp: whatsapp.trim(),
+        email: email.trim(),
+        emailSecondary: emailSecondary.trim() || null,
+      });
+      onComplete();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error al guardar.");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-6 my-8">
+        <div className="text-center mb-5">
+          <div className="text-3xl mb-2">👋</div>
+          <h2 className="text-2xl font-bold text-[#1e3a5f]">¡Bienvenido/a al portal!</h2>
+          <p className="text-sm text-muted-foreground mt-2">
+            Antes de continuar, completá tus datos. Solo te lo pediremos esta vez.
+          </p>
+        </div>
+
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900">
+            📍 Unidad: <strong>{unit?.unitCode ?? "—"}</strong> · {unit?.communityName ?? ""}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-slate-700">Nombre *</label>
+              <input
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={firstName} onChange={(e) => setFirstName(e.target.value)} required minLength={2}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700">Apellido *</label>
+              <input
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={lastName} onChange={(e) => setLastName(e.target.value)} required minLength={2}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-700">📱 WhatsApp * <span className="text-muted-foreground">(con código de país, ej. 04141234567)</span></label>
+            <input
+              type="tel"
+              className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)}
+              placeholder="0414-123-4567"
+              required minLength={7}
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Por este número te llegarán los recibos y respuestas del asistente.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-700">📧 Email principal * <span className="text-muted-foreground">(recibos)</span></label>
+            <input
+              type="email"
+              className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={email} onChange={(e) => setEmail(e.target.value)} required
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-700">📧 Email secundario <span className="text-muted-foreground">(opcional)</span></label>
+            <input
+              type="email"
+              className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={emailSecondary} onChange={(e) => setEmailSecondary(e.target.value)}
+              placeholder="opcional@ejemplo.com"
+            />
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={!ok || updateProfile.isPending}
+            className="w-full h-11 rounded-md bg-[#1e3a5f] text-white font-semibold hover:bg-[#15294a] disabled:opacity-50 transition-colors"
+          >
+            {updateProfile.isPending ? "Guardando..." : "Continuar al portal →"}
+          </button>
+
+          <p className="text-[10px] text-center text-muted-foreground">
+            Al continuar aceptás que la Junta de Condominio use estos datos para enviarte recibos, avisos y comunicaciones oficiales.
+          </p>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── DASHBOARD PRINCIPAL ──────────────────────────────────────────────────────
 function ResidentDashboard({ data, token }: { data: PortalData; token?: string }) {
   const [tab, setTab] = useState<TabKey>("principal");
+  const [needsOnboarding, setNeedsOnboarding] = useState(
+    // El residente debe completar onboarding si no tiene whatsapp o nombre
+    !data.person.whatsapp ||
+    data.person.whatsapp.trim().length < 7 ||
+    !data.person.firstName?.trim() ||
+    !data.person.lastName?.trim() ||
+    !data.person.email,
+  );
   const unit = data.units[0];
 
   if (!unit) return (
@@ -1554,6 +1692,24 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
       <p className="text-muted-foreground">No tienes unidades asignadas. Contacta a la Junta de Condominio.</p>
     </div>
   );
+
+  if (needsOnboarding) {
+    return (
+      <>
+        <OnboardingModal
+          data={data}
+          token={token}
+          onComplete={() => {
+            setNeedsOnboarding(false);
+            // Recargar para que data.person.whatsapp/etc se actualicen
+            window.location.reload();
+          }}
+        />
+        {/* Fondo oscuro */}
+        <div className="min-h-screen bg-[#1e3a5f]" />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
@@ -1566,6 +1722,13 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
           <div className="flex items-center gap-4">
             <span className="text-blue-200">{data.person.firstName} {data.person.lastName}</span>
             <span className="font-bold">{unit.unitCode}</span>
+            <a
+              href="/portal/help"
+              className="text-blue-300 hover:text-white transition-colors"
+              title="Manual del residente"
+            >
+              ❓ Ayuda
+            </a>
             {!token && (
               <a href="/api/auth/signout" className="text-blue-300 hover:text-white transition-colors">Salir</a>
             )}

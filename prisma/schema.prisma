@@ -2038,3 +2038,172 @@ model PaymentPlan {
   @@index([communityId, unitId])
   @@index([organizationId])
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOT WHATSAPP — agnóstico al canal (whatsapp | instagram más adelante)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Conversación de WhatsApp/Instagram con un usuario externo (residente o prospecto).
+/// Una fila por (waId, channel). Mantiene estado de menú, modo bot/agente, identificación.
+model WhatsAppConversation {
+  id              String   @id @default(cuid())
+  organizationId  String
+  communityId     String?
+  waId            String   // número del usuario (ej. 584141234567) o id de IG
+  channel         String   @default("whatsapp") // "whatsapp" | "instagram"
+  mode            String   @default("bot")      // "bot" | "agent"
+  currentMenu     String?  // identificador del nodo de menú actual
+  track           String?  // "support" | "sales"
+  personId        String?  // si se identificó al residente
+  unitId          String?
+  welcomedAt      DateTime?
+  answeredAt      DateTime?
+  warnedAt        DateTime?
+  csatSent        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  messages        WhatsAppMessage[]
+
+  @@unique([waId, channel])
+  @@index([organizationId])
+  @@index([communityId])
+  @@index([personId])
+}
+
+/// Historial de mensajes inbound/outbound. wamId es el ID de Meta (dedup).
+model WhatsAppMessage {
+  id              String   @id @default(cuid())
+  conversationId  String
+  conversation    WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction       String   // "in" | "out"
+  body            String   @db.Text
+  msgType         String   @default("text")   // text | interactive | document | image | template
+  wamId           String?  @unique            // ID del mensaje en Meta (para dedup)
+  status          String   @default("received") // received | sent | delivered | read | failed
+  channel         String   @default("whatsapp")
+  createdAt       DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+/// Configuración del bot por organización. 1 fila por org.
+model WhatsAppBotConfig {
+  id                  Int      @id @default(autoincrement())
+  organizationId      String   @unique
+  enabled             Boolean  @default(true)
+  // Mensajes
+  welcomeMessage      String?  @db.Text
+  menuPrompt          String?  @db.Text
+  fallbackMessage     String?  @db.Text
+  agentHandoffMessage String?  @db.Text
+  awayMessage         String?  @db.Text
+  // Horario oficina
+  officeStart         String?  // "08:00"
+  officeEnd           String?  // "17:00"
+  officeTimezone      String   @default("America/Caracas")
+  // CSAT
+  csatEnabled         Boolean  @default(true)
+  // Inactividad
+  idleWarnMinutes     Int      @default(30)
+  idleCloseMinutes    Int      @default(60)
+  // IA
+  aiEnabled           Boolean  @default(true)
+  aiPersonaName       String?
+  aiSystemPrompt      String?  @db.Text
+  // Branding
+  downloadUrl         String?
+  updatedAt           DateTime @updatedAt
+}
+
+/// Nodo del árbol de menú interactivo. parentId=null para nodos raíz.
+model WhatsAppMenuOption {
+  id              String   @id @default(cuid())
+  organizationId  String
+  optionId        String   // identificador del nodo (ej. "menu_root.facturas")
+  label           String
+  response        String?  @db.Text
+  parentId        String?  // si es hijo de otra categoría
+  isCategory      Boolean  @default(false)
+  isHandoff       Boolean  @default(false)
+  escalate        Boolean  @default(false)
+  urgent          Boolean  @default(false)
+  sort            Int      @default(0)
+  enabled         Boolean  @default(true)
+
+  @@unique([organizationId, optionId])
+  @@index([organizationId, parentId])
+}
+
+/// FAQ matcheable por keywords. priority gana en ties.
+model WhatsAppFaq {
+  id              String   @id @default(cuid())
+  organizationId  String
+  question        String
+  answer          String   @db.Text
+  keywords        String[] // array de palabras clave
+  category        String?
+  priority        Int      @default(0)
+  enabled         Boolean  @default(true)
+
+  @@index([organizationId, enabled])
+}
+
+/// Caso escalado a humano desde el bot.
+model WhatsAppTicket {
+  id              String   @id @default(cuid())
+  organizationId  String
+  communityId     String?
+  conversationId  String?
+  category        String?
+  summary         String   @db.Text
+  status          String   @default("open")     // open | in_progress | resolved | closed
+  priority        String   @default("normal")   // low | normal | high | urgent
+  contact         String?
+  personId        String?
+  channel         String   @default("whatsapp")
+  source          String?
+  createdAt       DateTime @default(now())
+  resolvedAt      DateTime?
+
+  @@index([organizationId, status])
+}
+
+/// Telemetría/auditoría del bot (cada paso del flujo).
+model WhatsAppEvent {
+  id              String   @id @default(cuid())
+  organizationId  String
+  conversationId  String?
+  type            String   // faq_hit | ai_answer | ai_clarify | handoff | csat | document_sent | menu_hit
+  detail          Json?
+  channel         String   @default("whatsapp")
+  createdAt       DateTime @default(now())
+
+  @@index([organizationId, type, createdAt])
+}
+
+/// Resultados del CSAT (encuesta de satisfacción).
+model WhatsAppFeedback {
+  id              String   @id @default(cuid())
+  organizationId  String
+  conversationId  String?
+  kind            String?
+  ref             String?
+  stars           Int?
+  rating          String?  // "up" | "down"
+  channel         String   @default("whatsapp")
+  createdAt       DateTime @default(now())
+
+  @@index([organizationId])
+}
+
+/// Almacén global de secretos editables (tokens de Meta, secretos internos, etc.).
+/// Pegados manualmente por el dueño desde panel admin o SQL. Nunca por el asistente.
+model AppSecret {
+  key             String   @id
+  value           Json
+  organizationId  String?
+  updatedAt       DateTime @updatedAt
+
+  @@index([organizationId])
+}

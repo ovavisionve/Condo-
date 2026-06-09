@@ -373,6 +373,50 @@ export const portalRouter = router({
    * se crea un PortalToken (válido 7 días) y se envía el enlace por correo.
    * Siempre retorna { sent: true } para no revelar si el email existe.
    */
+  /**
+   * Onboarding obligatorio del residente — la primera vez que entra al portal
+   * debe completar WhatsApp, email(s), nombre y apellido. Pedido cliente Reinaldo
+   * 8/jun/2026: "que la primera vez le pregunte obligatoriamente sus datos hasta
+   * que lo llenen no podrán seguir". Esta data alimenta el sistema directo
+   * (Person) y habilita el envío masivo por email y bot de WhatsApp.
+   */
+  updateOwnProfile: publicProcedure
+    .input(
+      z.object({
+        token: z.string().optional(),
+        firstName: z.string().min(2).max(80),
+        lastName: z.string().min(2).max(80),
+        whatsapp: z.string().min(7).max(20), // OBLIGATORIO. Solo dígitos + (códigos de país)
+        email: z.string().email(),
+        emailSecondary: z.string().email().nullable().optional(), // opcional
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const sessionUserId = (ctx as { user?: { id?: string } | null }).user?.id;
+      const personId = await resolvePersonId(ctx.db, input.token, sessionUserId);
+      if (!personId) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+      // Normalizar whatsapp: solo dígitos, con código país 58 si no lo trae
+      const digits = input.whatsapp.replace(/\D/g, "");
+      const waNumber = digits.startsWith("58") ? digits : digits.startsWith("0") ? `58${digits.slice(1)}` : `58${digits}`;
+
+      const updated = await ctx.db.person.update({
+        where: { id: personId },
+        data: {
+          firstName: input.firstName.trim(),
+          lastName: input.lastName.trim(),
+          whatsapp: waNumber,
+          email: input.email.toLowerCase().trim(),
+          // emailSecondary se guarda como nota si no hay columna específica
+          notes: input.emailSecondary?.trim()
+            ? `Email secundario: ${input.emailSecondary.toLowerCase().trim()}`
+            : undefined,
+        },
+        select: { id: true, firstName: true, lastName: true, whatsapp: true, email: true },
+      });
+      return { ok: true, person: updated };
+    }),
+
   requestAccess: publicProcedure
     .input(z.object({ email: z.string().email() }))
     .mutation(async ({ ctx, input }) => {
