@@ -100,29 +100,63 @@ async function findPersonByPhone(organizationId: string, waId: string) {
  * habilitado — si hay varias, se prioriza por la que tiene matching del residente
  * o, en su defecto, la primera con WhatsAppBotConfig.enabled=true.
  */
-async function resolveOrganization(waId: string): Promise<{ organizationId: string } | null> {
-  // 1. Si el número del remitente está vinculado a un Person, esa org gana.
+/**
+ * Resolve qué bot atiende este mensaje según el phone_number_id que viene en el
+ * payload de Meta. Cada condominio tiene su número WhatsApp + su WhatsAppBotConfig.
+ * Si no hay match por phone_number_id, cae a heurística: persona conocida o primero.
+ */
+async function resolveBotContext(
+  waId: string,
+  phoneNumberId?: string,
+): Promise<{ organizationId: string; communityId: string | null } | null> {
+  // 1. PRIORIDAD: identificar el bot por el phone_number_id del payload Meta.
+  if (phoneNumberId) {
+    const cfg = await db.whatsAppBotConfig.findFirst({
+      where: { phoneNumberId, enabled: true },
+      select: { organizationId: true, communityId: true },
+    });
+    if (cfg) return cfg;
+  }
+
+  // 2. Si el número remitente está vinculado a un Person, usar su org + community.
   const norm = normalizePhone(waId);
   const variants = [norm, `+${norm}`, norm.replace(/^58/, ""), `58${norm.replace(/^58/, "")}`];
   const person = await db.person.findFirst({
     where: { OR: [{ whatsapp: { in: variants } }, { phone: { in: variants } }] },
-    select: { organizationId: true },
+    select: {
+      organizationId: true,
+      ownerships: {
+        where: { endDate: null }, take: 1,
+        select: { unit: { select: { communityId: true } } },
+      },
+    },
   });
-  if (person) return { organizationId: person.organizationId };
+  if (person) {
+    return {
+      organizationId: person.organizationId,
+      communityId: person.ownerships[0]?.unit?.communityId ?? null,
+    };
+  }
 
-  // 2. Fallback: primera org con bot habilitado.
+  // 3. Fallback: primer bot habilitado de la DB.
   const cfg = await db.whatsAppBotConfig.findFirst({
     where: { enabled: true },
-    select: { organizationId: true },
+    select: { organizationId: true, communityId: true },
   });
-  if (cfg) return { organizationId: cfg.organizationId };
+  if (cfg) return cfg;
 
-  // 3. Última opción: primera org activa.
+  // 4. Última opción: primera org activa, sin community.
   const org = await db.organization.findFirst({
     where: { active: true, deletedAt: null },
     select: { id: true },
   });
-  return org ? { organizationId: org.id } : null;
+  return org ? { organizationId: org.id, communityId: null } : null;
+}
+
+// Compat: el resto del código usa resolveOrganization en algunos lugares.
+async function resolveOrganization(waId: string): Promise<{ organizationId: string } | null> {
+  const ctx = await resolveBotContext(waId);
+  return ctx ? { organizationId: ctx.organizationId } : null;
 }
 
 /** Envia texto y persiste el mensaje saliente. */
@@ -249,8 +283,11 @@ export async function POST(req: Request) {
         const value = change.value;
         if (!value?.messages?.length) continue;
 
+        // phone_number_id viene en value.metadata — identifica al bot destinatario
+        // (Castaños tiene su phone_number_id, Arrayanes tiene OTRO).
+        const phoneNumberId = value?.metadata?.phone_number_id;
         for (const msg of value.messages) {
-          await handleIncoming(msg).catch((err) => {
+          await handleIncoming(msg, phoneNumberId).catch((err) => {
             console.error("[webhook] handleIncoming error:", err);
           });
         }
@@ -263,7 +300,7 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true }, { status: 200 });
 }
 
-async function handleIncoming(msg: MetaIncomingMessage): Promise<void> {
+async function handleIncoming(msg: MetaIncomingMessage, phoneNumberId?: string): Promise<void> {
   const wamId = msg.id;
   const from = msg.from;
   if (!from || !wamId) return;
@@ -288,19 +325,24 @@ async function handleIncoming(msg: MetaIncomingMessage): Promise<void> {
     body = `[${msg.type}]`;
   }
 
-  // Resolver organización
-  const org = await resolveOrganization(from);
-  if (!org) {
-    console.warn(`[webhook] no organization resolved for ${from}`);
+  // Resolver bot destinatario (qué condominio atiende este mensaje).
+  // phone_number_id de Meta → WhatsAppBotConfig → organizationId + communityId.
+  const botCtx = await resolveBotContext(from, phoneNumberId);
+  if (!botCtx) {
+    console.warn(`[webhook] no bot context resolved for ${from} (pnId=${phoneNumberId})`);
     return;
   }
+  const org = { organizationId: botCtx.organizationId };
+  const botCommunityId = botCtx.communityId; // condominio del bot que recibe
 
   // Identificar residente
   const person = await findPersonByPhone(org.organizationId, from);
   const unit = person?.ownerships[0]?.unit ?? person?.tenancies[0]?.unit ?? null;
   const personId = person?.id ?? null;
   const unitId = unit?.id ?? null;
-  const communityId = unit?.communityId ?? null;
+  // El communityId de la conversación = el del bot (Castaños/Arrayanes), o el de
+  // la unidad del residente como fallback si el bot atiende a toda la org.
+  const communityId = botCommunityId ?? unit?.communityId ?? null;
 
   // Find/create conversation
   const conv = await db.whatsAppConversation.upsert({
@@ -340,7 +382,17 @@ async function handleIncoming(msg: MetaIncomingMessage): Promise<void> {
   if (conv.mode === "agent") return;
 
   // ─── Routing ─────────────────────────────────────────────────────────────
-  const cfg = await db.whatsAppBotConfig.findUnique({ where: { organizationId: org.organizationId } });
+  // Config del bot: primero por (org+community), si no la hay, por solo org.
+  const cfg = await db.whatsAppBotConfig.findFirst({
+    where: {
+      organizationId: org.organizationId,
+      OR: [
+        ...(botCommunityId ? [{ communityId: botCommunityId }] : []),
+        { communityId: null },
+      ],
+    },
+    orderBy: { communityId: "desc" }, // prioriza el de community sobre el global
+  });
 
   // 1. Handoff explícito
   if (isHandoffRequest(body)) {

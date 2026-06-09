@@ -2089,8 +2089,15 @@ model WhatsAppMessage {
 
 /// Configuración del bot por organización. 1 fila por org.
 model WhatsAppBotConfig {
-  id                  Int      @id @default(autoincrement())
-  organizationId      String   @unique
+  id                  String   @id @default(cuid())
+  organizationId      String
+  /// Si está, este bot atiende ESTA community específica (Castaños tiene su bot,
+  /// Arrayanes tiene OTRO bot con número WhatsApp distinto). Si null, el bot atiende
+  /// a toda la organización (single-bot mode).
+  communityId         String?
+  /// phone_number_id de Meta para ESTE bot. Cuando llega un webhook, se identifica
+  /// qué condominio responde según este campo (Meta lo envía en el payload).
+  phoneNumberId       String?  @unique
   enabled             Boolean  @default(true)
   // Mensajes
   welcomeMessage      String?  @db.Text
@@ -2114,6 +2121,9 @@ model WhatsAppBotConfig {
   // Branding
   downloadUrl         String?
   updatedAt           DateTime @updatedAt
+
+  @@unique([organizationId, communityId])
+  @@index([communityId])
 }
 
 /// Nodo del árbol de menú interactivo. parentId=null para nodos raíz.
