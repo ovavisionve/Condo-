@@ -238,8 +238,10 @@ const inv = StyleSheet.create({
   header: { marginBottom: 12, borderBottomWidth: 2, borderBottomColor: BK, paddingBottom: 10 },
   headerTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   headerLeft: {},
-  // Logo del condominio en el header (60x60 circular si la imagen ya viene recortada)
-  logoBox: { flexDirection: "row", alignItems: "center" },
+  // Logo del condominio en el header (60x60 circular si la imagen ya viene recortada).
+  // CRÍTICO: logoBox debe tener flex:1 y paddingRight para no colisionar con headerRight,
+  // sino el texto se exprime a 1 caracter por línea (bug observado en demo Arrayanes).
+  logoBox: { flexDirection: "row", alignItems: "flex-start", flex: 1, paddingRight: 16 },
   logoImg: { width: 56, height: 56, marginRight: 10, objectFit: "contain" },
   headerLeftText: { flex: 1 },
   communityName: { fontSize: 14, fontFamily: "Helvetica-Bold", color: BK, letterSpacing: 0.3, marginBottom: 3 },
