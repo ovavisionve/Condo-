@@ -198,20 +198,27 @@ export async function GET() {
   summary.voidedExpenses = exp.count;
 
   // 1c. Borrar todas las Ownership de las unidades del condominio
+  // Incluir TODAS las units (activas + soft-deleted) para liberar el unique code.
   const units = await db.unit.findMany({
     where: { communityId: COMMUNITY_ID },
-    select: { id: true },
+    select: { id: true, code: true },
   });
   const unitIds = units.map((u) => u.id);
   const own = await db.ownership.deleteMany({ where: { unitId: { in: unitIds } } });
   summary.deletedOwnerships = own.count;
 
-  // 1d. Soft-delete todas las Units del condominio (no hard-delete por FK Invoice)
-  const sd = await db.unit.updateMany({
-    where: { communityId: COMMUNITY_ID },
-    data: { active: false, deletedAt: new Date() },
-  });
-  summary.deletedUnits = sd.count;
+  // 1d. Renombrar y soft-delete todas las Units del condominio. Renombrado con
+  // sufijo único para liberar el unique constraint (communityId, code) y poder
+  // crear las nuevas con los mismos códigos.
+  const stamp = Date.now().toString(36);
+  let renamed = 0;
+  for (const u of units) {
+    await db.unit.update({
+      where: { id: u.id },
+      data: { active: false, deletedAt: new Date(), code: `_OLD${stamp}_${u.id.slice(0, 6)}` },
+    }).then(() => renamed++).catch(() => {/**/});
+  }
+  summary.deletedUnits = renamed;
 
   // 1e. Soft-delete Persons demo (con idType=OTHER y idNumber empezando con SEED-)
   const sdp = await db.person.updateMany({
