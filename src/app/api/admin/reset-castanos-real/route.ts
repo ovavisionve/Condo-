@@ -182,50 +182,40 @@ export async function GET() {
   if (!community) return NextResponse.json({ error: "community not found" }, { status: 404 });
   const orgId = community.organizationId;
 
-  // ── 1. LIMPIEZA ───────────────────────────────────────────────────────────
-  // 1a. Anular todas las Invoices activas del condominio
-  const inv = await db.invoice.updateMany({
-    where: { communityId: COMMUNITY_ID, status: { not: "VOIDED" } },
-    data: { status: "VOIDED", voidedAt: new Date(), voidReason: "Reset Castaños — carga real desde Excel jun/2026" },
-  });
-  summary.voidedInvoices = inv.count;
+  // ── 1. LIMPIEZA DURA vía SQL directo (libera FKs y unique constraints) ───
+  // Orden de cascade: InvoiceItem → PaymentAllocation → Payment → Invoice →
+  // InvoiceItem (huérfanos) → Ownership → Expense → Unit → Person (seed-*)
 
-  // 1b. Anular todos los Expense activos del condominio
-  const exp = await db.expense.updateMany({
-    where: { communityId: COMMUNITY_ID, voidedAt: null },
-    data: { voidedAt: new Date(), voidReason: "Reset Castaños — carga real desde Excel jun/2026" },
-  });
-  summary.voidedExpenses = exp.count;
+  const community_unit_subq = `SELECT id FROM "Unit" WHERE "communityId" = '${COMMUNITY_ID}'`;
+  const community_invoice_subq = `SELECT id FROM "Invoice" WHERE "communityId" = '${COMMUNITY_ID}'`;
 
-  // 1c. Borrar todas las Ownership de las unidades del condominio
-  // Incluir TODAS las units (activas + soft-deleted) para liberar el unique code.
-  const units = await db.unit.findMany({
-    where: { communityId: COMMUNITY_ID },
-    select: { id: true, code: true },
-  });
-  const unitIds = units.map((u) => u.id);
-  const own = await db.ownership.deleteMany({ where: { unitId: { in: unitIds } } });
-  summary.deletedOwnerships = own.count;
-
-  // 1d. Renombrar y soft-delete todas las Units del condominio. Renombrado con
-  // sufijo único para liberar el unique constraint (communityId, code) y poder
-  // crear las nuevas con los mismos códigos.
-  const stamp = Date.now().toString(36);
-  let renamed = 0;
-  for (const u of units) {
-    await db.unit.update({
-      where: { id: u.id },
-      data: { active: false, deletedAt: new Date(), code: `_OLD${stamp}_${u.id.slice(0, 6)}` },
-    }).then(() => renamed++).catch(() => {/**/});
-  }
-  summary.deletedUnits = renamed;
-
-  // 1e. Soft-delete Persons demo (con idType=OTHER y idNumber empezando con SEED-)
-  const sdp = await db.person.updateMany({
-    where: { organizationId: orgId, idType: "OTHER", idNumber: { startsWith: "SEED-" } },
-    data: { deletedAt: new Date() },
-  });
-  summary.deletedPersons = sdp.count;
+  // Limpiar invoice items (cascade del Invoice también, pero por las dudas)
+  await db.$executeRawUnsafe(`DELETE FROM "InvoiceItem" WHERE "invoiceId" IN (${community_invoice_subq});`);
+  // Limpiar payment allocations
+  await db.$executeRawUnsafe(`DELETE FROM "PaymentAllocation" WHERE "invoiceId" IN (${community_invoice_subq});`);
+  await db.$executeRawUnsafe(`DELETE FROM "PaymentAllocation" WHERE "paymentId" IN (SELECT id FROM "Payment" WHERE "communityId" = '${COMMUNITY_ID}');`);
+  // Limpiar payments
+  const payDel = await db.$executeRawUnsafe(`DELETE FROM "Payment" WHERE "communityId" = '${COMMUNITY_ID}';`);
+  // Limpiar invoices
+  const invDel = await db.$executeRawUnsafe(`DELETE FROM "Invoice" WHERE "communityId" = '${COMMUNITY_ID}';`);
+  summary.voidedInvoices = Number(invDel);
+  void payDel;
+  // Limpiar gastos
+  const expDel = await db.$executeRawUnsafe(`DELETE FROM "Expense" WHERE "communityId" = '${COMMUNITY_ID}';`);
+  summary.voidedExpenses = Number(expDel);
+  // Limpiar ownerships
+  const ownDel = await db.$executeRawUnsafe(`DELETE FROM "Ownership" WHERE "unitId" IN (${community_unit_subq});`);
+  summary.deletedOwnerships = Number(ownDel);
+  // Limpiar tenancies (por las dudas)
+  await db.$executeRawUnsafe(`DELETE FROM "Tenancy" WHERE "unitId" IN (${community_unit_subq});`);
+  // Limpiar vehicles
+  await db.$executeRawUnsafe(`DELETE FROM "Vehicle" WHERE "personId" IN (SELECT id FROM "Person" WHERE "organizationId" = '${orgId}' AND ("idNumber" LIKE 'SEED-%' OR "idNumber" LIKE 'XLSX-%'));`).catch(() => {/**/});
+  // Limpiar units
+  const unitDel = await db.$executeRawUnsafe(`DELETE FROM "Unit" WHERE "communityId" = '${COMMUNITY_ID}';`);
+  summary.deletedUnits = Number(unitDel);
+  // Limpiar persons seed
+  const persDel = await db.$executeRawUnsafe(`DELETE FROM "Person" WHERE "organizationId" = '${orgId}' AND ("idNumber" LIKE 'SEED-%' OR "idNumber" LIKE 'XLSX-%');`);
+  summary.deletedPersons = Number(persDel);
 
   // ── 2. CREAR UNIDADES + PROPIETARIOS + OWNERSHIP + DEUDA ─────────────────
   const platformOwner = await db.user.findFirst({
