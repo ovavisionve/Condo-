@@ -369,6 +369,27 @@ pnpm prisma migrate reset
   - **Bug NaN portal (Pendientes tab):** `portal.ts` devuelve campo `pendingUsd` pero `portal/page.tsx` declaraba `pendingAmountUsd` en el tipo → `Number(undefined) = NaN`. Fix: renombrar a `pendingUsd` en el tipo `PendingInvoiceItem` y en los 3 usos (líneas 49, 481, 544, 546).
   - **Bug gasto individual post-emisión:** `issueMonthlyInvoices` lanza CONFLICT si ya hay facturas en el período → gastos individuales añadidos DESPUÉS quedan atascados como "Pendiente". Fix: nueva mutación `expenses.issueDirectCharge` que crea un `EXTRA_FEE` directamente a la unidad target y marca el gasto como `invoicedAt=now`. En la tabla de gastos aparece botón "⚡ Emitir cargo" solo para gastos `isIndividual=true` que estén pendientes.
   - Archivos: `src/app/portal/page.tsx`, `src/server/trpc/routers/finance.ts`, `src/app/org/communities/[id]/finance/expenses/page.tsx`
+- [x] **Sesión demo Castaños B + provisiones + branding (Opus, 2026-06-15):** marca = ResidIA
+  - **Onboarding Castaños B (Conjunto Residencial Parque Paraíso, El Paraíso, Caracas):** 1 sola torre (Torre B). `communityId=cmoukqntu00015niqpsjlu4cw`. RIF J-31004934-3. 94 unidades reales (B-011 a B-234 + B-PH1/B-PH2), alícuota 1.06383% normal / 2.12766% PH. Cuota base ~$29.38.
+  - **Selector de torre dinámico:** deriva torres reales de las unidades. Si solo hay 1 torre, oculta el selector y trata todo como General. `registerExpense` normaliza `towerScope=null` si el edificio tiene 1 sola torre. (`finance/expenses/page.tsx`, `invoicing.ts`)
+  - **Re-emisión de período:** `finance.invoices.reissueMonth` anula facturas activas (si NINGUNA tiene pagos) + reabre Expenses + re-emite. Botón "🔄 Re-emitir período" en página de Recibos. Banner ámbar en Gastos cuando hay pendientes en período ya emitido.
+  - **Gastos extraordinarios post-emisión:** se quitó el bloqueo CONFLICT de `registerExpense`. Ahora se permite cargar gasto común después de emitir (caso "se dañó el ascensor"); queda Pendiente y el preview lo proyecta.
+  - **Provisiones — lógica REAL-FIRST (CRÍTICO, cambió 2 veces):** Modelo final: si hay gasto `REGULAR` vinculado a plantilla `isProvision` → SE COBRA el real y la `PROVISION_BASE` de esa plantilla NO se cobra (evita doble). Si no hay real → se cobra la base estimada (fallback). **`PROVISION_ADJUSTMENT` ELIMINADO** — ya no se calcula ajuste, el real es el cobro final. Aplica en `previewReceiptPdf` y `issueMonthlyInvoices`. Badge verde "🔗 Real de X (se cobra)".
+  - **Shift post-mes:** `Community.invoicePeriodShift` (default 1). shift=1 → recibo de julio cobra gastos cargados en junio (práctica venezolana). `previewReceiptPdf` e `issueMonthlyInvoices` calculan `expensePeriodYear/Month = period - shift`. Toggle en config del edificio.
+  - **Logo personalizable:** `Community.logoUrl` (string). `<Image>` 56×56 arriba-izq del header del recibo PDF (`pdf.ts`, fix de `logoBox` con `flex:1` por header desfasado). Input URL + preview en `/org/communities/[id]`.
+  - **Privacidad deuda general portal:** la tabla "Deuda General" del portal ya NO muestra nombres, solo apartamento + monto + meses. (`portal.ts` no envía `ownerName`, `portal/page.tsx`)
+  - **Envío masivo emails:** `finance.invoices.sendEmailAllAtOnce` procesa hasta 500 facturas en lotes de 10 concurrentes (~40s/188). Botón verde "🚀 Enviar TODOS" junto al lote de 40.
+  - **Onboarding obligatorio portal:** modal full-screen bloqueante en primer ingreso si falta WhatsApp/email/nombre. `portal.updateOwnProfile` guarda en `Person` (whatsapp normalizado a 58XXX). Se dispara si `person.whatsapp` vacío.
+  - **Manual del residente:** `/portal/help` con 12 secciones. Link "❓ Ayuda" en header del portal.
+  - **Módulo Ayuda + bot Gemini:** 8 guías nuevas + 12 FAQs en `/org/help`. Sección "GUÍA DE PROCESOS" (12 pts) en `gemini.ts` system prompt.
+- [x] **Sesión Bot WhatsApp infraestructura (Opus, 2026-06-15):** base lista, falta setup Meta
+  - **9 tablas nuevas** (multi-tenant por `organizationId`): `WhatsAppConversation`, `WhatsAppMessage` (dedup por `wamId`), `WhatsAppBotConfig`, `WhatsAppMenuOption`, `WhatsAppFaq`, `WhatsAppTicket`, `WhatsAppEvent`, `WhatsAppFeedback`, `AppSecret` (tokens key/value JSONB).
+  - **Multi-bot por condominio (CRÍTICO):** `WhatsAppBotConfig` tiene `communityId` (opcional) + `phoneNumberId` (unique). Castaños y Arrayanes tendrán bots independientes con números WhatsApp distintos. El webhook identifica el bot por `value.metadata.phone_number_id` del payload Meta → `resolveBotContext()`.
+  - **Endpoints:** `/api/whatsapp/webhook` (GET handshake + POST inbound dedup+ruteo), `/api/whatsapp/bot-ai` (cerebro Gemini 2.5 Flash con FACTS reales del residente, auth `x-internal-secret`), `/api/whatsapp/send` (outbound text/document/interactive). `whatsapp-meta.ts` = cliente Meta Cloud API v22 con dry-run automático si faltan secretos.
+  - **Identificación del residente:** por `Person.whatsapp` matcheando el `from` (variantes con/sin 58). Puede enviar recibo/comprobante PDF solo a petición.
+  - **Costo WhatsApp (junio 2026):** service window (usuario escribe primero) = GRATIS 24h. Template utility iniciado por negocio = ~$0.005/msg (~$1/mes para 188). Marketing = ~$0.04. NO hay free tier de 1000 conv.
+  - **Pendiente para activar:** crear Apps Meta (1 por condominio) + System User token permanente + Business Verification (trámite) + webhook URL + pegar 5 secretos por bot en `AppSecret` (`whatsapp_token`, `whatsapp_phone_number_id`, `whatsapp_verify_token`, `edge_internal_secret` compartido, `gemini_token` compartido) + 1 fila `WhatsAppBotConfig` por bot. Detalle en `WHATSAPP_BOT_PLAN.md`.
+  - **Servicio legacy intacto:** `src/server/services/whatsapp.ts` (Wati/Twilio para recordatorios de `notifications.ts`) NO se tocó.
 
 ---
 
@@ -432,6 +453,20 @@ Comunidad real del usuario para producción.
 - Script local: `scripts/seed-arrayanes.ts` (requiere DATABASE_URL apuntando a Supabase, conexión directa falla con pooler).
 - Ruta API temporal: `src/app/api/admin/seed-arrayanes/route.ts` — se ejecuta UNA vez vía HTTP desde Vercel (que sí tiene la DATABASE_URL real). **Eliminar después de usar.** Commit original `6c172d0`.
 - Para llamar: `GET https://condominios-theta.vercel.app/api/admin/seed-arrayanes` con `Authorization: Bearer ${CRON_SECRET}`. Si CRON_SECRET no se conoce, modificar la ruta para no requerir auth, deployar, llamar, y volver a quitar.
+- **Cliente real de Arrayanes: Reinaldo.** Tiene 22 plantillas activas (15 provisiones + 7 regulares) y data productiva — NO TOCAR sin confirmación explícita. `communityId=cmol08ry00004sth7q55ztv9a`.
+
+### 14.5b Onboarding "Castaños B" (El Paraíso, Caracas)
+
+Segundo condominio real. **NO confundir con Arrayanes.**
+- **Nombre BD:** `Castaños B` — `communityId=cmoukqntu00015niqpsjlu4cw`
+- **RIF:** J-31004934-3. Conjunto Residencial Parque Paraíso, Prolongación Av. El Ejército, Urb. El Paraíso.
+- **Estructura:** 1 SOLA torre (Torre B). 94 unidades: B-011 a B-234 (23 pisos × 4) + B-PH1, B-PH2.
+- **Alícuota:** 1.063830% (normal) / 2.127660% (PH1, PH2).
+- **Cuota/recibo base:** ~$29.38 USD.
+- **Banco:** Banesco cta 0134-0376-7637-6101-5124 a nombre de Junta de Condominio Los Castaños, RIF J-31004934-3. Email conciliación: soportecobranzascastanosb2021@gmail.com.
+- **Data cargada (2026-06-15):** 94 propietarios reales con email + WhatsApp (normalizado 58XXX, internacionales US/ES/AR/CO preservados) + 94 ownerships 100% + 94 deudas mayo 2026 a $29.38 (OVERDUE). Fuente: Excel "BASE DATOS ACTUALIZADA JUNIO 2026 CASTANOS B.xlsx" (sheets: Propietarios, Deuda, Conceptos, Alicuotas).
+- **Decisión cliente:** plantillas recurrentes + cuota + cuentas bancarias + gastos los carga el admin de Castaños MANUALMENTE. NO seedear más.
+- Person seed marker: `idNumber` con prefijo `XLSX-{code}` (Castaños) o `SEED-{code}` (demos viejas).
 
 ### 14.6 Routes principales
 
@@ -455,23 +490,24 @@ Comunidad real del usuario para producción.
 # Desde el dir del proyecto en Windows
 vercel deploy --prod
 ```
-- No hay remote git configurado (`git remote -v` vacío). El deploy es **vía Vercel CLI**, no por push a GitHub.
-- Todos los commits son locales en master. Cuenta CLI: `luisilarraza21`.
+- **Remote git SÍ configurado:** `origin = https://github.com/ovavisionve/Condo-.git`. Flujo actual: `git add -A && git commit && git push origin master && vercel deploy --prod --yes`. Cuenta Vercel CLI: `luisilarraza21`.
+- **Patrón migración SQL one-shot (usado mucho):** crear endpoint `src/app/api/admin/apply-migration-X/route.ts` con `db.$executeRawUnsafe(ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...)`. Si requiere auth y no se conoce `CRON_SECRET`, comentar el `verifyBearerToken` temporalmente, deployar, llamar con curl, borrar el endpoint y redeployar. Idempotente con `IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS`.
 
-### 14.8 Commits recientes (últimos 10)
+### 14.8 Commits recientes (sesión 2026-06-15, marca ResidIA)
 
 ```
-6c172d0 temp: seed route Los Arrayanes para produccion (eliminar despues)
-bd8a1fc feat: mostrar Bs al cambio del dia en vistas del admin
-dcd9ddb feat: portal residente + cuota extra por unidad
-9921396 fix: usar dolarapi.com como fuente principal de tasa BCV
-b6e87d6 feat: boton actualizar tasa BCV + fallback MANUAL en issueMonthlyInvoices
-5037492 Add scheduled invoice publishing: draft mode + cron on day 1 of month
-221513a Connect email channel to notification service - sends via Hotmail on every event
-4acf1df Add email templates: schema, router, UI with WhatsApp/Email sub-tabs in Communication
-c065b2d Translate all English enum labels to Spanish throughout the UI
-4829c4d migrate: argon2id -> bcryptjs en passwordHash
+(varios) feat: onboarding obligatorio + envio masivo + manual + bot whatsapp base
+(varios) feat(bot whatsapp): soporte multi-bot por condominio
+(varios) feat(provisiones): cobrar el REAL en vez de la base estimada
+(varios) feat(post-mes+privacidad): shift configurable + ocultar nombres deuda portal
+(varios) feat(branding): logo personalizable por condominio en recibo PDF
+(varios) feat(castanos): re-emitir periodo + torres dinamicas + badge provision
+(varios) fix(pdf): header desfasado por logoBox sin flex:1
+51c6f7d docs(ayuda+bot): 8 guias + 12 FAQs + GUIA DE PROCESOS en bot IA
 ```
+Nota: hubo varios endpoints admin temporales creados+ejecutados+borrados esta sesión
+(seed-castanos-demo, issue-castanos-mar2026, cleanup-castanos-ghosts, reset-castanos-real,
+apply-migration-{logo,shift,whatsapp,whatsapp-multibot}). Todos eliminados tras usarse.
 
 ### 14.9 Lecciones aprendidas (para no repetir)
 
@@ -484,3 +520,9 @@ c065b2d Translate all English enum labels to Spanish throughout the UI
 7. **OrgContext race condition (CRÍTICO):** `useState(orgs[0]!.id)` + `useEffect` para localStorage corre DESPUÉS del primer render. Los queries tRPC se lanzan con `organizationId` incorrecto → `findFirstOrThrow` tira → `community.data = undefined` → cuota muestra "Sin cuota configurada" aunque esté guardada. **Fix:** cambiar `useEffect` → `useLayoutEffect` (corre sincrónicamente antes del primer paint).
 8. **orgProcedure + PLATFORM_OWNER + multi-org:** Cuando el admin de la plataforma navega a un community de una org que NO es `orgs[0]`, el `byId` de community falla con not-found porque el filtro `{ organizationId: orgs[0].id }` no coincide. **Fix:** en `byId`, `update` y `setMonthlyFee` de `org.ts`, detectar `isPlatform(role)` y omitir el filtro `organizationId` para PLATFORM_OWNER.
 9. **Test de escritura DB en producción:** El endpoint `/api/debug` con write-test (`WRITE TEST: wrote 77.77, read back: 77.77 → ✅ OK`) confirma que Supabase/pgBouncer sí guarda correctamente. Si un valor "no persiste" tras recarga, buscar el bug en el cliente (race condition de estado) antes de sospechar de la BD.
+10. **Soft-delete NO libera unique constraints.** Marcar `deletedAt` + `active=false` en `Unit` NO libera el `@@unique([communityId, code])`. Para recargar unidades con los mismos códigos hay que hacer **DELETE DURO vía `$executeRawUnsafe`** respetando el orden de FKs: InvoiceItem → PaymentAllocation → Payment → Invoice → Ownership → Tenancy → Vehicle → Unit → Person. (Aprendido en reset de Castaños 2026-06-15.)
+11. **Antes de cualquier reset/borrado masivo, CONFIRMAR el communityId exacto.** Castaños (`cmoukqntu...`) y Arrayanes (`cmol08ry...`) son condominios distintos. El cliente Reinaldo es de ARRAYANES. Un reset de Castaños NO debe tocar Arrayanes — verificar con un endpoint de chequeo (count units/templates) si hay duda. NUNCA decir "borré la data de Reinaldo" sin verificar el scope.
+12. **Provisiones — modelo REAL-FIRST (vigente):** NO usar `PROVISION_ADJUSTMENT` (eliminado). Si hay `REGULAR` vinculado a plantilla `isProvision` → se cobra el real y se excluye la `PROVISION_BASE`. Si no hay real → fallback a la base. La lógica está duplicada en `previewReceiptPdf` (finance.ts) e `issueMonthlyInvoices` (invoicing.ts) — mantener AMBAS sincronizadas.
+13. **Shift de período (`Community.invoicePeriodShift`, default 1):** el recibo del mes M cobra gastos del mes M-shift. Tanto el preview como la emisión calculan `expensePeriod = period - shift`. Si el cliente dice "el recibo de julio cobra junio", es shift=1.
+14. **Bot WhatsApp = 1 por condominio.** `WhatsAppBotConfig.phoneNumberId` (unique) + `communityId`. El webhook resuelve el bot por `value.metadata.phone_number_id` de Meta. Cada condominio = su App Meta + su número + su fila de config. Secretos en tabla `AppSecret` (key/value JSONB), `edge_internal_secret` y `gemini_token` compartidos.
+15. **Marca del producto = ResidIA** (visible en portal/PDF/UI). El repo se llama `condominios` y la URL es `condominios-theta.vercel.app`, pero el nombre de cara al usuario es ResidIA.

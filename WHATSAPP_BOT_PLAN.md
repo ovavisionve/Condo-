@@ -7,6 +7,23 @@
 
 ---
 
+## 0. ⚠️ ACTUALIZACIÓN 2026-06-15 — MULTI-BOT POR CONDOMINIO
+
+El schema evolucionó después de la primera versión de este plan: **cada condominio
+tiene su PROPIO bot** (Castaños y Arrayanes = números WhatsApp y configs distintas).
+
+- `WhatsAppBotConfig` ahora tiene `communityId` (opcional) y `phoneNumberId` (unique).
+  Una fila por bot. Unique compuesto `(organizationId, communityId)`.
+- El webhook identifica a qué bot pertenece el mensaje por
+  `value.metadata.phone_number_id` del payload de Meta → función `resolveBotContext()`
+  en `webhook/route.ts`. Si no matchea, cae a heurística (persona conocida / primer bot).
+- **Setup Meta:** 1 App + 1 número + 1 System User token POR condominio. En `AppSecret`,
+  los tokens de WhatsApp son por-bot; `edge_internal_secret` y `gemini_token` son compartidos.
+- La migración de columnas se aplicó vía endpoint temporal `apply-migration-whatsapp-multibot`
+  (ya eliminado). Estado: tablas creadas en Supabase, falta SOLO el setup externo de Meta.
+
+---
+
 ## 1. Arquitectura adaptada al stack
 
 ```
