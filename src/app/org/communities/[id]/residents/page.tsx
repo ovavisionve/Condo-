@@ -153,18 +153,22 @@ export default function ResidentsPage() {
   // Estadísticas de deuda
   const totalOwners = residents.ownerships.length;
   const totalTenants = residents.tenancies.length;
-  const deudores = [
-    ...residents.ownerships.filter((o) => Number((o as { debt?: DebtInfo }).debt?.pendingUsd ?? "0") > 0.005),
-    ...residents.tenancies.filter((t) => Number((t as { debt?: DebtInfo }).debt?.pendingUsd ?? "0") > 0.005),
-  ];
-  const morosos = [
-    ...residents.ownerships.filter((o) => ((o as { debt?: DebtInfo }).debt?.overdueCount ?? 0) > 0),
-    ...residents.tenancies.filter((t) => ((t as { debt?: DebtInfo }).debt?.overdueCount ?? 0) > 0),
-  ];
-  const totalDeudaUsd = [
-    ...residents.ownerships,
-    ...residents.tenancies,
-  ].reduce((s, r) => s + Number((r as { debt?: DebtInfo }).debt?.pendingUsd ?? "0"), 0);
+
+  // Deduplicar por UNIDAD: las copropiedades aparecen varias veces (una fila por
+  // dueño) con la MISMA deuda, porque la deuda es por unidad, no por propietario.
+  // Sin deduplicar, el total y los contadores se inflaban (ej. $15.441 en vez de
+  // $15.137,95 real). Tomamos la deuda de cada unidad UNA sola vez.
+  const unitDebt = new Map<string, DebtInfo | undefined>();
+  for (const r of [...residents.ownerships, ...residents.tenancies]) {
+    const code = (r as { unit: { code: string } }).unit.code;
+    if (!unitDebt.has(code)) unitDebt.set(code, (r as { debt?: DebtInfo }).debt);
+  }
+  const uniqueUnitDebts = [...unitDebt.values()];
+  const deudores = uniqueUnitDebts.filter((d) => Number(d?.pendingUsd ?? "0") > 0.005);
+  const morosos = uniqueUnitDebts.filter((d) => (d?.overdueCount ?? 0) > 0);
+  const totalDeudaUsd = uniqueUnitDebts.reduce((s, d) => s + Number(d?.pendingUsd ?? "0"), 0);
+  // Total de unidades del edificio para "X de Y" (fallback a las que tienen dueño/inquilino).
+  const totalUnidades = units.length || unitDebt.size;
 
   // Filtro por búsqueda
   const filterFn = (r: { person: PersonData; unit: { code: string } }) => {
@@ -283,7 +287,7 @@ export default function ResidentsPage() {
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground">Unidades con deuda</p>
           <p className={`text-xl font-bold ${deudores.length > 0 ? "text-amber-600" : "text-green-700"}`}>
-            {deudores.length} <span className="text-sm font-normal">de {totalOwners + totalTenants}</span>
+            {deudores.length} <span className="text-sm font-normal">de {totalUnidades} unidades</span>
           </p>
         </div>
         <div className="rounded-lg border bg-card px-4 py-3">
