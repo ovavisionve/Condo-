@@ -212,12 +212,16 @@ async function buildUnitPayload(
     new Decimal(0),
   );
 
-  // Unallocated credit (anticipos): total paid minus total allocated to invoices
-  const totalPaidUsd = payments.reduce(
+  // Unallocated credit (anticipos): total paid minus total allocated to invoices.
+  // OJO: los pagos históricos migrados (isHistorical) NO cuentan — se muestran en
+  // el historial pero la deuda real ya está cargada como total neto, así que sumarlos
+  // como crédito anularía el saldo. Solo los pagos reales generan anticipo.
+  const realPayments = payments.filter((p) => !p.isHistorical);
+  const totalPaidUsd = realPayments.reduce(
     (acc, p) => acc.plus(p.amountUsd.toString()),
     new Decimal(0),
   );
-  const totalAllocatedUsd = payments.reduce(
+  const totalAllocatedUsd = realPayments.reduce(
     (acc, p) =>
       acc.plus(
         p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0)),
@@ -258,13 +262,20 @@ async function buildUnitPayload(
       }
     : null;
 
-  // Payments with running balance calculation (desc order)
+  // Payments with running balance calculation (desc order). El saldo corrido solo
+  // aplica a pagos REALES (los históricos migrados no tienen factura mensual asociada,
+  // así que sus columnas de saldo van nulas → se muestran como "—").
   let runningBalance = totalPendingUsd;
   const paymentsWithBalance = payments.map((p) => {
     const amtUsd = new Decimal(p.amountUsd.toString());
-    const quedaPendienteUsd = runningBalance;
-    const saldoAnteriorUsd = runningBalance.plus(amtUsd);
-    runningBalance = saldoAnteriorUsd;
+    let saldoAnteriorUsd: string | null = null;
+    let quedaPendienteUsd: string | null = null;
+    if (!p.isHistorical) {
+      quedaPendienteUsd = runningBalance.toFixed(2);
+      const saldoAnterior = runningBalance.plus(amtUsd);
+      saldoAnteriorUsd = saldoAnterior.toFixed(2);
+      runningBalance = saldoAnterior;
+    }
     return {
       id: p.id,
       paidAt: p.paidAt,
@@ -274,9 +285,10 @@ async function buildUnitPayload(
       amountBss: p.amountBss.toString(),
       reference: p.reference,
       notes: p.notes ?? null,
+      isHistorical: p.isHistorical,
       invoices: p.allocations.map((a) => a.invoice.invoiceNumber),
-      saldoAnteriorUsd: saldoAnteriorUsd.toFixed(2),
-      quedaPendienteUsd: quedaPendienteUsd.toFixed(2),
+      saldoAnteriorUsd,
+      quedaPendienteUsd,
     };
   });
 
@@ -411,6 +423,8 @@ export const portalRouter = router({
           notes: input.emailSecondary?.trim()
             ? `Email secundario: ${input.emailSecondary.toLowerCase().trim()}`
             : undefined,
+          // Marca que el residente ya confirmó sus datos → no se le vuelve a pedir.
+          portalConfirmedAt: new Date(),
         },
         select: { id: true, firstName: true, lastName: true, whatsapp: true, email: true },
       });
@@ -436,24 +450,66 @@ export const portalRouter = router({
 
       const portalUrl = `${process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app"}/portal?t=${record.token}`;
 
+      // SMTP de la organización (el mismo que usan recibos/bauches). Tiene
+      // prioridad sobre el SMTP global de env vars; si la org no tiene SMTP
+      // configurado, sendEmail cae al global como fallback.
+      const org = await ctx.db.organization.findUnique({
+        where: { id: person.organizationId },
+        select: {
+          smtpHost: true, smtpPort: true, smtpUser: true,
+          smtpPass: true, smtpFrom: true, smtpSecure: true,
+        },
+      });
+      const orgSmtp = org?.smtpHost && org.smtpUser && org.smtpPass
+        ? {
+            host: org.smtpHost,
+            port: org.smtpPort ?? 587,
+            user: org.smtpUser,
+            pass: org.smtpPass,
+            from: org.smtpFrom ?? org.smtpUser,
+            secure: org.smtpSecure,
+          }
+        : null;
+
       await sendEmail({
         to: input.email,
         subject: "Acceso a tu portal de condominio",
         html: `
-          <div style="font-family:sans-serif;max-width:480px;margin:auto">
-            <h2 style="color:#1e3a5f">Portal del residente</h2>
-            <p>Hola <strong>${person.firstName} ${person.lastName}</strong>,</p>
-            <p>Haz clic en el siguiente botón para acceder a tu portal y ver tus facturas, pagos y saldo:</p>
-            <p style="text-align:center;margin:32px 0">
-              <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600">
-                Ver mi estado de cuenta
-              </a>
-            </p>
-            <p style="color:#888;font-size:12px">Este enlace es válido por 7 días. No lo compartas con nadie.</p>
-            <p style="color:#888;font-size:12px">Si no solicitaste este correo, ignóralo.</p>
+          <div style="font-family:sans-serif;max-width:480px;margin:auto;color:#1f2937">
+            <div style="background:#1e3a5f;border-radius:12px 12px 0 0;padding:24px;text-align:center">
+              <div style="color:#cfe0f5;font-size:13px;font-weight:600;letter-spacing:.5px">ResidIA</div>
+              <div style="color:#fff;font-size:20px;font-weight:600;margin-top:6px">Bienvenido/a al portal de tu condominio</div>
+            </div>
+            <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">
+              <p>Hola <strong>${person.firstName} ${person.lastName}</strong>,</p>
+              <p>Este es tu acceso digital al condominio. Desde tu celular o computadora podés:</p>
+              <ul style="padding-left:18px;line-height:1.8;color:#374151">
+                <li>📄 Ver y descargar tu recibo</li>
+                <li>💵 Notificar tus pagos</li>
+                <li>🧾 Ver tu estado de cuenta y saldo</li>
+                <li>🧍 Registrar visitas y reservar áreas comunes</li>
+              </ul>
+              <p style="text-align:center;margin:28px 0">
+                <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">
+                  Entrar a mi portal →
+                </a>
+              </p>
+              <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;font-size:13px;color:#1e40af">
+                ⚠️ La primera vez te pediremos <strong>confirmar tu correo y WhatsApp</strong>. Solo toma un minuto y nos ayuda a tener tus datos al día.
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:16px;text-align:center">
+                <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabés por dónde empezar? Tenemos un manual paso a paso 👇</div>
+                <a href="${portalUrl.replace(/\/portal\?t=.*/, "/portal/help")}" style="color:#1e3a5f;font-size:14px;font-weight:600;text-decoration:none">
+                  📖 Ver el manual: cómo usar el portal →
+                </a>
+              </div>
+              <p style="color:#9ca3af;font-size:12px;margin-top:18px">Este enlace es válido por 7 días y es personal — no lo compartas.</p>
+              <p style="color:#9ca3af;font-size:12px">Si no esperabas este correo, ignóralo.</p>
+            </div>
           </div>
         `,
-        text: `Hola ${person.firstName}, accede a tu portal aquí: ${portalUrl} (válido 7 días)`,
+        text: `Hola ${person.firstName}, bienvenido/a al portal de tu condominio. Entrá aquí para ver tu recibo, pagos y saldo: ${portalUrl} (válido 7 días). La primera vez te pediremos confirmar tu correo y WhatsApp. Manual de uso paso a paso: ${portalUrl.replace(/\/portal\?t=.*/, "/portal/help")}`,
+        orgSmtp,
       });
 
       return { sent: true };
@@ -498,6 +554,7 @@ export const portalRouter = router({
           idNumber: person.idNumber,
           phone: person.phone,
           whatsapp: person.whatsapp,
+          portalConfirmedAt: person.portalConfirmedAt,
         },
         units,
         todayRate: todayRate.toFixed(4),
@@ -536,6 +593,7 @@ export const portalRouter = router({
         idNumber: person.idNumber,
         phone: person.phone,
         whatsapp: person.whatsapp,
+        portalConfirmedAt: person.portalConfirmedAt,
       },
       units,
       todayRate: todayRate.toFixed(4),
@@ -1189,6 +1247,23 @@ export const portalRouter = router({
       // Dirección de email destino: usuario admin o email configurado en la comunidad
       const adminEmail = adminUser?.email ?? community.email ?? null;
 
+      // SMTP de la org (mismo que recibos) para que estas notificaciones no usen
+      // el SMTP global. Fallback al global si la org no tiene SMTP.
+      const orgRec = await ctx.db.organization.findUnique({
+        where: { id: organization.id },
+        select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true, smtpFrom: true, smtpSecure: true },
+      });
+      const orgSmtp = orgRec?.smtpHost && orgRec.smtpUser && orgRec.smtpPass
+        ? {
+            host: orgRec.smtpHost,
+            port: orgRec.smtpPort ?? 587,
+            user: orgRec.smtpUser,
+            pass: orgRec.smtpPass,
+            from: orgRec.smtpFrom ?? orgRec.smtpUser,
+            secure: orgRec.smtpSecure,
+          }
+        : null;
+
       // Load person info
       const person = await ctx.db.person.findFirstOrThrow({
         where: { id: personId },
@@ -1231,6 +1306,7 @@ export const portalRouter = router({
             </div>
           `,
           text: `[${tipoPagoStr}] Pago reportado por ${person.firstName} ${person.lastName}: ${montoStr} via ${input.banco}, ref ${input.referencia}, fecha ${fechaStr}.`,
+          orgSmtp,
         });
       }
 
@@ -1256,6 +1332,7 @@ export const portalRouter = router({
             </div>
           `,
           text: `Tu notificación de pago fue recibida. Referencia: ${input.referencia}, Monto: ${montoStr}, Fecha: ${fechaStr}. La Junta la verificará pronto.`,
+          orgSmtp,
         });
       }
 
@@ -1329,6 +1406,7 @@ export const portalRouter = router({
             communityId: input.communityId,
             voidedAt: null,
             paidAt: { gte: monthStart, lt: monthEnd },
+            isHistorical: false,
           },
           _sum: { amountUsd: true },
           _count: true,

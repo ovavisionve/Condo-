@@ -178,7 +178,7 @@ export const platformRouter = router({
             _sum: { totalUsd: true },
           }),
           ctx.db.payment.aggregate({
-            where: { organizationId: input.id, voidedAt: null },
+            where: { organizationId: input.id, voidedAt: null, isHistorical: false },
             _sum: { amountUsd: true },
           }),
           ctx.db.membership.count({

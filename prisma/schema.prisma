@@ -269,6 +269,9 @@ model Person {
   whatsapp       String? // número con código de país, ej: 584141234567
   address        String?
   notes          String?
+  // Marca cuándo el residente confirmó sus datos en el portal (onboarding).
+  // null = nunca confirmó → se le pide confirmar en el próximo ingreso aunque ya tenga datos.
+  portalConfirmedAt DateTime?
   // Vínculo opcional con cuenta de acceso al sistema
   userId         String?      @unique
   user           User?        @relation(fields: [userId], references: [id])
@@ -720,6 +723,10 @@ model Payment {
   bankAccount     BankAccount?   @relation(fields: [bankAccountId], references: [id])
   reconciledAt    DateTime?
   notes           String?
+  // Pago histórico migrado del sistema anterior (Sisconin). Se muestra en el
+  // historial del residente pero NO cuenta como saldo a favor ni afecta el
+  // balance (la deuda real ya está cargada como total neto).
+  isHistorical    Boolean        @default(false)
   // Anulación
   voidedAt        DateTime?
   voidedById      String?

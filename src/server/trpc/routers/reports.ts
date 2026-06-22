@@ -58,7 +58,7 @@ export const reportsRouter = router({
       const periodStart = new Date(year, month - 1, 1);
       const periodEnd   = new Date(year, month, 1); // exclusive
       const paymentsInPeriod = await ctx.db.payment.aggregate({
-        where: { organizationId, communityId, paidAt: { gte: periodStart, lt: periodEnd }, voidedAt: null },
+        where: { organizationId, communityId, paidAt: { gte: periodStart, lt: periodEnd }, voidedAt: null, isHistorical: false },
         _sum: { amountUsd: true },
         _count: true,
       });
@@ -66,8 +66,9 @@ export const reportsRouter = router({
       const paymentsCount    = paymentsInPeriod._count;
 
       // Anticipo acumulado total = pagos que no tienen allocations o cuyo monto excede lo asignado
+      // (excluye históricos migrados: no son anticipos reales)
       const anticipoAgg = await ctx.db.payment.aggregate({
-        where: { organizationId, communityId, voidedAt: null },
+        where: { organizationId, communityId, voidedAt: null, isHistorical: false },
         _sum: { amountUsd: true },
       });
       const allAllocated = await ctx.db.paymentAllocation.aggregate({

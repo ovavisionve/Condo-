@@ -390,6 +390,28 @@ pnpm prisma migrate reset
   - **Costo WhatsApp (junio 2026):** service window (usuario escribe primero) = GRATIS 24h. Template utility iniciado por negocio = ~$0.005/msg (~$1/mes para 188). Marketing = ~$0.04. NO hay free tier de 1000 conv.
   - **Pendiente para activar:** crear Apps Meta (1 por condominio) + System User token permanente + Business Verification (trámite) + webhook URL + pegar 5 secretos por bot en `AppSecret` (`whatsapp_token`, `whatsapp_phone_number_id`, `whatsapp_verify_token`, `edge_internal_secret` compartido, `gemini_token` compartido) + 1 fila `WhatsAppBotConfig` por bot. Detalle en `WHATSAPP_BOT_PLAN.md`.
   - **Servicio legacy intacto:** `src/server/services/whatsapp.ts` (Wati/Twilio para recordatorios de `notifications.ts`) NO se tocó.
+- [ ] **Sesión extracción Sisconin (Sonnet, 2026-06-16):** análisis forense de BD legacy — pendiente import
+  - **Objetivo:** extraer data de residentes de Los Arrayanes desde su sistema anterior Sisconin (`.IDS4` = Microsoft Access/Jet DB renombrado).
+  - **Archivos:** `C:\Users\PCELL\Downloads\Sisconin.datos (1).rar` → `RESIDENCIAS_LOS_ARRAYANES.IDS4` (32.9 MB) + `SYSTEM.SCI` (workgroup Jet). Copia de trabajo: `arrayanes.mdb` + `system.mdw` en `Downloads\`.
+  - **Resultado extracción binaria (workaround):** BD bloqueada por workgroup Jet 4.0. Se decodificó el `.IDS4` en UTF-16 LE (emails en Jet se guardan en UTF-16, no Latin-1). Se obtuvieron **184 pares apartamento-propietario** (A011–A234, B011–B234) y **108 emails residentes** sin duplicados.
+  - **Script match:** `C:\Users\PCELL\Downloads\match_names.py` — empareja emails con nombres por similitud léxica (score ≥ 7 = ALTA confianza). ~25 matches de alta confianza. Lista completa de propietarios ya en `match_names.py` (campo `units`).
+  - **Estructura de tablas Sisconin** (de `Sisconin.ini.xml`):
+    - `cfg_condominos`: `id_condomino, condomino, telefono_casa, telefono_celular, email`
+    - `cfg_unidades`: `id_unidad, tipo_propiedad, condomino, tipo_condomino, monto_cuota_fija`
+    - `cfg_alicuotas`: `id_alicuota, descripcion, autocalcular, cantidad, total_alicuota`
+    - `cfg_condominos_view` (vista): agrega `deuda, saldoafavor, meses`
+  - **Por qué falló el acceso directo a la BD:** la versión de Jet usada por Sisconin no puede leerla ni el driver ACE 12.0 64-bit (OleDB) ni Jet 4.0 32-bit — el `SYSTEM.SCI` bloquea con "No se pudo abrir la tabla MSysAccounts". DAO COM (`DAO.DBEngine.36`) tampoco registrado en el sistema.
+  - **Pendiente:** Reinaldo (admin Arrayanes) debe abrir Sisconin → pantalla Condóminos → Ctrl+A, Ctrl+C → pegar en texto. Lo mismo para Unidades y saldos. Luego importar CSV via `/org/communities/[id]/import` o endpoint admin one-shot.
+- [x] **Sesión migración Arrayanes Sisconin→ResidIA (Opus, 2026-06-21):** DEUDA REAL CARGADA en producción
+  - **Fuente autoritativa:** Reinaldo exportó de Sisconin `DEUDA A LA FECHA.xls` = deuda actual exacta por apartamento (117 deudores, $15.137,95). Se usa DIRECTO. También aportó `deuda inicial.xls`, `pagos condominio.xls` (2.529 pagos) y recibos muestra (`rec*`=Torre A/A011, `tb*`=Torre B/B163).
+  - **LECCIÓN CLAVE (lección 17 abajo):** intenté reconstruir la deuda con cuota uniforme por torre (probé A=455→407, B=371→353) y NUNCA cuadró exacto (off ~$18 prom, max $82) porque Sisconin suma fondo de reserva + mora por unidad que no se separa de los archivos. **Siempre pedir el reporte de deuda actual del sistema viejo, no reconstruir.**
+  - **Carga:** endpoint one-shot `/api/admin/load-arrayanes-saldos` (dry-run + confirm). Borró el snapshot del onboarding (188 facturas + 1 pago test) y creó **117 facturas EXTRA_FEE `SISCONIN-{code}` OVERDUE período 2026-06**. Unidades/propietarios/25 plantillas de Reinaldo INTACTOS. Verificado y endpoint borrado.
+  - **Mapeo Excel→ResidIA:** A011→11A, APH1→PH1A, B163→163B.
+  - **Recibos mes a mes NO cargados** (no reconstruibles exactos). Reinaldo emite mensual EN ResidIA de aquí en adelante. Pagos FIFO (`payments.ts:80` orderBy dueDate asc) → "Saldo Sisconin" (más viejo) se cobra antes que meses nuevos.
+  - **Emails:** cargados **42 de ALTA confianza** (match léxico nombre↔email score≥7) en Person — SOLO guardados, sin envío. Faltan ~75 (media/sin match) por confirmar con Reinaldo. NO envío masivo hasta verificar (evita mandar data financiera a dirección equivocada).
+  - **Correo bienvenida enviado SOLO a Reinaldo** (apto 163B, junta, saldo $0) a cobranzalosarrayanes@gmail.com con enlace mágico (PortalToken 7d). Único envío de la sesión. Plantilla de acceso mejorada en `portal.ts` requestAccess (bienvenida + qué puede hacer + reconfirmar datos).
+  - **Acceso BD prod Innova:** NO hay directo (MCP supabase=proyecto Viaje; `SUPABASE_ACCESS_TOKEN`=solo Viaje). Se opera vía endpoints one-shot desplegados a Vercel + curl, borrar tras usar.
+  - **Pendiente:** Reinaldo confirma emails faltantes; corregir typo A164 en Sisconin (saldo a favor $4.463 del 02/09 → ~$44); activar bot WhatsApp (setup Meta).
 
 ---
 
@@ -468,6 +490,20 @@ Segundo condominio real. **NO confundir con Arrayanes.**
 - **Decisión cliente:** plantillas recurrentes + cuota + cuentas bancarias + gastos los carga el admin de Castaños MANUALMENTE. NO seedear más.
 - Person seed marker: `idNumber` con prefijo `XLSX-{code}` (Castaños) o `SEED-{code}` (demos viejas).
 
+### 14.5c Migración Los Arrayanes desde Sisconin (en proceso)
+
+Sistema anterior: **Sisconin** (software venezolano de condominio, base Microsoft Access/Jet).
+- **Archivo BD:** `RESIDENCIAS_LOS_ARRAYANES.IDS4` (renombrado de `.mdb`, formato Jet DB).
+- **Workgroup:** `SYSTEM.SCI` — bloquea acceso con seguridad de usuario Jet. Ningún driver moderno pudo abrirla directamente.
+- **Data ya extraída (análisis binario UTF-16 LE):**
+  - 184 pares `{código_excel → nombre_propietario}` (A011–A234, B011–B234). Ver `C:\Users\PCELL\Downloads\match_names.py` campo `units`.
+  - 108 emails, ~25 con match de alta confianza a apartamento.
+- **Pendiente para completar migración:**
+  1. Reinaldo abre Sisconin → Condóminos → Ctrl+A → Ctrl+C → pegar en archivo de texto y compartir.
+  2. Repetir para pantalla Unidades (cuotas) y pantalla de deudas.
+  3. Importar resultado via bulk import CSV en ResidIA.
+- **communityId Arrayanes:** `cmol08ry00004sth7q55ztv9a` — **NO TOCAR datos existentes** hasta que Reinaldo confirme. Tiene 22 plantillas activas + data productiva.
+
 ### 14.6 Routes principales
 
 | Ruta | Rol mínimo |
@@ -526,3 +562,6 @@ apply-migration-{logo,shift,whatsapp,whatsapp-multibot}). Todos eliminados tras 
 13. **Shift de período (`Community.invoicePeriodShift`, default 1):** el recibo del mes M cobra gastos del mes M-shift. Tanto el preview como la emisión calculan `expensePeriod = period - shift`. Si el cliente dice "el recibo de julio cobra junio", es shift=1.
 14. **Bot WhatsApp = 1 por condominio.** `WhatsAppBotConfig.phoneNumberId` (unique) + `communityId`. El webhook resuelve el bot por `value.metadata.phone_number_id` de Meta. Cada condominio = su App Meta + su número + su fila de config. Secretos en tabla `AppSecret` (key/value JSONB), `edge_internal_secret` y `gemini_token` compartidos.
 15. **Marca del producto = ResidIA** (visible en portal/PDF/UI). El repo se llama `condominios` y la URL es `condominios-theta.vercel.app`, pero el nombre de cara al usuario es ResidIA.
+16. **Emails en bases Jet/Access se almacenan en UTF-16 LE, no Latin-1.** Decodificar el `.mdb`/`.IDS4` como `latin-1` solo encuentra 1 email; decodificar como `utf-16-le` encuentra todos (113 en el caso de Arrayanes). Siempre probar ambas decodificaciones al hacer extracción binaria de DBs Access.
+17. **Migración de deuda: usar el reporte de "deuda a la fecha" del sistema viejo, NO reconstruir.** Reconstruir el saldo (apertura + recibos − pagos) NO cuadra porque la cuota lleva fondo de reserva + mora por unidad que no se separa de los archivos (error ~$18/unidad, hasta $82 en Arrayanes). El export de deuda actual del sistema viejo (Sisconin "DEUDA A LA FECHA") es la única fuente exacta. Validar siempre contra apartamentos que el admin confirme solventes (su pago = la cuota).
+18. **No hay acceso directo a la BD de prod (Innova) desde local.** MCP supabase y `SUPABASE_ACCESS_TOKEN` apuntan al proyecto Viaje, no a Innova. Para leer/escribir prod: endpoint one-shot desplegado a Vercel (`vercel deploy --prod --yes` cuenta luisilarraza21) + curl con ?key, y borrar el endpoint + redeploy al terminar. Patrón dry-run (GET) + execute (POST con confirm) para writes grandes.

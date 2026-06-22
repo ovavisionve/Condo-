@@ -52,8 +52,8 @@ type PendingInvoiceItem = {
 type PaymentItem = {
   id: string; paidAt: Date; method: string; methodLabel: string;
   amountUsd: string; amountBss: string; reference: string | null; notes: string | null;
-  invoices: string[];
-  saldoAnteriorUsd: string; quedaPendienteUsd: string;
+  invoices: string[]; isHistorical: boolean;
+  saldoAnteriorUsd: string | null; quedaPendienteUsd: string | null;
 };
 type UnitData = {
   unitId: string; unitCode: string; communityId: string;
@@ -70,7 +70,7 @@ type UnitData = {
   monthlyPaymentTotals: { yearMonth: string; label: string; totalUsd: number }[];
 };
 type PortalData = {
-  person: { firstName: string; lastName: string; email: string | null; idType: string; idNumber: string; phone: string | null; whatsapp: string | null };
+  person: { firstName: string; lastName: string; email: string | null; idType: string; idNumber: string; phone: string | null; whatsapp: string | null; portalConfirmedAt: Date | string | null };
   units: UnitData[];
   todayRate: string;
   tokenExpiresAt: Date | null;
@@ -693,14 +693,21 @@ function PagosTab({ unit, token }: { unit: UnitData; token?: string }) {
             <tbody>
               {unit.payments.map((p, i) => (
                 <tr key={p.id} className={`border-t ${i % 2 === 0 ? "" : "bg-slate-50"}`}>
-                  <td className="px-4 py-2">{new Date(p.paidAt).toLocaleDateString("es-VE")}</td>
+                  <td className="px-4 py-2 whitespace-nowrap">
+                    {new Date(p.paidAt).toLocaleDateString("es-VE")}
+                    {p.isHistorical && (
+                      <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700" title="Pago registrado en el sistema anterior">histórico</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-muted-foreground">{p.reference ?? "—"}</td>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{p.notes ?? "—"}</td>
-                  <td className="px-4 py-2 text-right">{Number(p.saldoAnteriorUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right">{p.saldoAnteriorUsd ? Number(p.saldoAnteriorUsd).toFixed(2) : "—"}</td>
                   <td className="px-4 py-2 text-right text-[#1e7a5f] font-semibold">{Number(p.amountUsd).toFixed(2)}</td>
-                  <td className="px-4 py-2 text-right font-medium">{Number(p.quedaPendienteUsd).toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-medium">{p.quedaPendienteUsd ? Number(p.quedaPendienteUsd).toFixed(2) : "—"}</td>
                   <td className="px-4 py-2 text-center">
-                    <DownloadBaucheButton paymentId={p.id} token={token} />
+                    {p.isHistorical
+                      ? <span className="text-xs text-muted-foreground">—</span>
+                      : <DownloadBaucheButton paymentId={p.id} token={token} />}
                   </td>
                 </tr>
               ))}
@@ -1596,7 +1603,7 @@ function OnboardingModal({
           <div className="text-3xl mb-2">👋</div>
           <h2 className="text-2xl font-bold text-[#1e3a5f]">¡Bienvenido/a al portal!</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Antes de continuar, completá tus datos. Solo te lo pediremos esta vez.
+            Antes de continuar, <strong>revisá y confirmá tus datos</strong>. Corregí lo que haga falta. Solo te lo pediremos esta vez.
           </p>
         </div>
 
@@ -1678,7 +1685,9 @@ function OnboardingModal({
 function ResidentDashboard({ data, token }: { data: PortalData; token?: string }) {
   const [tab, setTab] = useState<TabKey>("principal");
   const [needsOnboarding, setNeedsOnboarding] = useState(
-    // El residente debe completar onboarding si no tiene whatsapp o nombre
+    // Pide confirmar datos si: (a) nunca confirmó en el portal (portalConfirmedAt null),
+    // aunque ya tenga datos precargados — así revisa/corrige una vez; o (b) le faltan datos.
+    !data.person.portalConfirmedAt ||
     !data.person.whatsapp ||
     data.person.whatsapp.trim().length < 7 ||
     !data.person.firstName?.trim() ||

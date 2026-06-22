@@ -186,5 +186,18 @@ Documentar el mapeo en este archivo cuando aplique.
 
 ---
 
+## 💵 Carga de SALDOS reales (migración desde sistema viejo) — 2026-06-21
+
+Operación distinta al reset: **NO toca** unidades, propietarios ni plantillas — solo reemplaza el snapshot financiero por la **deuda real** del sistema anterior.
+
+- **Endpoint one-shot:** `/api/admin/load-arrayanes-saldos` (dry-run con GET, ejecuta con POST + `confirm`). Borrado tras usar.
+- **Fuente:** reporte **"DEUDA A LA FECHA"** exportado de Sisconin (deuda exacta por apartamento). **NO reconstruir** el saldo desde recibos+pagos — no cuadra (la cuota lleva fondo de reserva + mora por unidad). Pedir siempre el reporte de deuda actual del sistema viejo.
+- **Qué hace:** borra `PaymentAllocation→InvoiceItem→Payment→Invoice` de la comunidad y crea 1 factura `EXTRA_FEE "SISCONIN-{code}"` (OVERDUE) por deudor con su deuda exacta. Validado contra apts que el admin confirme solventes (su pago = la cuota).
+- **Resultado Arrayanes:** 117 deudores, $15.137,95. Mapeo Excel→ResidIA: A011→11A, APH1→PH1A, B163→163B.
+- **Pagos:** ResidIA aplica FIFO (más vieja primero). El "Saldo Sisconin" es la más vieja → se cobra antes que los meses nuevos que emita el admin de aquí en adelante.
+- **Emails:** se cargan aparte (solo guardar, sin enviar) los de alta confianza; envío masivo SOLO tras verificar con el admin.
+
+---
+
 **Mantenedor:** Innova
-**Última actualización:** 2026-05-08
+**Última actualización:** 2026-06-21

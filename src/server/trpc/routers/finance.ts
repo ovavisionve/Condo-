@@ -16,9 +16,34 @@ import {
 } from "@/server/services/invoicing";
 import { recordPayment, voidPayment } from "@/server/services/payments";
 import { registerIncome, voidIncome } from "@/server/services/income";
-import { sendEmail, buildInvoiceEmail } from "@/server/services/email";
+import { sendEmail, buildInvoiceEmail, type OrgSmtp } from "@/server/services/email";
+import { db as prismaDb } from "@/server/db/client";
 
 const orgIdInput = z.object({ organizationId: z.string() });
+
+/**
+ * Carga el SMTP de la organización (smtp.gmail.com de Arrayanes, etc.) para que
+ * los envíos de recibos usen el remitente de la org y no el SMTP global de env.
+ * Devuelve null si la org no tiene SMTP configurado → sendEmail cae al global.
+ */
+async function loadOrgSmtp(organizationId: string): Promise<OrgSmtp | null> {
+  const org = await prismaDb.organization.findUnique({
+    where: { id: organizationId },
+    select: {
+      smtpHost: true, smtpPort: true, smtpUser: true,
+      smtpPass: true, smtpFrom: true, smtpSecure: true,
+    },
+  });
+  if (!org?.smtpHost || !org.smtpUser || !org.smtpPass) return null;
+  return {
+    host: org.smtpHost,
+    port: org.smtpPort ?? 587,
+    user: org.smtpUser,
+    pass: org.smtpPass,
+    from: org.smtpFrom ?? org.smtpUser,
+    secure: org.smtpSecure,
+  };
+}
 
 const EXPENSE_CATEGORIES = [
   "ELECTRICITY",
@@ -822,7 +847,7 @@ export const financeRouter = router({
         // ── Saldo a favor del residente: anticipo (suma de pagos − allocations) ──
         // Solo cuenta el sobrante de pagos que NO se aplicó a otras facturas.
         const unitPaymentsForCredit = await ctx.db.payment.findMany({
-          where: { unitId: inv.unitId, voidedAt: null },
+          where: { unitId: inv.unitId, voidedAt: null, isHistorical: false },
           select: {
             amountUsd: true, amountBss: true,
             allocations: { select: { amountUsd: true, amountBss: true } },
@@ -1320,7 +1345,7 @@ export const financeRouter = router({
 
         // ── Saldo a favor del residente (anticipo no aplicado) ──────────
         const paymentsForCredit = await ctx.db.payment.findMany({
-          where: { unitId: targetUnit.id, voidedAt: null },
+          where: { unitId: targetUnit.id, voidedAt: null, isHistorical: false },
           select: {
             amountUsd: true, amountBss: true,
             allocations: { select: { amountUsd: true, amountBss: true } },
@@ -1556,6 +1581,7 @@ export const financeRouter = router({
           where: { id: inv.communityId },
           select: { name: true, address: true },
         });
+        const orgSmtp = await loadOrgSmtp(input.organizationId);
 
         // Buscar propietario actual de la unidad
         const ownership = await ctx.db.ownership.findFirst({
@@ -1605,7 +1631,7 @@ export const financeRouter = router({
           portalUrl,
         });
 
-        const result = await sendEmail({ to: person.email, ...emailData });
+        const result = await sendEmail({ to: person.email, ...emailData, orgSmtp });
         return result;
       }),
 
@@ -1743,6 +1769,7 @@ export const financeRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const { organizationId, communityId, year, month, batchSize } = input;
+        const orgSmtp = await loadOrgSmtp(organizationId);
         const monthStart = new Date(Date.UTC(year, month - 1, 1));
         const monthEnd   = new Date(Date.UTC(year, month, 1));
 
@@ -1848,7 +1875,7 @@ export const financeRouter = router({
               portalUrl,
             });
 
-            const result = await sendEmail({ to: person.email, ...emailData });
+            const result = await sendEmail({ to: person.email, ...emailData, orgSmtp });
             await ctx.db.notification.create({
               data: { ...notifData, status: result.success ? "SENT" : "FAILED", body: emailData.text ?? "" },
             }).catch(() => {/**/});
@@ -1877,6 +1904,7 @@ export const financeRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const { organizationId, communityId, year, month } = input;
+        const orgSmtp = await loadOrgSmtp(organizationId);
         const monthStart = new Date(Date.UTC(year, month - 1, 1));
         const monthEnd   = new Date(Date.UTC(year, month, 1));
 
@@ -1974,7 +2002,7 @@ export const financeRouter = router({
                 status:       inv.status,
                 portalUrl,
               });
-              const result = await sendEmail({ to: person.email, ...emailData });
+              const result = await sendEmail({ to: person.email, ...emailData, orgSmtp });
               await ctx.db.notification.create({
                 data: { ...notifData, status: result.success ? "SENT" : "FAILED", body: emailData.text ?? "" },
               }).catch(() => {/**/});
@@ -2201,7 +2229,7 @@ export const financeRouter = router({
             _sum: { totalUsd: true, paidUsd: true }, _count: true,
           }),
           ctx.db.payment.aggregate({
-            where: { communityId: input.communityId, voidedAt: null, paidAt: { gte: monthStart, lt: monthEnd } },
+            where: { communityId: input.communityId, voidedAt: null, paidAt: { gte: monthStart, lt: monthEnd }, isHistorical: false },
             _sum: { amountUsd: true }, _count: true,
           }),
         ]);
@@ -2280,6 +2308,9 @@ export const financeRouter = router({
             communityId: input.communityId,
             ...(input.unitId ? { unitId: input.unitId } : {}),
             ...(input.includeVoided ? {} : { voidedAt: null }),
+            // En la lista global de la comunidad, ocultar los históricos migrados
+            // (serían miles de filas); al ver una unidad específica sí se muestran.
+            ...(input.unitId ? {} : { isHistorical: false }),
           },
           include: {
             unit: { select: { code: true } },
@@ -2296,6 +2327,7 @@ export const financeRouter = router({
             organizationId: input.organizationId,
             communityId: input.communityId,
             voidedAt: null,
+            isHistorical: false,
           },
           include: {
             unit: {
@@ -3189,8 +3221,9 @@ export const financeRouter = router({
 
       // Saldo a favor (anticipo): sumas de pagos no asignados a ninguna factura.
       // Para cada pago no anulado: amount - sum(allocations) = porción no aplicada.
+      // Los pagos históricos migrados (isHistorical) se excluyen: no generan crédito.
       const payments = await ctx.db.payment.findMany({
-        where: { unitId: input.unitId, voidedAt: null },
+        where: { unitId: input.unitId, voidedAt: null, isHistorical: false },
         select: {
           amountBss: true, amountUsd: true,
           allocations: { select: { amountBss: true, amountUsd: true } },
@@ -3228,9 +3261,10 @@ export const financeRouter = router({
     .input(orgIdInput.extend({ unitId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.db.$transaction(async (tx) => {
-        // 1. Encontrar pagos con porción no asignada (anticipo)
+        // 1. Encontrar pagos con porción no asignada (anticipo).
+        //    Excluir históricos migrados: no son anticipos reales aplicables.
         const payments = await tx.payment.findMany({
-          where: { unitId: input.unitId, voidedAt: null, organizationId: input.organizationId },
+          where: { unitId: input.unitId, voidedAt: null, organizationId: input.organizationId, isHistorical: false },
           include: { allocations: { select: { amountBss: true, amountUsd: true } } },
           orderBy: { paidAt: "asc" },
         });
