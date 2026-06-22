@@ -11,6 +11,7 @@ import { sendEmail } from "@/server/services/email";
 import { getCurrentRate } from "@/server/services/exchange";
 import { Decimal } from "decimal.js";
 import { db } from "@/server/db/client";
+import bcrypt from "bcryptjs";
 
 const INVOICE_TYPE_LABELS: Record<string, string> = {
   ALIQUOT:     "Cuota mensual",
@@ -431,6 +432,66 @@ export const portalRouter = router({
       return { ok: true, person: updated };
     }),
 
+  /**
+   * El residente (autenticado por enlace mágico o sesión) crea/cambia su propia
+   * contraseña para entrar con email+clave la próxima vez, SIN que nunca se le
+   * envíe una clave por correo. Crea/vincula el User (email = usuario).
+   */
+  setOwnPassword: publicProcedure
+    .input(z.object({ token: z.string().optional(), password: z.string().min(8).max(72) }))
+    .mutation(async ({ ctx, input }) => {
+      const sessionUserId = (ctx as { user?: { id?: string } | null }).user?.id;
+      const personId = await resolvePersonId(ctx.db, input.token, sessionUserId);
+      if (!personId) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+      const person = await ctx.db.person.findUniqueOrThrow({ where: { id: personId } });
+      if (!person.email) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Necesitás un email registrado para crear una contraseña. Confirmá tus datos primero.",
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(input.password, 12);
+
+      // Crear o vincular el User (email = usuario)
+      let user = person.userId
+        ? await ctx.db.user.findUnique({ where: { id: person.userId } })
+        : await ctx.db.user.findUnique({ where: { email: person.email } });
+
+      // Si el User existe y está vinculado a OTRA Person (email compartido),
+      // desvincular a esa otra (el último que setea clave toma el control del email).
+      if (user) {
+        const otherPerson = await ctx.db.person.findFirst({
+          where: { userId: user.id, id: { not: person.id }, organizationId: person.organizationId },
+          select: { id: true },
+        });
+        if (otherPerson) {
+          await ctx.db.person.update({ where: { id: otherPerson.id }, data: { userId: null } });
+        }
+        user = await ctx.db.user.update({
+          where: { id: user.id },
+          data: { passwordHash, active: true, emailVerified: new Date() },
+        });
+      } else {
+        user = await ctx.db.user.create({
+          data: {
+            email: person.email,
+            name: `${person.firstName} ${person.lastName}`,
+            passwordHash,
+            emailVerified: new Date(),
+            active: true,
+          },
+        });
+      }
+
+      if (person.userId !== user.id) {
+        await ctx.db.person.update({ where: { id: person.id }, data: { userId: user.id } });
+      }
+
+      return { ok: true, email: person.email };
+    }),
+
   requestAccess: publicProcedure
     .input(z.object({ email: z.string().email() }))
     .mutation(async ({ ctx, input }) => {
@@ -555,6 +616,7 @@ export const portalRouter = router({
           phone: person.phone,
           whatsapp: person.whatsapp,
           portalConfirmedAt: person.portalConfirmedAt,
+          hasPassword: !!person.userId,
         },
         units,
         todayRate: todayRate.toFixed(4),
@@ -594,6 +656,7 @@ export const portalRouter = router({
         phone: person.phone,
         whatsapp: person.whatsapp,
         portalConfirmedAt: person.portalConfirmedAt,
+        hasPassword: !!person.userId,
       },
       units,
       todayRate: todayRate.toFixed(4),

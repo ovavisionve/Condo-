@@ -70,7 +70,7 @@ type UnitData = {
   monthlyPaymentTotals: { yearMonth: string; label: string; totalUsd: number }[];
 };
 type PortalData = {
-  person: { firstName: string; lastName: string; email: string | null; idType: string; idNumber: string; phone: string | null; whatsapp: string | null; portalConfirmedAt: Date | string | null };
+  person: { firstName: string; lastName: string; email: string | null; idType: string; idNumber: string; phone: string | null; whatsapp: string | null; portalConfirmedAt: Date | string | null; hasPassword: boolean };
   units: UnitData[];
   todayRate: string;
   tokenExpiresAt: Date | null;
@@ -417,6 +417,86 @@ const TABS = [
   { key: "seguridad",  label: "🔐 Visitantes" },
 ] as const;
 type TabKey = typeof TABS[number]["key"];
+
+// ─── TARJETA: crear/cambiar contraseña propia ─────────────────────────────────
+// Acceso híbrido: el residente entra la 1ª vez con el enlace mágico y acá crea
+// su propia clave para entrar con email+contraseña la próxima vez. Nunca se
+// envía una clave por correo.
+function AccessPasswordCard({ token, email, hasPassword }: { token?: string; email: string | null; hasPassword: boolean }) {
+  const [open, setOpen] = useState(!hasPassword);
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setPassword = trpc.portal.setOwnPassword.useMutation();
+
+  if (!email) return null; // sin email no se puede crear cuenta
+
+  const ok = pw.length >= 8 && pw === pw2;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ok) { setError(pw.length < 8 ? "La contraseña debe tener al menos 8 caracteres." : "Las contraseñas no coinciden."); return; }
+    setError(null);
+    try {
+      await setPassword.mutateAsync({ token, password: pw });
+      setDone(true);
+      setPw(""); setPw2("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar la contraseña.");
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+        ✅ <strong>Contraseña guardada.</strong> La próxima vez entrá en el portal con <strong>"🔑 Tengo usuario y contraseña"</strong> usando tu email <strong>{email}</strong> y esta clave — sin esperar el enlace.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="font-semibold text-[#1e3a5f]">🔒 {hasPassword ? "Cambiar mi contraseña" : "Crear una contraseña"}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {hasPassword
+              ? "Ya podés entrar con tu email y contraseña. Acá la podés cambiar."
+              : "Creá una clave para entrar con tu email la próxima vez, sin esperar el enlace por correo."}
+          </p>
+        </div>
+        {hasPassword && (
+          <button type="button" onClick={() => setOpen((v) => !v)} className="text-xs text-blue-700 hover:underline whitespace-nowrap">
+            {open ? "Cerrar" : "Cambiar"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <form onSubmit={submit} className="mt-3 space-y-2">
+          <div className="text-xs text-muted-foreground">Usuario: <strong>{email}</strong></div>
+          <input
+            type="password" autoComplete="new-password" placeholder="Nueva contraseña (mín. 8)"
+            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+            value={pw} onChange={(e) => setPw(e.target.value)}
+          />
+          <input
+            type="password" autoComplete="new-password" placeholder="Repetí la contraseña"
+            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+            value={pw2} onChange={(e) => setPw2(e.target.value)}
+          />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <button
+            type="submit" disabled={!ok || setPassword.isPending}
+            className="h-10 px-4 rounded-md bg-[#1e3a5f] text-white text-sm font-semibold hover:bg-[#15294a] disabled:opacity-50"
+          >
+            {setPassword.isPending ? "Guardando..." : hasPassword ? "Guardar nueva contraseña" : "Crear contraseña"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
 
 // ─── PRINCIPAL TAB ────────────────────────────────────────────────────────────
 function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: string; onTab: (t: TabKey) => void }) {
@@ -1766,7 +1846,12 @@ function ResidentDashboard({ data, token }: { data: PortalData; token?: string }
 
       {/* Content */}
       <div className="mx-auto max-w-5xl px-4 py-6">
-        {tab === "principal"  && <PrincipalTab  unit={unit} todayRate={data.todayRate} onTab={setTab} />}
+        {tab === "principal"  && (
+          <div className="space-y-6">
+            <PrincipalTab  unit={unit} todayRate={data.todayRate} onTab={setTab} />
+            <AccessPasswordCard token={token} email={data.person.email} hasPassword={data.person.hasPassword} />
+          </div>
+        )}
         {tab === "pendientes" && <PendientesTab unit={unit} todayRate={data.todayRate} />}
         {tab === "pagos"      && <PagosTab      unit={unit} token={token} />}
         {tab === "aviso"      && <AvisoTab      unit={unit} token={token} />}
