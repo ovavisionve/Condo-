@@ -919,20 +919,29 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
       const unit = await db.unit.findFirst({
         where,
         select: {
-          code: true, floor: true, tower: true, type: true, areaM2: true, bedrooms: true, bathrooms: true, parkingSpots: true, aliquot: true, notes: true,
+          id: true, code: true, floor: true, tower: true, type: true, areaM2: true, bedrooms: true, bathrooms: true, parkingSpots: true, aliquot: true, notes: true,
           community: { select: { name: true, monthlyFeeUsd: true } },
           ownerships: { where: { endDate: null }, select: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true, email: true, phone: true, whatsapp: true, vehicles: { select: { brand: true, model: true, plate: true, color: true, active: true } } } }, sharePercent: true, startDate: true } },
           tenancies: { where: { endDate: null }, select: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true, email: true, phone: true } }, startDate: true, monthlyRentUsd: true } },
-          invoices: { where: { status: { not: "VOIDED" } }, orderBy: { issuedAt: "desc" }, take: 6, select: { invoiceNumber: true, totalUsd: true, paidUsd: true, status: true, periodYear: true, periodMonth: true, dueDate: true } },
+          invoices: { where: { status: { not: "VOIDED" } }, orderBy: { issuedAt: "desc" }, take: 24, select: { invoiceNumber: true, totalUsd: true, paidUsd: true, status: true, periodYear: true, periodMonth: true, dueDate: true } },
           payments: { where: { voidedAt: null }, orderBy: { paidAt: "desc" }, take: 5, select: { amountUsd: true, method: true, paidAt: true, reference: true } },
           workOrders: { where: { status: { not: "COMPLETED" } }, take: 3, select: { title: true, status: true, priority: true, createdAt: true } },
         },
       });
       if (!unit) return { error: `Unidad "${unitCode}" no encontrada.` };
-      // Usar invoice.paidUsd (monto realmente asignado a cada factura via PaymentAllocation),
-      // NO unit.payments.amountUsd que incluye anticipos no aplicados y puede distorsionar el balance.
-      const totalInvoiced = unit.invoices.reduce((s, i) => s + Number(i.totalUsd), 0);
-      const totalAllocated = unit.invoices.reduce((s, i) => s + Number(i.paidUsd), 0);
+      // Deuda REAL agregada sobre TODAS las facturas no anuladas — NO solo las que se
+      // muestran (`unit.invoices` está limitado a 24). Con la deuda partida mes a mes,
+      // sumar solo las recientes cortaba el total (ej. 73A mostraba $240 de $604).
+      // Se usa invoice.paidUsd (monto asignado via PaymentAllocation), no unit.payments.
+      const debtAgg = await db.invoice.aggregate({
+        where: { unitId: unit.id, status: { not: "VOIDED" } },
+        _sum: { totalUsd: true, paidUsd: true },
+      });
+      const overdueCount = await db.invoice.count({
+        where: { unitId: unit.id, status: "OVERDUE" },
+      });
+      const totalInvoiced = Number(debtAgg._sum.totalUsd ?? 0);
+      const totalAllocated = Number(debtAgg._sum.paidUsd ?? 0);
       const debtUsd = Math.max(0, totalInvoiced - totalAllocated);
       const allVehicles = unit.ownerships.flatMap(o => o.person.vehicles.filter(v => v.active).map(v => `${v.brand} ${v.model} ${v.color} — ${v.plate}`));
       return {
@@ -945,8 +954,9 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
         vehicles: allVehicles,
         totalInvoicedUsd: totalInvoiced.toFixed(2),
         totalAllocatedUsd: totalAllocated.toFixed(2),
-        // debtUsd = lo que le falta pagar de facturas emitidas (0 si está solvente)
+        // debtUsd = lo que le falta pagar de TODAS las facturas emitidas (0 si está solvente)
         debtUsd: debtUsd.toFixed(2),
+        mesesVencidos: overdueCount,
         solvente: debtUsd < 0.01,
         recentInvoices: unit.invoices.map(i => ({ invoiceNumber: i.invoiceNumber, period: `${i.periodYear}-${String(i.periodMonth).padStart(2,"0")}`, totalUsd: Number(i.totalUsd).toFixed(2), paidUsd: Number(i.paidUsd).toFixed(2), status: i.status, due: i.dueDate.toISOString().split("T")[0] })),
         recentPayments: unit.payments.map(p => ({ amountUsd: Number(p.amountUsd).toFixed(2), method: p.method, date: p.paidAt.toISOString().split("T")[0], reference: p.reference })),

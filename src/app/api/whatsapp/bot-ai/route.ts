@@ -96,11 +96,11 @@ async function buildResidentFacts(params: {
       : "(No identificado.)";
   }
 
-  // Últimas 6 facturas no anuladas
+  // Facturas no anuladas (hasta 24 meses para que el residente vea su deuda mes a mes)
   const invoices = await db.invoice.findMany({
     where: { unitId: actualUnitId, status: { not: "VOIDED" } },
     orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }],
-    take: 6,
+    take: 24,
     select: {
       id: true, invoiceNumber: true, periodYear: true, periodMonth: true,
       totalUsd: true, totalBss: true, paidUsd: true, paidBss: true,
@@ -119,9 +119,14 @@ async function buildResidentFacts(params: {
     },
   });
 
-  // Saldo total
-  const totalInvoiced = invoices.reduce((s, i) => s + Number(i.totalUsd), 0);
-  const totalPaid = invoices.reduce((s, i) => s + Number(i.paidUsd), 0);
+  // Saldo total: agregado sobre TODAS las facturas no anuladas (no solo las 24 que se
+  // listan), si no, con la deuda partida mes a mes el saldo quedaba cortado.
+  const debtAgg = await db.invoice.aggregate({
+    where: { unitId: actualUnitId, status: { not: "VOIDED" } },
+    _sum: { totalUsd: true, paidUsd: true },
+  });
+  const totalInvoiced = Number(debtAgg._sum.totalUsd ?? 0);
+  const totalPaid = Number(debtAgg._sum.paidUsd ?? 0);
   const debtUsd = Math.max(0, totalInvoiced - totalPaid);
 
   // Tasa BCV vigente
