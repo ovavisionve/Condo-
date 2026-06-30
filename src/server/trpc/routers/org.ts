@@ -948,6 +948,87 @@ export const orgRouter = router({
       }),
 
     /**
+     * Envía el correo de ACCESO/TUTORIAL (enlace mágico + manual) a TODOS los
+     * propietarios de una comunidad que tengan email. Usa el SMTP de la org.
+     * Botón self-service para que el admin lo dispare él mismo.
+     */
+    sendPortalAccessToAll: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const org = await ctx.db.organization.findUnique({
+          where: { id: input.organizationId },
+          select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true, smtpFrom: true, smtpSecure: true },
+        });
+        const orgSmtp = org?.smtpHost && org.smtpUser && org.smtpPass
+          ? { host: org.smtpHost, port: org.smtpPort ?? 587, user: org.smtpUser, pass: org.smtpPass, from: org.smtpFrom ?? org.smtpUser, secure: org.smtpSecure }
+          : null;
+
+        const ownerships = await ctx.db.ownership.findMany({
+          where: { endDate: null, unit: { communityId: input.communityId } },
+          select: { person: { select: { id: true, firstName: true, lastName: true, email: true } } },
+        });
+        const seen = new Set<string>();
+        const recipients: { id: string; firstName: string; lastName: string; email: string | null }[] = [];
+        for (const o of ownerships) {
+          if (seen.has(o.person.id)) continue;
+          seen.add(o.person.id);
+          recipients.push(o.person);
+        }
+        const withEmail = recipients.filter((p) => p.email && p.email.includes("@"));
+
+        const { sendEmail } = await import("@/server/services/email");
+        const base = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+        const helpUrl = `${base}/portal/help`;
+        let enviados = 0, fallidos = 0;
+        const BATCH = 8;
+        for (let i = 0; i < withEmail.length; i += BATCH) {
+          await Promise.all(withEmail.slice(i, i + BATCH).map(async (p) => {
+            try {
+              const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+              const tok = await ctx.db.portalToken.create({ data: { personId: p.id, expiresAt } });
+              const portalUrl = `${base}/portal?t=${tok.token}`;
+              const r = await sendEmail({
+                to: p.email!,
+                subject: "Acceso a tu portal de condominio",
+                html: `
+                  <div style="font-family:sans-serif;max-width:480px;margin:auto;color:#1f2937">
+                    <div style="background:#1e3a5f;border-radius:12px 12px 0 0;padding:24px;text-align:center">
+                      <div style="color:#cfe0f5;font-size:13px;font-weight:600;letter-spacing:.5px">ResidIA</div>
+                      <div style="color:#fff;font-size:20px;font-weight:600;margin-top:6px">Bienvenido/a al portal de tu condominio</div>
+                    </div>
+                    <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">
+                      <p>Hola <strong>${p.firstName} ${p.lastName}</strong>,</p>
+                      <p>Este es tu acceso digital al condominio. Desde tu celular o computadora podés:</p>
+                      <ul style="padding-left:18px;line-height:1.8;color:#374151">
+                        <li>📄 Ver y descargar tu recibo</li>
+                        <li>💵 Notificar tus pagos</li>
+                        <li>🧾 Ver tu estado de cuenta y saldo</li>
+                        <li>🧍 Registrar visitas y reservar áreas comunes</li>
+                      </ul>
+                      <p style="text-align:center;margin:28px 0">
+                        <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Entrar a mi portal →</a>
+                      </p>
+                      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;font-size:13px;color:#1e40af">
+                        ⚠️ La primera vez te pediremos <strong>confirmar tu correo y WhatsApp</strong>. Solo toma un minuto.
+                      </div>
+                      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:16px;text-align:center">
+                        <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabés por dónde empezar? Tenemos un manual paso a paso 👇</div>
+                        <a href="${helpUrl}" style="color:#1e3a5f;font-size:14px;font-weight:600;text-decoration:none">📖 Ver el manual: cómo usar el portal →</a>
+                      </div>
+                      <p style="color:#9ca3af;font-size:12px;margin-top:18px">Este enlace es válido por 7 días y es personal — no lo compartas.</p>
+                    </div>
+                  </div>`,
+                text: `Hola ${p.firstName}, entrá a tu portal: ${portalUrl} (válido 7 días). Manual: ${helpUrl}`,
+                orgSmtp,
+              });
+              if (r.success) enviados++; else fallidos++;
+            } catch { fallidos++; }
+          }));
+        }
+        return { totalPropietarios: recipients.length, conEmail: withEmail.length, sinEmail: recipients.length - withEmail.length, enviados, fallidos };
+      }),
+
+    /**
      * Setea una contraseña MANUAL para un residente sin depender del email.
      * Útil cuando el residente no tiene email registrado, o cuando el SMTP no funciona.
      * Devuelve la contraseña en claro para que el admin se la dé verbalmente al residente.

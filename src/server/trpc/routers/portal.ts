@@ -405,7 +405,7 @@ export const portalRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const sessionUserId = (ctx as { user?: { id?: string } | null }).user?.id;
+      const sessionUserId = ctx.session?.user?.id;
       const personId = await resolvePersonId(ctx.db, input.token, sessionUserId);
       if (!personId) throw new TRPCError({ code: "UNAUTHORIZED" });
 
@@ -440,7 +440,7 @@ export const portalRouter = router({
   setOwnPassword: publicProcedure
     .input(z.object({ token: z.string().optional(), password: z.string().min(8).max(72) }))
     .mutation(async ({ ctx, input }) => {
-      const sessionUserId = (ctx as { user?: { id?: string } | null }).user?.id;
+      const sessionUserId = ctx.session?.user?.id;
       const personId = await resolvePersonId(ctx.db, input.token, sessionUserId);
       if (!personId) throw new TRPCError({ code: "UNAUTHORIZED" });
 

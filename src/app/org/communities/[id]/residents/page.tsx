@@ -106,6 +106,20 @@ export default function ResidentsPage() {
   const assignOwner = trpc.org.persons.assignOwner.useMutation();
   const assignTenant = trpc.org.persons.assignTenant.useMutation();
   const sendCredentials = trpc.org.persons.sendPortalCredentials.useMutation();
+  const sendAccessToAll = trpc.org.persons.sendPortalAccessToAll.useMutation();
+  const [accessAllMsg, setAccessAllMsg] = useState<string | null>(null);
+
+  const handleSendAccessToAll = async () => {
+    const conEmail = residents.ownerships.filter((o) => (o as { person: { email?: string | null } }).person.email).length;
+    if (!window.confirm(`Se enviará el correo de acceso/tutorial (con enlace al portal) a todos los propietarios con email registrado (~${conEmail}). ¿Continuar?`)) return;
+    setAccessAllMsg("Enviando… esto puede tardar hasta 1-2 minutos, no cierres la pestaña.");
+    try {
+      const r = await sendAccessToAll.mutateAsync({ organizationId, communityId });
+      setAccessAllMsg(`✅ Enviados ${r.enviados} de ${r.conEmail} · ${r.fallidos} fallidos · ${r.sinEmail} sin email (de ${r.totalPropietarios} propietarios).`);
+    } catch (err) {
+      setAccessAllMsg(`❌ ${err instanceof Error ? err.message : "Error al enviar."}`);
+    }
+  };
 
   const resetForm = () => {
     setFirstName(""); setLastName(""); setIdType("CEDULA_V"); setIdNumber("");
@@ -263,6 +277,14 @@ export default function ResidentsPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            type="button"
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            disabled={sendAccessToAll.isPending}
+            onClick={handleSendAccessToAll}
+          >
+            {sendAccessToAll.isPending ? "Enviando…" : "📧 Enviar tutorial a TODOS"}
+          </Button>
           <Button variant="outline" onClick={downloadTemplate}>Descargar plantilla CSV</Button>
           <label>
             <input ref={fileInputRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFileChange} />
@@ -275,6 +297,12 @@ export default function ResidentsPage() {
           </Button>
         </div>
       </div>
+
+      {accessAllMsg && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          {accessAllMsg}
+        </div>
+      )}
 
       {/* ── Tarjetas de resumen financiero ── */}
       <div className="grid grid-cols-3 gap-3">
