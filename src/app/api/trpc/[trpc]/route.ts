@@ -3,7 +3,9 @@ import { appRouter } from "@/server/trpc/routers/_app";
 import { createContext } from "@/server/trpc/init";
 
 // Algunas mutaciones (envío masivo de emails/tutoriales) procesan ~188 destinatarios.
-export const maxDuration = 120;
+// Subido a 300s (03-jul-2026): sendEmailAllAtOnce ahora también genera y adjunta el PDF
+// de cada recibo (render + queries extra por unidad), lo que añade tiempo al envío masivo.
+export const maxDuration = 300;
 
 const handler = (req: Request) =>
   fetchRequestHandler({

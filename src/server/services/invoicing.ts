@@ -1,7 +1,7 @@
 import { Decimal } from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { db } from "@/server/db/client";
-import { prorate, assertSumExact } from "@/lib/proration";
+import { prorateUniform } from "@/lib/proration";
 import { getCurrentRate } from "@/server/services/exchange";
 import { notifyPerson } from "@/server/services/notifications";
 import type { Currency, ExchangeSource, PrismaClient } from "@prisma/client";
@@ -35,11 +35,84 @@ export function prorateSignedExported<K extends string>(
   total: Decimal.Value,
   parts: ReadonlyArray<{ key: K; aliquot: Decimal.Value }>,
 ): Map<K, Decimal> {
-  const d = new Decimal(total);
-  if (d.gte(0)) return prorate(d.toFixed(2), parts);
-  const abs = prorate(d.abs().toFixed(2), parts);
-  const out = new Map<K, Decimal>();
-  for (const [k, v] of abs) out.set(k, v.neg());
+  // Prorrateo UNIFORME (todos con la misma alícuota pagan lo mismo). Maneja signo.
+  return prorateUniform(total, parts);
+}
+
+/**
+ * Empareja cada PROVISION_BASE con su PROVISION_ADJUSTMENT para que en el recibo
+ * salgan INTERCALADAS (PROVISIÓN X seguida inmediatamente de su AJUSTE X), tal como
+ * en el Excel del cliente (Arrayanes), en lugar de "todas las provisiones y luego
+ * todos los ajustes" (que confunde). Devuelve Map<expenseId, token>: los dos gastos
+ * de una misma pareja comparten token → al ordenar quedan pegados.
+ *
+ * Emparejamiento (dentro de cada scope de torre):
+ *  - CON templateId: base y ajuste comparten templateId → misma pareja.
+ *  - SIN templateId (Arrayanes jun-2026 cargado a mano): el k-ésimo base con el
+ *    k-ésimo ajuste, ordenados por `createdAt`.
+ *
+ * Orden de las parejas: SIEMPRE por `createdAt` del base (o del ajuste si no hay base),
+ * tanto vinculadas como sueltas. Así el orden del recibo respeta el orden en que se
+ * cargó/creó (= orden del Excel), y NO el id de la plantilla (que sería arbitrario).
+ * Esto hace que funcione igual hoy (junio suelto) y a futuro (agosto+ vinculado por
+ * applyToMonth). El token lleva índice zero-padded para ordenar numéricamente.
+ */
+export function buildProvisionPairKeys<
+  T extends {
+    id: string;
+    kind: string;
+    towerScope: string | null;
+    recurringTemplateId: string | null;
+    createdAt: Date;
+  },
+>(rows: readonly T[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const byScope = new Map<string, T[]>();
+  for (const e of rows) {
+    if (e.kind !== "PROVISION_BASE" && e.kind !== "PROVISION_ADJUSTMENT") continue;
+    const scope = e.towerScope ?? "_gen";
+    const arr = byScope.get(scope);
+    if (arr) arr.push(e);
+    else byScope.set(scope, [e]);
+  }
+  const bySeq = (a: T, b: T) => a.createdAt.getTime() - b.createdAt.getTime();
+  for (const [scope, arr] of byScope) {
+    // Construir las parejas con un tiempo representativo (el del base) para ordenarlas.
+    type Pair = { ids: string[]; sortTime: number };
+    const pairs: Pair[] = [];
+
+    // 1) Vinculadas: agrupar base+ajuste por templateId.
+    const byTpl = new Map<string, T[]>();
+    for (const e of arr) {
+      if (!e.recurringTemplateId) continue;
+      const g = byTpl.get(e.recurringTemplateId);
+      if (g) g.push(e);
+      else byTpl.set(e.recurringTemplateId, [e]);
+    }
+    for (const [, group] of byTpl) {
+      const base = group.find((e) => e.kind === "PROVISION_BASE") ?? group[0]!;
+      pairs.push({ ids: group.map((e) => e.id), sortTime: base.createdAt.getTime() });
+    }
+
+    // 2) Sueltas: el k-ésimo base con el k-ésimo ajuste (por createdAt).
+    const looseBases = arr.filter((e) => !e.recurringTemplateId && e.kind === "PROVISION_BASE").sort(bySeq);
+    const looseAdjs = arr.filter((e) => !e.recurringTemplateId && e.kind === "PROVISION_ADJUSTMENT").sort(bySeq);
+    const n = Math.max(looseBases.length, looseAdjs.length);
+    for (let k = 0; k < n; k++) {
+      const b = looseBases[k];
+      const a = looseAdjs[k];
+      const ids = [b?.id, a?.id].filter((x): x is string => !!x);
+      const sortTime = (b ?? a)!.createdAt.getTime();
+      pairs.push({ ids, sortTime });
+    }
+
+    // Ordenar todas las parejas por createdAt y asignar token zero-padded compartido.
+    pairs.sort((p, q) => p.sortTime - q.sortTime);
+    pairs.forEach((p, idx) => {
+      const token = `${scope}-${String(idx).padStart(4, "0")}`;
+      for (const id of p.ids) out.set(id, token);
+    });
+  }
   return out;
 }
 
@@ -61,6 +134,7 @@ export type CreateExpenseInput = {
     | "REPAIRS"
     | "RESERVE_FUND"
     | "TAXES"
+    | "LEGAL"
     | "OTHER";
   description: string;
   periodYear: number;
@@ -69,6 +143,7 @@ export type CreateExpenseInput = {
   currencyPrimary: Currency;
   exchangeSource?: ExchangeSource;
   customCategory?: string;
+  subCategory?: string | null;
   supplierName?: string;
   invoiceNumber?: string;
   receiptDate?: Date;
@@ -144,6 +219,7 @@ export async function registerExpense(input: CreateExpenseInput) {
       communityId: input.communityId,
       category: input.category,
       customCategory: input.customCategory ?? null,
+      subCategory: input.subCategory ?? null,
       description: input.description,
       periodYear: input.periodYear,
       periodMonth: input.periodMonth,
@@ -223,29 +299,43 @@ export async function issueMonthlyInvoices(params: {
     where: { communityId, periodYear: expenseYear, periodMonth: expenseMonth, invoicedAt: null, voidedAt: null },
     include: { recurringTemplate: { select: { id: true, description: true, isProvision: true, active: true } } },
   });
-  // NUEVA LÓGICA (8/jun/2026): cuando hay reales cargados vinculados a una
-  // plantilla isProvision, se cobran ellos en lugar de la PROVISION_BASE
-  // estimada. La base estimada es solo un fallback cuando no hay reales.
-  // Excluir:
-  //  - Expenses cuya plantilla está INACTIVA (no debe facturarse)
-  //  - PROVISION_BASE cuando ya hay un REAL para esa misma plantilla
-  //  - PROVISION_ADJUSTMENT (modelo viejo; ya no aplica)
-  const realesPorTpl = new Set<string>(
-    allExpenses
-      .filter((e) => e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true && e.recurringTemplateId)
-      .map((e) => e.recurringTemplateId as string),
-  );
-  const expenses = allExpenses.filter((e) => {
+  // MODELO PROVISIÓN + AJUSTE (confirmado con el recibo Excel de Arrayanes, 03-jul-2026):
+  // el residente paga SIEMPRE la provisión estimada (PROVISION_BASE) + el AJUSTE del mes
+  // anterior (real mes pasado − estimado mes pasado). La factura REAL de un servicio
+  // provisionado NO se cobra directo — solo alimenta el cálculo del ajuste (ver
+  // applyToMonth). Por eso:
+  //  - Se EXCLUYE del cobro cualquier REGULAR vinculado a una plantilla isProvision
+  //    (es el "real" de un servicio provisionado; su rol es reconciliar, no cobrarse).
+  //  - La PROVISION_BASE se cobra SIEMPRE (ya no se anula por existir un real).
+  //  - PROVISION_ADJUSTMENT se factura (suma/resta la reconciliación).
+  //  - Expenses cuya plantilla está INACTIVA no se facturan.
+  // (Antes: lógica "REAL-FIRST" del 8/jun cobraba el real y anulaba la base — revertida.)
+  const expensesRaw = allExpenses.filter((e) => {
     if (e.recurringTemplate && e.recurringTemplate.active === false) return false;
-    if (e.kind === "PROVISION_BASE" && e.recurringTemplateId && realesPorTpl.has(e.recurringTemplateId)) return false;
-    if (e.kind === "PROVISION_ADJUSTMENT") return false;
+    if (e.kind === "REGULAR" && e.recurringTemplateId && e.recurringTemplate?.isProvision === true) return false;
     return true;
   });
 
   // Ingresos que reducen gastos antes del prorrateo (affectsInvoice=true)
-  const deductibleIncomes = await db.income.findMany({
+  const deductibleIncomesRaw = await db.income.findMany({
     where: { communityId, periodYear: expenseYear, periodMonth: expenseMonth, affectsInvoice: true, voidedAt: null },
   });
+
+  // Tasa BCV del CIERRE DEL MES COBRADO (último día del período), no la de hoy
+  // (pedido Reinaldo 03-jul: "usar la tasa del 30 de junio"). Cada monto se NORMALIZA a
+  // esta tasa respetando su moneda primaria: VES-primary → Bs fijo (costo real) y USD = Bs/tasa;
+  // USD-primary → USD fijo y Bs = USD×tasa. Así TODO el recibo (líneas, totales, fondo, cuota,
+  // exchangeRate guardado) queda consistente con la tasa mostrada.
+  const refRate = await getCurrentRate("BCV", new Date(expenseYear, expenseMonth, 0));
+  const normalizeAtRate = <T extends { amountBss: unknown; amountUsd: unknown; currencyPrimary: Currency }>(rows: T[]): T[] =>
+    rows.map((e) => {
+      let bss: Decimal, usd: Decimal;
+      if (e.currencyPrimary === "USD") { usd = new Decimal(String(e.amountUsd)); bss = usd.mul(refRate.vesPerUsd); }
+      else { bss = new Decimal(String(e.amountBss)); usd = bss.div(refRate.vesPerUsd); }
+      return { ...e, amountBss: bss.toFixed(2) as never, amountUsd: usd.toFixed(2) as never };
+    });
+  const expenses = normalizeAtRate(expensesRaw);
+  const deductibleIncomes = normalizeAtRate(deductibleIncomesRaw);
   const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s.plus(i.amountUsd.toString()), new Decimal(0));
   const totalIncomeDeductionBss = deductibleIncomes.reduce((s, i) => s.plus(i.amountBss.toString()), new Decimal(0));
 
@@ -300,20 +390,27 @@ export async function issueMonthlyInvoices(params: {
         arr.push(e);
         byTpl.set(key, arr);
       } else {
-        // Gastos sueltos (sin plantilla): agrupar por categoría + sub-categoría + scope.
-        // Pedido cliente: "Una sola en el resumen, no pueden verse 10 de un mismo sector".
-        // Ej: 10 gastos "Ferretería" → 1 línea sumada en el recibo.
-        const key = `${e.category}|${e.customCategory ?? ""}|${scope ?? ""}`;
+        // Gastos sueltos (sin plantilla): agrupar por CATEGORÍA + SUBCATEGORÍA + scope.
+        // Pedido cliente Reinaldo: "crear categorías y subcategorías y que se agrupen".
+        // Ej: 10 gastos "Ferretería / Tornillos" → 1 línea sumada en el recibo.
+        const key = `${e.category}|${e.customCategory ?? ""}|${e.subCategory ?? ""}|${scope ?? ""}`;
         const arr = byCategory.get(key) ?? [];
         arr.push(e);
         byCategory.set(key, arr);
       }
     }
 
+    // Etiqueta de un gasto agrupado por categoría: "Categoría — Subcategoría".
+    function categoryLabel(e: ExpenseLike): string {
+      const cat = e.customCategory?.trim() || e.description;
+      const sub = (e as { subCategory?: string | null }).subCategory?.trim();
+      return sub ? `${cat} — ${sub}` : cat;
+    }
+
     function aggregateGroup(group: ExpenseLike[], useTemplateDesc: boolean): ExpenseLike {
       if (group.length === 1) {
         const e = group[0]!;
-        return { ...e, description: useTemplateDesc ? (e.recurringTemplate?.description ?? e.description) : e.description };
+        return { ...e, description: useTemplateDesc ? (e.recurringTemplate?.description ?? e.description) : categoryLabel(e) };
       }
       const sumBss = group.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
       const sumUsd = group.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
@@ -324,7 +421,7 @@ export async function issueMonthlyInvoices(params: {
         amountUsd: sumUsd.toFixed(2) as never,
         description: useTemplateDesc
           ? (head.recurringTemplate?.description ?? head.description)
-          : (head.customCategory ?? head.description),
+          : categoryLabel(head),
       };
     }
 
@@ -335,6 +432,10 @@ export async function issueMonthlyInvoices(params: {
   }
   const towerExpenses = groupByTemplate(towerExpensesRaw, "tower");
   const generalExpenses = groupByTemplate(generalExpensesRaw, null);
+
+  // Emparejar PROVISIÓN↔AJUSTE (por templateId o por posición) para que salgan
+  // intercaladas en el recibo, como en el Excel del cliente. Ver helper.
+  const provPairKeys = buildProvisionPairKeys(expenses);
 
   // Calcular cuánto de la deducción de ingresos corresponde a cada tipo
   // Simplificación: la deducción se aplica solo a gastos generales (prorrateados).
@@ -380,8 +481,9 @@ export async function issueMonthlyInvoices(params: {
       // Subor: 0 = provisión base; 1 = ajuste mes anterior (va abajo de su provisión).
       const isProv = exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT";
       const sortOrder = isProv ? 1 : 5;
-      const groupKey = isProv && exp.recurringTemplateId
-        ? `prov-${exp.recurringTemplateId}`
+      // groupKey pareado: base y su ajuste comparten token → salen pegados (base, luego ajuste).
+      const groupKey = isProv
+        ? `prov-${provPairKeys.get(exp.id) ?? exp.id}`
         : `tower-${exp.id}`;
       const subOrder = exp.kind === "PROVISION_ADJUSTMENT" ? 1 : 0;
       draftLines.push({
@@ -411,8 +513,9 @@ export async function issueMonthlyInvoices(params: {
       // de AJUSTE PROVISION X mes anterior, luego PROVISION Y, AJUSTE Y, etc.
       const isProv = exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT";
       const sortOrder = isProv ? 1 : 4;
-      const groupKey = isProv && exp.recurringTemplateId
-        ? `prov-${exp.recurringTemplateId}`
+      // groupKey pareado: base y su ajuste comparten token → salen pegados (base, luego ajuste).
+      const groupKey = isProv
+        ? `prov-${provPairKeys.get(exp.id) ?? exp.id}`
         : `gen-${exp.id}`;
       const subOrder = exp.kind === "PROVISION_ADJUSTMENT" ? 1 : 0;
       draftLines.push({
@@ -428,8 +531,8 @@ export async function issueMonthlyInvoices(params: {
   if (deductionFactor.gt(0) && generalExpensesTotalUsd.gt(0)) {
     const totalDeductedUsd = generalExpensesTotalUsd.mul(deductionFactor);
     const totalDeductedBss = generalExpensesTotalBss.mul(deductionFactor);
-    const bssDeductionDist = prorate(totalDeductedBss.toFixed(2), participants);
-    const usdDeductionDist = prorate(totalDeductedUsd.toFixed(2), participants);
+    const bssDeductionDist = prorateUniform(totalDeductedBss.toFixed(2), participants);
+    const usdDeductionDist = prorateUniform(totalDeductedUsd.toFixed(2), participants);
     for (const u of units) {
       const bss = bssDeductionDist.get(u.id) ?? new Decimal(0);
       const usd = usdDeductionDist.get(u.id) ?? new Decimal(0);
@@ -447,7 +550,7 @@ export async function issueMonthlyInvoices(params: {
     }
   }
 
-  const refRate = await getCurrentRate("BCV", issuedAt);
+  // refRate ya se calculó arriba (día de emisión) y se usó para normalizar los montos.
   if (hasFee) {
     const feeUsd = new Decimal(community.monthlyFeeUsd!.toString());
     const feeBss = feeUsd.mul(refRate.vesPerUsd);
@@ -521,6 +624,9 @@ export async function issueMonthlyInvoices(params: {
       id: randomUUID(),
       unitId: u.id,
       unitCode: u.code,
+      // El número lleva el mes de EMISIÓN (el ciclo del recibo), no el mes cobrado
+      // (pedido cliente 03-jul-2026). Ej: recibo emitido en julio que cobra junio →
+      // "2026-07-101A". El período (contenido) sigue etiquetado como junio.
       invoiceNumber: `${year}-${String(month).padStart(2, "0")}-${u.code}`,
       totalBss: totalBss.toFixed(2),
       totalUsd: totalUsd.toFixed(2),

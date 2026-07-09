@@ -58,6 +58,13 @@ export default function InvoicesPage() {
 
   const draftCount = list.data?.filter(inv => inv.status === "DRAFT").length ?? 0;
 
+  // El período seleccionado (month/year) es el mes de EMISIÓN. El recibo cobra el
+  // mes anterior según el shift. Mostramos el "mes cobrado" para que coincida con
+  // el modelo de Reinaldo: "el recibo de junio se emite en julio".
+  const shiftCfg = (community.data as { invoicePeriodShift?: number } | undefined)?.invoicePeriodShift ?? 1;
+  const charged = (() => { let y = year, m = month - shiftCfg; while (m <= 0) { m += 12; y -= 1; } return { y, m }; })();
+  const chargedLabel = `${MONTHS_ES_WIZ[charged.m - 1] ?? charged.m} ${charged.y}`;
+
   // Facturas activas (no anuladas, no borrador) del período — sirven para saber
   // si ya se emitió. Si hay facturas activas pero NINGUNA cobrada, se puede
   // re-emitir para incluir nuevos gastos sin perder integridad.
@@ -218,7 +225,9 @@ export default function InvoicesPage() {
         <div>
           <h2 className="text-lg font-semibold">Recibos de Condominio</h2>
           <p className="text-sm text-muted-foreground">
-            Período {month}/{year}
+            {shiftCfg > 0
+              ? <>Recibo de <strong className="text-foreground">{chargedLabel}</strong> <span className="text-xs">(se emite en {String(month).padStart(2,"0")}/{year})</span></>
+              : <>Período {month}/{year}</>}
             {totals && (
               <>
                 {" · "}
@@ -530,6 +539,8 @@ interface PreviewData {
   unitPreviews: { unitCode: string; tower: string | null; aliquot: string; totalUsd: string; totalBss: string; lineCount: number }[];
   grandTotalUsd: string;
   alreadyIssued: boolean;
+  shift: number;
+  expensePeriod: { year: number; month: number };
 }
 
 function IssueWizard({
@@ -543,6 +554,10 @@ function IssueWizard({
 }) {
   const [step, setStep] = useState(1);
   const monthLabel = MONTHS_ES_WIZ[month - 1] ?? String(month);
+  // Mes que realmente cobra el recibo (aplicando el shift).
+  const chargedLabel = preview.shift > 0
+    ? `${MONTHS_ES_WIZ[preview.expensePeriod.month - 1] ?? preview.expensePeriod.month} ${preview.expensePeriod.year}`
+    : `${monthLabel} ${year}`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
@@ -550,8 +565,8 @@ function IssueWizard({
         {/* Header */}
         <div className="bg-slate-900 px-6 py-4 flex items-center justify-between">
           <div>
-            <p className="text-white font-semibold">Emitir Recibos de Condominio</p>
-            <p className="text-slate-400 text-xs">{monthLabel} {year}</p>
+            <p className="text-white font-semibold">Emitir Recibo de {chargedLabel}</p>
+            <p className="text-slate-400 text-xs">Se emite hoy ({monthLabel} {year}) · cobra {chargedLabel}</p>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-400">
             {[1,2,3].map(s => (
@@ -568,6 +583,12 @@ function IssueWizard({
           {step === 1 && (
             <div className="space-y-3">
               <h3 className="font-semibold text-lg">Paso 1 — Gastos del período</h3>
+              {preview.shift > 0 && (
+                <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                  📅 Este es el <strong>recibo de {chargedLabel}</strong> (cobra los gastos de {chargedLabel}).
+                  {" "}Se emite hoy, en {monthLabel} {year}. Los recibos del 1° cobran el mes anterior.
+                </div>
+              )}
               {preview.alreadyIssued && (
                 <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                   ⚠️ Ya existen recibos emitidos para este período. La emisión va a fallar — anula los existentes primero.

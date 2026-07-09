@@ -15,7 +15,10 @@ export default function MembersPage() {
   const createMember = trpc.org.members.create.useMutation();
   const updateMember = trpc.org.members.update.useMutation();
   const revokeMember = trpc.org.members.revoke.useMutation();
+  const resetPasswordMember = trpc.org.members.resetPassword.useMutation();
   const utils = trpc.useUtils();
+  const [resetCreds, setResetCreds] = useState<{ email: string; password: string } | null>(null);
+  const [resettingId, setResettingId] = useState<string | null>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -62,6 +65,7 @@ export default function MembersPage() {
           membershipId: editingId,
           cargo: form.cargo,
           permissions: form.permissions,
+          email: form.email,
         });
       } else {
         await createMember.mutateAsync({
@@ -105,6 +109,18 @@ export default function MembersPage() {
     void utils.org.members.list.invalidate();
   };
 
+  const onResetPassword = async (m: NonNullable<typeof list.data>[0]) => {
+    if (!confirm(`¿Generar una clave nueva para ${m.user.email}? La clave actual dejará de funcionar.`)) return;
+    setResettingId(m.id);
+    setResetCreds(null);
+    try {
+      const result = await resetPasswordMember.mutateAsync({ organizationId, membershipId: m.id });
+      setResetCreds({ email: result.email, password: result.password });
+    } finally {
+      setResettingId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -121,20 +137,29 @@ export default function MembersPage() {
         )}
       </div>
 
-      {ok && <p className="text-sm text-green-600 font-medium">✓ {editingId ? "Permisos actualizados." : "Personal creado correctamente."}</p>}
+      {ok && <p className="text-sm text-green-600 font-medium">✓ {editingId ? "Cambios guardados." : "Personal creado correctamente."}</p>}
+
+      {resetCreds && (
+        <div className="rounded-md border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800 flex items-center justify-between gap-3">
+          <span>
+            ✓ Clave nueva para <strong>{resetCreds.email}</strong>: <code className="bg-white px-1.5 py-0.5 rounded border">{resetCreds.password}</code> — cópiala y entrégasela, no se volverá a mostrar.
+          </span>
+          <button className="text-green-700 hover:underline text-xs shrink-0" onClick={() => setResetCreds(null)}>Cerrar</button>
+        </div>
+      )}
 
       {/* Formulario */}
       {showForm && (
         <Card>
           <CardHeader>
-            <CardTitle>{editingId ? "Editar permisos" : "Nuevo miembro del personal"}</CardTitle>
+            <CardTitle>{editingId ? "Editar personal" : "Nuevo miembro del personal"}</CardTitle>
             <CardDescription>
               Selecciona un cargo predefinido o personaliza los permisos manualmente.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="space-y-5">
-              {!editingId && (
+              {!editingId ? (
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="space-y-1">
                     <Label>Nombre completo *</Label>
@@ -165,6 +190,17 @@ export default function MembersPage() {
                       required
                     />
                   </div>
+                </div>
+              ) : (
+                <div className="space-y-1 sm:max-w-sm">
+                  <Label>Email *</Label>
+                  <Input
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="pedro@edificio.com"
+                    required
+                  />
                 </div>
               )}
 
@@ -282,9 +318,17 @@ export default function MembersPage() {
                         </p>
                       )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
                       <Button size="sm" variant="outline" onClick={() => onEdit(m)}>
-                        Editar permisos
+                        Editar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={resettingId === m.id}
+                        onClick={() => onResetPassword(m)}
+                      >
+                        {resettingId === m.id ? "..." : "🔑 Resetear clave"}
                       </Button>
                       <Button
                         size="sm"

@@ -152,6 +152,11 @@ model Community {
   /// Por defecto 10% (estándar venezolano según práctica de condominios). Si se setea en 0,
   /// el fondo de reserva no se agrega automáticamente y debe cargarse manualmente.
   reserveFundPct      Decimal   @default("0.10") @db.Decimal(5, 4)
+  /// Saldo ACUMULADO de apertura del fondo de reserva (traído del sistema anterior,
+  /// ej. Sisconin). Se suma al "Saldo Anterior" del fondo de reserva en el recibo,
+  /// ya que ResidIA no tiene el histórico previo. Ambas monedas se muestran tal cual.
+  reserveFundOpeningUsd Decimal? @db.Decimal(18, 2)
+  reserveFundOpeningBss Decimal? @db.Decimal(18, 2)
   /// URL del logo del condominio (para personalizar el header del recibo PDF).
   /// Acepta cualquier URL pública o data URL base64. Si null, el PDF no muestra logo.
   logoUrl             String?
@@ -546,6 +551,7 @@ enum ExpenseCategory {
   REPAIRS
   RESERVE_FUND
   TAXES
+  LEGAL
   OTHER
 }
 
@@ -557,7 +563,8 @@ model Expense {
   communityId     String
   community       Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
   category        ExpenseCategory
-  customCategory  String?         // etiqueta libre cuando category = OTHER
+  customCategory  String?         // CATEGORÍA personalizada (nivel 1) — texto libre creado por el admin
+  subCategory     String?         // SUBCATEGORÍA personalizada (nivel 2) — para agrupar en el recibo
   description     String
   // Período al que aplica
   periodYear      Int
@@ -889,6 +896,7 @@ model RecurringExpenseTemplate {
   community       Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
   category        ExpenseCategory
   customCategory  String?
+  subCategory     String?
   description     String
   supplierName    String?
   /// Monto de referencia en USD (se usa como base al aplicar la plantilla)

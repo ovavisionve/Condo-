@@ -22,6 +22,7 @@ export default function FinanceDashboard() {
   const updateCommunity = trpc.org.communities.update.useMutation();
   const utils = trpc.useUtils();
   const [manualVal, setManualVal] = useState("");
+  const [manualDate, setManualDate] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [bcvErr, setBcvErr] = useState<string | null>(null);
   const [bcvOk, setBcvOk] = useState<string | null>(null);
@@ -86,8 +87,13 @@ export default function FinanceDashboard() {
     e.preventDefault();
     setErr(null);
     try {
-      await setManual.mutateAsync({ organizationId, vesPerUsd: Number(manualVal) });
+      await setManual.mutateAsync({
+        organizationId,
+        vesPerUsd: Number(manualVal),
+        date: manualDate ? new Date(`${manualDate}T12:00:00`) : undefined,
+      });
       setManualVal("");
+      setManualDate("");
       void utils.finance.exchange.current.invalidate();
       void utils.finance.exchange.recent.invalidate();
     } catch (e: unknown) {
@@ -220,15 +226,15 @@ export default function FinanceDashboard() {
 
         <Card className="md:col-span-2">
           <CardHeader>
-            <CardTitle className="text-base">Corregir tasa del día</CardTitle>
+            <CardTitle className="text-base">Corregir tasa</CardTitle>
             <CardDescription>
-              Si la tasa automática está incorrecta, ingresa aquí la tasa oficial del BCV de hoy. Esto sobreescribe la tasa automática y se usa en todas las transacciones del día.
+              Si la tasa automática está incorrecta, ingresa aquí la tasa oficial del BCV. Por defecto corrige la de hoy — si necesitas corregir un día anterior ya guardado, indícalo abajo.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={onSetManual} className="flex items-end gap-2">
-              <div className="flex-1">
-                <Label>Tasa BCV hoy — VES por 1 USD</Label>
+            <form onSubmit={onSetManual} className="flex items-end gap-2 flex-wrap">
+              <div className="flex-1 min-w-[140px]">
+                <Label>VES por 1 USD</Label>
                 <Input
                   type="number"
                   step="0.0001"
@@ -237,6 +243,15 @@ export default function FinanceDashboard() {
                   value={manualVal}
                   onChange={(e) => setManualVal(e.target.value)}
                   required
+                />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <Label>Fecha (opcional — por defecto hoy)</Label>
+                <Input
+                  type="date"
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                  max={new Date().toISOString().slice(0, 10)}
                 />
               </div>
               <Button type="submit" disabled={setManual.isPending}>
@@ -248,7 +263,7 @@ export default function FinanceDashboard() {
             </p>
             {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
             {setManual.isSuccess && (
-              <p className="mt-2 text-sm text-green-600 font-medium">✓ Tasa corregida. Se usará en todas las transacciones de hoy.</p>
+              <p className="mt-2 text-sm text-green-600 font-medium">✓ Tasa corregida.</p>
             )}
           </CardContent>
         </Card>

@@ -40,8 +40,13 @@ export async function getCurrentRate(
   source: ExchangeSource = "BCV",
   forDate: Date = new Date(),
 ): Promise<RateInfo> {
-  const date = dateOnly(forDate);
   const todayStart = dateOnly(new Date());
+  // BLINDAJE: nunca tratar una fecha FUTURA como propia — se clampa a hoy. Antes, pedir
+  // la tasa para (p.ej.) el 31 de julio hacía fetch en vivo y la CACHEABA bajo esa fecha
+  // futura, contaminando la serie histórica con valores erróneos (un scrape malo quedaba
+  // guardado bajo el futuro y luego se leía en el recibo). Para fecha futura = usar hoy.
+  const requested = dateOnly(forDate);
+  const date = requested.getTime() > todayStart.getTime() ? todayStart : requested;
   const isPastDate = date.getTime() < todayStart.getTime();
 
   const cached = await db.exchangeRate.findUnique({

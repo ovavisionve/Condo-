@@ -238,7 +238,7 @@ export default function SecurityPage() {
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              💡 Cuando el visitante llegue, preguntá su nombre, buscalo abajo y apretá <strong>✓ Ingreso</strong>.
+              💡 Cuando el visitante llegue, preguntá su nombre, buscalo abajo y aprieta <strong>✓ Ingreso</strong>.
             </p>
             {visitors.isLoading ? (
               <div className="text-center py-6 text-muted-foreground text-sm">Cargando...</div>

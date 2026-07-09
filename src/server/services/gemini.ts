@@ -92,7 +92,7 @@ const RESIDENTIAL_TOOLS: FunctionDeclaration[] = [
         communityId: { type: "string", description: "Filtrar por comunidad (opcional)." },
         status: { type: "string", enum: ["DRAFT","ISSUED","PARTIAL","PAID","OVERDUE","VOIDED"], description: "Estado (opcional)." },
         month: { type: "string", description: "Mes YYYY-MM (opcional)." },
-        unitCode: { type: "string", description: "Código de unidad, ej: A-10C (opcional)." },
+        unitCode: { type: "string", description: "Código de unidad, ej: 163B o B-052 (opcional)." },
         limit: { type: "number", description: "Máximo (default 20)." },
       },
     },
@@ -184,7 +184,7 @@ const RESIDENTIAL_TOOLS: FunctionDeclaration[] = [
         communityId: { type: "string", description: "ID de comunidad (opcional)." },
         floor: { type: "number", description: "Piso (opcional)." },
         tower: { type: "string", description: "Torre: 'A', 'B', etc. (opcional)." },
-        unitCode: { type: "string", description: "Código exacto, ej: A-10C (opcional)." },
+        unitCode: { type: "string", description: "Código exacto, ej: 163B o B-052 (opcional)." },
         limit: { type: "number", description: "Máximo (default 30)." },
       },
     },
@@ -195,7 +195,7 @@ const RESIDENTIAL_TOOLS: FunctionDeclaration[] = [
     parametersJsonSchema: {
       type: "object",
       properties: {
-        unitCode: { type: "string", description: "Código de la unidad, ej: A-10C." },
+        unitCode: { type: "string", description: "Código de la unidad, ej: 163B o B-052." },
         communityId: { type: "string", description: "ID de comunidad (opcional si el código es único)." },
       },
       required: ["unitCode"],
@@ -380,7 +380,7 @@ const RESIDENTIAL_TOOLS: FunctionDeclaration[] = [
       properties: {
         communityId: { type: "string", description: "ID de comunidad (opcional)." },
         direction: { type: "string", enum: ["IN","OUT"], description: "Dirección: IN=entradas, OUT=salidas (opcional)." },
-        unitCode: { type: "string", description: "Filtrar por código de unidad, ej: B-16B (opcional)." },
+        unitCode: { type: "string", description: "Filtrar por código de unidad, ej: 163B o B-052 (opcional)." },
         date: { type: "string", description: "Día exacto YYYY-MM-DD (omitir si usas dateFrom/dateTo). Default: hoy." },
         dateFrom: { type: "string", description: "Inicio del rango YYYY-MM-DD (para semanas, meses, etc.)." },
         dateTo: { type: "string", description: "Fin del rango YYYY-MM-DD (inclusive)." },
@@ -915,7 +915,8 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
     case "get_unit_detail": {
       const unitCode = args.unitCode as string;
       const communityId = args.communityId as string | undefined;
-      const where: AnyWhere = communityId ? { code: unitCode, communityId, organizationId } : { code: unitCode, organizationId };
+      const codeMatch = { equals: unitCode, mode: "insensitive" as const };
+      const where: AnyWhere = communityId ? { code: codeMatch, communityId, organizationId } : { code: codeMatch, organizationId };
       const unit = await db.unit.findFirst({
         where,
         select: {
@@ -2066,7 +2067,7 @@ REGLAS CRÍTICAS:
 - Cuando el usuario pregunte por datos, usa las funciones disponibles.
 - Si no encuentras datos, dilo claramente. NUNCA inventes información.
 - Para tablas usa formato de lista con guiones o numeración.
-- NUNCA modifiques ni reinterpretes los códigos de unidad que devuelven las funciones. Si la función devuelve unit="B-16B", muestra exactamente "B-16B", nunca "163B" ni ninguna otra variación.
+- CÓDIGOS DE UNIDAD: cada edificio usa su propio formato. Los Arrayanes usa códigos SIN guion como "163B", "73A", "11A", "PH1A" (piso+apto+torre). Castaños B usa códigos CON guion como "B-052", "B-011". Pasa el código EXACTAMENTE como lo escribe el usuario a las funciones (la búsqueda ignora mayúsculas/minúsculas). NUNCA reinterpretes ni cambies el formato: si el usuario dice "163B", busca "163B" tal cual — no lo conviertas a "A-16-3" ni a nada. Muestra los códigos tal como los devuelven las funciones.
 - Cuando search_resident ya incluye debtUsd y solvente, NO hagas una llamada adicional a get_unit_detail. Responde directamente con los datos disponibles.
 - Minimiza las llamadas a funciones: si ya tienes la información para responder, responde de inmediato sin hacer llamadas extra.
 - Para buscar por nombre/cédula/email usa search_resident (incluye deuda automáticamente).
@@ -2109,7 +2110,7 @@ manual con category=RESERVE_FUND, NO duplica.
 ━━━ 4. PREVIEW EN VIVO ━━━
 Botón flotante 📄 (esquina inferior izquierda, en cualquier pantalla admin).
 Muestra el PDF del recibo del mes con el formato real que verá el residente.
-Se actualiza automáticamente cuando: creás/editás gastos, plantillas,
+Se actualiza automáticamente cuando: creas/editas gastos, plantillas,
 ingresos, cierras/reabres mes. Si no refresca: Ctrl+Shift+R.
 
 ━━━ 5. CONCILIACIÓN BANCARIA ━━━
@@ -2152,7 +2153,7 @@ intimación según LPH, plazo de pago.
 
 ━━━ 11. PLANTILLAS CON CATEGORÍAS NUEVAS ━━━
 Las 15 categorías del enum (Electricidad, Agua, etc.) están fijas, pero
-podés crear "categorías virtuales" usando el dropdown CategoryCombobox:
+puedes crear "categorías virtuales" usando el dropdown CategoryCombobox:
 seleccionar "+ Crear nueva categoría", escribir el nombre (ej. "Hidrocapital"),
 se guarda como category=OTHER + customCategory="Hidrocapital". El nombre
 aparece en el recibo y queda disponible en futuras plantillas/gastos.

@@ -24,12 +24,12 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <p>
-          Es tu acceso digital al condominio. Desde aquí podés ver y pagar tu recibo de
+          Es tu acceso digital al condominio. Desde aquí puedes ver y pagar tu recibo de
           condominio, notificar pagos, registrar visitas, ver el estado de cuenta general
           y comunicarte con la administración — todo desde el celular o computadora.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          No necesitás instalar nada. Funciona desde cualquier navegador.
+          No necesitas instalar nada. Funciona desde cualquier navegador.
         </p>
       </>
     ),
@@ -42,8 +42,8 @@ const SECTIONS: Section[] = [
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
           <li>La primera vez recibirás un email con un enlace de acceso (válido 7 días).</li>
-          <li>Hacé clic en el enlace o copialo en tu navegador.</li>
-          <li>Si perdiste el enlace, ingresá a <strong>condominios-theta.vercel.app/portal</strong> y pedí uno nuevo con tu email registrado.</li>
+          <li>Haz clic en el enlace o copialo en tu navegador.</li>
+          <li>Si perdiste el enlace, ingresa a <strong>condominios-theta.vercel.app/portal</strong> y pedí uno nuevo con tu email registrado.</li>
         </ol>
       </>
     ),
@@ -55,9 +55,9 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
-          <li>Entrá al portal.</li>
+          <li>Entra al portal.</li>
           <li>En la pestaña <strong>Principal</strong> verás tu último recibo emitido.</li>
-          <li>Hacé clic en <strong>Ver PDF</strong> o <strong>Descargar</strong> para abrirlo.</li>
+          <li>Haz clic en <strong>Ver PDF</strong> o <strong>Descargar</strong> para abrirlo.</li>
           <li>En <strong>Pendientes</strong> aparecen todos los recibos no pagados.</li>
         </ol>
         <p className="mt-2 text-sm">
@@ -73,12 +73,12 @@ const SECTIONS: Section[] = [
     title: "Cómo pagar mi condominio",
     content: (
       <>
-        <p className="text-sm">El sistema NO procesa pagos directamente — vos pagás externamente y después notificás.</p>
+        <p className="text-sm">El sistema NO procesa pagos directamente — vos pagas externamente y después notificas.</p>
         <ol className="list-decimal pl-5 space-y-1 mt-2 text-sm">
-          <li>Mirá los datos bancarios al final del recibo PDF (cuenta Banesco, RIF, número de cuenta).</li>
-          <li>Hacé la transferencia desde tu banco con el método que prefieras: <strong>Transferencia bancaria, Zelle, Pago Móvil, Cripto, Efectivo USD</strong>.</li>
+          <li>Mira los datos bancarios al final del recibo PDF (cuenta Banesco, RIF, número de cuenta).</li>
+          <li>Haz la transferencia desde tu banco con el método que prefieras: <strong>Transferencia bancaria, Zelle, Pago Móvil, Cripto, Efectivo USD</strong>.</li>
           <li>Incluí el <strong>N° de recibo</strong> en el concepto/referencia para que la administración lo identifique.</li>
-          <li>Guardá el comprobante (captura, PDF o foto).</li>
+          <li>Guarda el comprobante (captura, PDF o foto).</li>
           <li>Notificá el pago en el portal (siguiente sección).</li>
         </ol>
       </>
@@ -91,12 +91,12 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
-          <li>Andá a la pestaña <strong>Notificar Pago</strong>.</li>
-          <li>Elegí el método (Zelle, Pago Móvil, Transferencia, etc.).</li>
-          <li>Ingresá el monto, la fecha y la referencia bancaria.</li>
+          <li>Ve a la pestaña <strong>Notificar Pago</strong>.</li>
+          <li>Elige el método (Zelle, Pago Móvil, Transferencia, etc.).</li>
+          <li>Ingresa el monto, la fecha y la referencia bancaria.</li>
           <li>Subí el comprobante (captura o PDF).</li>
-          <li>Marcá las facturas que querés cubrir con ese pago.</li>
-          <li>Enviá.</li>
+          <li>Marca las facturas que quieres cubrir con ese pago.</li>
+          <li>Envía.</li>
         </ol>
         <p className="mt-2 text-sm">
           ✅ Una vez la administración valida el pago lo verás aplicado en tu estado de cuenta. Recibirás email de confirmación.
@@ -114,9 +114,9 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
-          <li>Andá a la pestaña <strong>Principal</strong> o <strong>Pagos</strong>.</li>
-          <li>Buscá el pago que querés.</li>
-          <li>Hacé clic en <strong>Descargar comprobante</strong>.</li>
+          <li>Ve a la pestaña <strong>Principal</strong> o <strong>Pagos</strong>.</li>
+          <li>Busca el pago que quieres.</li>
+          <li>Haz clic en <strong>Descargar comprobante</strong>.</li>
           <li>Se descarga un PDF firmado por la Junta de Condominio con tu pago y las facturas que cubrió.</li>
         </ol>
       </>
@@ -129,7 +129,7 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
-          <li>Andá a la pestaña <strong>Seguridad</strong>.</li>
+          <li>Ve a la pestaña <strong>Seguridad</strong>.</li>
           <li>Pulsá <strong>Registrar nuevo visitante</strong>.</li>
           <li>Llená: nombre completo, cédula (opcional), placa del vehículo si aplica.</li>
           <li>Definí desde cuándo y hasta cuándo se le permite el ingreso.</li>
@@ -147,10 +147,10 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <ol className="list-decimal pl-5 space-y-1 text-sm">
-          <li>Andá a la pestaña <strong>Reservas</strong>.</li>
-          <li>Elegí el área (salón de fiestas, piscina, parrilla, etc.).</li>
-          <li>Seleccioná fecha y franja horaria.</li>
-          <li>Confirmá.</li>
+          <li>Ve a la pestaña <strong>Reservas</strong>.</li>
+          <li>Elige el área (salón de fiestas, piscina, parrilla, etc.).</li>
+          <li>Selecciona fecha y franja horaria.</li>
+          <li>Confirma.</li>
           <li>El sistema valida que no haya choque con otra reserva.</li>
         </ol>
         <p className="mt-2 text-sm">

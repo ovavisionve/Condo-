@@ -17,6 +17,7 @@ import {
 import { recordPayment, voidPayment } from "@/server/services/payments";
 import { registerIncome, voidIncome } from "@/server/services/income";
 import { sendEmail, buildInvoiceEmail, type OrgSmtp } from "@/server/services/email";
+import { shiftPeriod } from "@/server/services/invoice-pdf-builder";
 import { db as prismaDb } from "@/server/db/client";
 
 const orgIdInput = z.object({ organizationId: z.string() });
@@ -60,6 +61,7 @@ const EXPENSE_CATEGORIES = [
   "REPAIRS",
   "RESERVE_FUND",
   "TAXES",
+  "LEGAL",
   "OTHER",
 ] as const;
 
@@ -128,10 +130,11 @@ export const financeRouter = router({
         orgIdInput.extend({
           vesPerUsd: z.coerce.number().positive(),
           notes: z.string().optional(),
+          date: z.coerce.date().optional(),
         }),
       )
       .mutation(async ({ input }) => {
-        const r = await setManualRate(input.vesPerUsd, new Date(), input.notes);
+        const r = await setManualRate(input.vesPerUsd, input.date ?? new Date(), input.notes);
         return { date: r.date, source: r.source, vesPerUsd: r.vesPerUsd.toString() };
       }),
     refreshBcv: orgProcedure
@@ -255,6 +258,7 @@ export const financeRouter = router({
           communityId: z.string(),
           category: z.enum(EXPENSE_CATEGORIES),
           customCategory: z.string().max(80).optional(),
+          subCategory: z.string().max(80).optional().nullable(),
           description: z.string().min(2),
           periodYear: z.number().int().min(2020).max(2100),
           periodMonth: z.number().int().min(1).max(12),
@@ -292,8 +296,10 @@ export const financeRouter = router({
       .input(
         orgIdInput.extend({
           id: z.string(),
+          category: z.enum(EXPENSE_CATEGORIES).optional(),
           description: z.string().min(2).optional(),
           customCategory: z.string().max(80).optional().nullable(),
+          subCategory: z.string().max(80).optional().nullable(),
           supplierName: z.string().optional().nullable(),
           invoiceNumber: z.string().optional().nullable(),
           notes: z.string().optional().nullable(),
@@ -321,8 +327,10 @@ export const financeRouter = router({
         // Si cambió el monto o la moneda primaria, recalcular bimonetario con la tasa
         // del comprobante (si cambió la fecha, tomamos la nueva).
         const data: Record<string, unknown> = {};
+        if (input.category !== undefined) data.category = input.category;
         if (input.description !== undefined) data.description = input.description;
         if (input.customCategory !== undefined) data.customCategory = input.customCategory;
+        if (input.subCategory !== undefined) data.subCategory = input.subCategory;
         if (input.supplierName !== undefined) data.supplierName = input.supplierName;
         if (input.invoiceNumber !== undefined) data.invoiceNumber = input.invoiceNumber;
         if (input.notes !== undefined) data.notes = input.notes;
@@ -948,9 +956,8 @@ export const financeRouter = router({
         }),
       )
       .query(async ({ ctx, input }) => {
-        const { prorate } = await import("@/lib/proration");
         const { generateInvoicePdf } = await import("@/server/services/pdf");
-        const { prorateSignedExported } = await import("@/server/services/invoicing");
+        const { prorateSignedExported, buildProvisionPairKeys } = await import("@/server/services/invoicing");
 
         // ── Cargar comunidad primero para conocer el shift ──────────────
         // Con shift=1 (post-mes), el recibo del mes M cobra gastos del mes M-1
@@ -958,7 +965,7 @@ export const financeRouter = router({
         // al shift configurado.
         const community = await ctx.db.community.findFirstOrThrow({
           where: { id: input.communityId, organizationId: input.organizationId },
-          select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true, logoUrl: true, invoicePeriodShift: true },
+          select: { name: true, address: true, rif: true, phone: true, monthlyFeeUsd: true, reserveFundPct: true, logoUrl: true, invoicePeriodShift: true, reserveFundOpeningUsd: true, reserveFundOpeningBss: true },
         });
         const shift = community.invoicePeriodShift ?? 0;
         let expensePeriodYear = input.year;
@@ -1019,104 +1026,53 @@ export const financeRouter = router({
         });
         const inactiveTplIds = new Set(inactiveTpls.map((t) => t.id));
 
-        // NUEVA LÓGICA (8/jun/2026, pedido cliente): "Quiero que esos que no salen
-        // actualmente porque no se cobran ya se ajusten a la realidad". Antes los
-        // gastos REGULAR vinculados a una provisión se excluían del cobro (solo se
-        // usaban para calcular un ajuste posterior). Ahora:
-        //   • Si hay REGULAR(es) vinculado(s) a una plantilla isProvision → SE COBRAN
-        //     (es la realidad de lo que se gastó), y la PROVISION_BASE de esa misma
-        //     plantilla NO se cobra (sería doble cobro).
-        //   • Si NO hay REGULAR para esa plantilla → se cobra la PROVISION_BASE
-        //     (estimado, fallback).
-        //   • Ya no hay PROVISION_ADJUSTMENT — el ajuste es automático porque se
-        //     cobra el real directamente, no la base.
-        const realesPorTpl = new Set<string>(
-          expensesAll
-            .filter((e) => e.kind === "REGULAR" && e.recurringTemplate?.isProvision === true && e.recurringTemplateId)
-            .map((e) => e.recurringTemplateId as string),
-        );
+        // MODELO PROVISIÓN + AJUSTE (confirmado con el recibo Excel de Arrayanes, 03-jul-2026):
+        // se cobra SIEMPRE la provisión estimada (PROVISION_BASE) + el AJUSTE del mes
+        // anterior. La factura REAL de un servicio provisionado (REGULAR vinculado a una
+        // plantilla isProvision) NO se cobra directo — solo alimenta el cálculo del ajuste
+        // (ver applyToMonth). Debe reflejar EXACTAMENTE lo que emite issueMonthlyInvoices.
         const expensesBase = expensesAll.filter((e) => {
           // Excluir plantillas inactivas (obsoletas)
           if (e.recurringTemplateId && inactiveTplIds.has(e.recurringTemplateId)) return false;
-          // Excluir PROVISION_BASE cuando hay reales vinculados — el real ya se cobra
-          if (e.kind === "PROVISION_BASE" && e.recurringTemplateId && realesPorTpl.has(e.recurringTemplateId)) return false;
-          // Excluir ajustes viejos (PROVISION_ADJUSTMENT) — la nueva lógica no los usa
-          if (e.kind === "PROVISION_ADJUSTMENT") return false;
+          // Excluir el REAL de un servicio provisionado — solo reconcilia, no se cobra.
+          if (e.kind === "REGULAR" && e.recurringTemplateId && e.recurringTemplate?.isProvision === true) return false;
+          // PROVISION_BASE y PROVISION_ADJUSTMENT SÍ se facturan (estimado + reconciliación).
           return true;
         });
 
-        // Tasa BCV (usado tanto por proyección de plantillas como por cálculos abajo).
-        const rateRecord = await getCurrentRate("BCV", new Date(input.year, input.month, 0));
+        // Tasa BCV del CIERRE DEL MES COBRADO (último día del período), no la de hoy
+        // (pedido Reinaldo 03-jul: "usar la tasa del 30 de junio"). Ej: recibo de junio
+        // → tasa del 30/06. Es fecha pasada, así que getCurrentRate NO hace fetch ni
+        // contamina la serie; devuelve la tasa cacheada de ese día.
+        const rateRecord = await getCurrentRate("BCV", new Date(expensePeriodYear, expensePeriodMonth, 0));
         const usdRate = new Decimal(rateRecord.vesPerUsd);
 
-        // PROYECCIÓN: incluir plantillas activas que aún NO se han aplicado al mes.
-        // Pedido del cliente: "Las plantillas recurrentes no se están viendo bien
-        // reflejadas en los recibos previsuales". Antes, si no apretabas "Aplicar
-        // al mes" primero, el preview salía vacío. Ahora el preview proyecta
-        // automáticamente las plantillas como si ya se hubieran aplicado.
-        const activeTemplates = await ctx.db.recurringExpenseTemplate.findMany({
-          where: { communityId: input.communityId, organizationId: input.organizationId, active: true },
-        });
-        const appliedTplIds = new Set(
-          expensesBase
-            .filter((e) => e.recurringTemplateId)
-            .map((e) => e.recurringTemplateId as string),
-        );
-        type ExpenseProjection = (typeof expensesBase)[number];
-        const projectedExpenses: ExpenseProjection[] = [];
-        for (const tpl of activeTemplates) {
-          // Si esta plantilla isProvision tiene reales cargados → NO proyectar la
-          // base estimada: los reales ya están en expensesBase y se cobran ellos.
-          if (tpl.isProvision && realesPorTpl.has(tpl.id)) continue;
-          if (appliedTplIds.has(tpl.id)) continue;
-          // Calcular monto en USD y BSS según moneda primaria de la plantilla
-          const tplIsVes = tpl.currencyPrimary === "VES" && tpl.amountBss != null;
-          const amountUsd = tplIsVes
-            ? new Decimal(tpl.amountBss!.toString()).div(usdRate)
-            : new Decimal(tpl.amountUsd.toString());
-          const amountBss = tplIsVes
-            ? new Decimal(tpl.amountBss!.toString())
-            : new Decimal(tpl.amountUsd.toString()).mul(usdRate);
-          // Construir un objeto "Expense-like" para que la lógica de prorrateo lo trate igual
-          projectedExpenses.push({
-            id: `proj-${tpl.id}`,
-            organizationId: input.organizationId,
-            communityId: input.communityId,
-            category: tpl.category,
-            customCategory: tpl.customCategory,
-            description: tpl.isProvision ? `Provisión ${tpl.description}` : tpl.description,
-            supplierName: tpl.supplierName,
-            periodYear: expensePeriodYear,
-            periodMonth: expensePeriodMonth,
-            amountUsd: amountUsd.toFixed(2) as never,
-            amountBss: amountBss.toFixed(2) as never,
-            exchangeRate: usdRate.toFixed(8) as never,
-            exchangeSource: rateRecord.source as never,
-            currencyPrimary: tpl.currencyPrimary,
-            towerScope: tpl.towerScope,
-            isIndividual: false,
-            targetUnitId: null,
-            recurringTemplateId: tpl.id,
-            recurringTemplate: { id: tpl.id, description: tpl.description, isProvision: tpl.isProvision },
-            kind: tpl.isProvision ? "PROVISION_BASE" : "REGULAR",
-            invoiceNumber: null,
-            receiptDate: null,
-            notes: null,
-            invoicedAt: null,
-            voidedAt: null,
-            voidedById: null,
-            voidReason: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            createdById: ctx.user.id,
-          } as ExpenseProjection);
-        }
+        // Convierte los montos de un gasto a la tasa de emisión de HOY respetando su
+        // moneda primaria: VES-primary → el Bs es fijo (costo real, ej. 60.000) y el USD
+        // se deriva a la tasa de hoy; USD-primary → el USD es fijo y el Bs se deriva. Así
+        // el recibo queda consistente con la tasa mostrada (Bs = USD × tasa) sin distorsionar
+        // el costo real de cada gasto.
+        const money = (e: { amountBss: unknown; amountUsd: unknown; currencyPrimary: string }) => {
+          if (e.currencyPrimary === "USD") {
+            const usd = new Decimal(String(e.amountUsd));
+            return { usd, bss: usd.mul(usdRate) };
+          }
+          const bss = new Decimal(String(e.amountBss));
+          return { bss, usd: bss.div(usdRate) };
+        };
 
-        // Ya no se calcula PROVISION_ADJUSTMENT (cambio 8/jun/2026): cuando hay
-        // reales cargados se cobran directamente en vez de la base, eliminando la
-        // necesidad de un ajuste posterior.
-
-        const expenses = [...expensesBase, ...projectedExpenses];
+        // SIN PROYECCIÓN DE PLANTILLAS (cambio 01/jul/2026, pedido de Reinaldo):
+        // Antes el preview inyectaba TODAS las plantillas activas no aplicadas como
+        // si fueran gastos, con su monto estimado. Eso hacía que en el recibo
+        // aparecieran "cosas que no coloqué" (plantillas regulares como Internet,
+        // Cámaras, Sistema Administrativo, etc.) y montos fantasma que la emisión
+        // real NUNCA cobraba (issueMonthlyInvoices solo factura gastos registrados).
+        //
+        // Ahora el preview refleja EXACTAMENTE lo que se va a emitir: solo los
+        // gastos realmente registrados (incluidas las PROVISION_BASE que el admin
+        // materializó con "Aplicar al mes"). Una plantilla es solo un concepto/
+        // atajo — no se cobra hasta que se registre un gasto real o se aplique.
+        const expenses = expensesBase;
 
         const ownership = await ctx.db.ownership.findFirst({
           where: { unitId: targetUnit.id, endDate: null },
@@ -1132,18 +1088,19 @@ export const financeRouter = router({
         const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
 
         const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s.plus(i.amountUsd.toString()), new Decimal(0));
-        const generalUsdSum = generalExpenses.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+        const generalUsdSum = generalExpenses.reduce((s, e) => s.plus(money(e).usd), new Decimal(0));
         const deductionFactor = generalUsdSum.gt(0)
           ? Decimal.min(totalIncomeDeductionUsd.div(generalUsdSum), new Decimal(1))
           : new Decimal(0);
 
         // 1. Individuales
         for (const e of individualExpenses) {
+          const m = money(e);
           lines.push({
             description: e.customCategory ?? e.description,
-            baseBss: new Decimal(e.amountBss.toString()),
-            cuotaUsd: new Decimal(e.amountUsd.toString()),
-            cuotaBss: new Decimal(e.amountBss.toString()),
+            baseBss: m.bss,
+            cuotaUsd: m.usd,
+            cuotaBss: m.bss,
             section: "individual",
           });
         }
@@ -1154,14 +1111,15 @@ export const financeRouter = router({
           for (const e of towerExpenses) {
             // prorateSignedExported maneja montos negativos (PROVISION_ADJUSTMENT
             // crédito cuando real < provisión). Antes hacía crash el preview.
-            const usdDist = prorateSignedExported(e.amountUsd.toString(), participants);
-            const bssDist = prorateSignedExported(e.amountBss.toString(), participants);
+            const m = money(e);
+            const usdDist = prorateSignedExported(m.usd.toFixed(2), participants);
+            const bssDist = prorateSignedExported(m.bss.toFixed(2), participants);
             const cuotaUsd = new Decimal(usdDist.get(targetUnit.id)?.toString() ?? 0);
             const cuotaBss = new Decimal(bssDist.get(targetUnit.id)?.toString() ?? 0);
             if (cuotaUsd.eq(0) && cuotaBss.eq(0)) continue;
             lines.push({
               description: `${e.customCategory ?? e.description} (Torre ${e.towerScope})`,
-              baseBss: new Decimal(e.amountBss.toString()),
+              baseBss: m.bss,
               cuotaUsd, cuotaBss,
               section: "tower",
             });
@@ -1169,41 +1127,58 @@ export const financeRouter = router({
         }
         // 3. Generales (con descuento)
         const allParticipants = units.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
-        // Agrupar por (category|customCategory) para evitar 10 líneas del mismo sector
-        const grouped = new Map<string, { description: string; sumUsd: Decimal; sumBss: Decimal; kind: string }>();
+        // Emparejar provisión↔ajuste para INTERCALARLAS (PROVISIÓN X seguida de su
+        // AJUSTE X), como en el Excel del cliente, en vez de todas las provisiones y
+        // luego todos los ajustes. Ver buildProvisionPairKeys.
+        const provPairKeys = buildProvisionPairKeys(generalExpenses);
+        // Agrupar por (category|customCategory) para evitar 10 líneas del mismo sector.
+        // `order` define el orden de renglones: provisiones/ajustes pareados primero
+        // (`1|token|sub` → base=0, ajuste=1), luego gastos regulares (`2|seq`).
+        const grouped = new Map<string, { description: string; sumUsd: Decimal; sumBss: Decimal; kind: string; order: string }>();
+        let regularSeq = 0;
         for (const e of generalExpenses) {
           // BUG arreglado: si PROVISION_BASE y PROVISION_ADJUSTMENT comparten templateId,
           // sus keys eran iguales → se colapsaban en UNA línea (solo se veía AJUSTE,
           // no la PROVISION). Ahora cada kind tiene su propio key → 2 líneas
           // separadas en el recibo (Provisión X / Ajuste Provisión X mes anterior).
+          const isProv = e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT";
           const key = e.recurringTemplateId
             ? (e.kind === "PROVISION_BASE"
                 ? `tpl-prov-${e.recurringTemplateId}`
                 : e.kind === "PROVISION_ADJUSTMENT"
                   ? `tpl-adj-${e.recurringTemplateId}`
                   : `tpl-${e.recurringTemplateId}`)
-            : (e.kind === "PROVISION_BASE" || e.kind === "PROVISION_ADJUSTMENT")
+            : isProv
               ? `iso-${e.id}`
-              : `cat-${e.category}|${e.customCategory ?? ""}`;
-          const desc = e.recurringTemplate?.description
-            ? (e.kind === "PROVISION_BASE" ? `Provisión ${e.recurringTemplate.description}`
-              : e.kind === "PROVISION_ADJUSTMENT" ? `Ajuste Provisión ${e.recurringTemplate.description}`
-              : e.recurringTemplate.description)
-            : (e.customCategory ?? e.description);
+              : `cat-${e.category}|${e.customCategory ?? ""}|${(e as { subCategory?: string | null }).subCategory ?? ""}`;
+          const eSub = (e as { subCategory?: string | null }).subCategory?.trim();
+          // El ajuste siempre muestra su etiqueta genérica guardada ("AJUSTE PROVISION MES
+          // ANTERIOR"), como en el recibo Excel — no "Ajuste Provisión X".
+          const desc = e.kind === "PROVISION_ADJUSTMENT"
+            ? e.description
+            : e.recurringTemplate?.description
+              ? (e.kind === "PROVISION_BASE" ? `Provisión ${e.recurringTemplate.description}` : e.recurringTemplate.description)
+              : `${e.customCategory ?? e.description}${eSub ? ` — ${eSub}` : ""}`;
+          const m = money(e);
           const existing = grouped.get(key);
           if (existing) {
-            existing.sumUsd = existing.sumUsd.plus(e.amountUsd.toString());
-            existing.sumBss = existing.sumBss.plus(e.amountBss.toString());
+            existing.sumUsd = existing.sumUsd.plus(m.usd);
+            existing.sumBss = existing.sumBss.plus(m.bss);
           } else {
+            const order = isProv
+              ? `1|${provPairKeys.get(e.id) ?? e.id}|${e.kind === "PROVISION_ADJUSTMENT" ? "1" : "0"}`
+              : `2|${String(regularSeq++).padStart(4, "0")}`;
             grouped.set(key, {
               description: desc,
-              sumUsd: new Decimal(e.amountUsd.toString()),
-              sumBss: new Decimal(e.amountBss.toString()),
+              sumUsd: m.usd,
+              sumBss: m.bss,
               kind: e.kind,
+              order,
             });
           }
         }
-        for (const g of grouped.values()) {
+        const groupedSorted = [...grouped.values()].sort((a, b) => a.order.localeCompare(b.order));
+        for (const g of groupedSorted) {
           const adjUsd = g.sumUsd.mul(new Decimal(1).minus(deductionFactor));
           const adjBss = g.sumBss.mul(new Decimal(1).minus(deductionFactor));
           // Signed: maneja PROVISION_ADJUSTMENT negativo (real < provisión).
@@ -1311,7 +1286,11 @@ export const financeRouter = router({
               communityId: input.communityId,
               status: { not: "VOIDED" },
             },
-            expense: { category: "RESERVE_FUND" },
+            // Reserva manual (Expense RESERVE_FUND) o línea auto-calculada (sin expense).
+            OR: [
+              { expense: { category: "RESERVE_FUND" } },
+              { expenseId: null, description: { startsWith: "Fondo de Reserva" } },
+            ],
           },
           include: {
             invoice: { select: { periodYear: true, periodMonth: true } },
@@ -1327,17 +1306,31 @@ export const financeRouter = router({
             prevReserveBss += Number(ri.amountBss);
           }
         }
-        // Aporte del mes: suma de Expense RESERVE_FUND del periodo (todas las unidades)
+        // Saldo de apertura traído del sistema anterior (Sisconin) → suma al saldo anterior.
+        prevReserveUsd += Number(community.reserveFundOpeningUsd ?? 0);
+        prevReserveBss += Number(community.reserveFundOpeningBss ?? 0);
+        // Aporte del mes = fondo de reserva del EDIFICIO. Si hay Expense RESERVE_FUND manual
+        // se usa; si no, se calcula (reservePct × común del edificio) igual que la línea auto.
         const reserveExpensesMonth = expensesAll.filter((e) => e.category === "RESERVE_FUND");
-        const monthReserveUsd = reserveExpensesMonth.reduce((s, e) => s + Number(e.amountUsd), 0);
-        const monthReserveBss = reserveExpensesMonth.reduce((s, e) => s + Number(e.amountBss), 0);
+        const reservePctPrev = new Decimal(community.reserveFundPct?.toString() ?? "0.10");
+        let monthReserveUsd = 0, monthReserveBss = 0;
+        if (reserveExpensesMonth.length > 0) {
+          monthReserveUsd = reserveExpensesMonth.reduce((s, e) => s + money(e).usd.toNumber(), 0);
+          monthReserveBss = reserveExpensesMonth.reduce((s, e) => s + money(e).bss.toNumber(), 0);
+        } else if (reservePctPrev.gt(0)) {
+          const oneMinusDed = new Decimal(1).minus(deductionFactor);
+          const commonUsd = generalExpenses.reduce((s, e) => s.plus(money(e).usd.mul(oneMinusDed)), new Decimal(0));
+          const commonBss = generalExpenses.reduce((s, e) => s.plus(money(e).bss.mul(oneMinusDed)), new Decimal(0));
+          monthReserveUsd = commonUsd.mul(reservePctPrev).toNumber();
+          monthReserveBss = commonBss.mul(reservePctPrev).toNumber();
+        }
         const previewReserveFund = (prevReserveUsd > 0 || monthReserveUsd > 0)
           ? {
               previousBalanceUsd: prevReserveUsd.toFixed(2),
               previousBalanceBss: prevReserveBss.toFixed(2),
               contributionUsd: monthReserveUsd.toFixed(2),
               contributionBss: monthReserveBss.toFixed(2),
-              period: `${String(input.month).padStart(2, "0")}/${input.year}`,
+              period: `${String(expensePeriodMonth).padStart(2, "0")}/${expensePeriodYear}`,
               totalUsd: (prevReserveUsd + monthReserveUsd).toFixed(2),
               totalBss: (prevReserveBss + monthReserveBss).toFixed(2),
             }
@@ -1363,6 +1356,30 @@ export const financeRouter = router({
         previewCreditUsd = Math.min(previewCreditUsd, totalUsd);
         previewCreditBss = Math.min(previewCreditBss, totalBss);
 
+        // DEUDA ACUMULADA: saldo pendiente de TODAS las demás facturas impagas de la unidad
+        // (Sisconin + recibos previos). Invoice.periodYear/periodMonth guarda el mes de
+        // EMISIÓN (no el cobrado) — cada emisión tiene su propio mes de emisión único, así
+        // que no hace falta (ni es correcto) filtrar por período: dos facturas nunca comparten
+        // el mismo mes de emisión para la misma unidad. (Corregido 03-jul: un filtro por
+        // período cobrado excluía por error deuda real de meses anteriores — ver aclaración
+        // cliente: "esas de junio eran el recibo de MAYO emitido en junio", no del mismo ciclo
+        // que el recibo de junio que se emite en julio).
+        const priorUnpaid = await ctx.db.invoice.findMany({
+          where: {
+            unitId: targetUnit.id,
+            voidedAt: null,
+            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+          },
+          select: { totalUsd: true, paidUsd: true, totalBss: true, paidBss: true },
+        });
+        let previewDebtUsd = 0, previewDebtBss = 0;
+        for (const iv of priorUnpaid) {
+          const oU = Number(iv.totalUsd) - Number(iv.paidUsd);
+          const oB = Number(iv.totalBss) - Number(iv.paidBss);
+          if (oU > 0.005) previewDebtUsd += oU;
+          if (oB > 0.005) previewDebtBss += oB;
+        }
+
         const now = new Date();
         const buffer = await generateInvoicePdf({
           communityName: community.name,
@@ -1370,9 +1387,14 @@ export const financeRouter = router({
           communityRif: community.rif,
           communityPhone: community.phone,
           communityLogoUrl: community.logoUrl,
+          // N° de recibo por mes de EMISIÓN (input.year/month), ej. "PREVIEW-202607-101A".
           invoiceNumber: `PREVIEW-${input.year}${String(input.month).padStart(2, "0")}-${targetUnit.code}`,
-          periodYear: input.year,
-          periodMonth: input.month,
+          // Mostrar el MES QUE COBRA (expensePeriod), no el mes de emisión.
+          periodYear: expensePeriodYear,
+          periodMonth: expensePeriodMonth,
+          // Mes de EMISIÓN para el título "RECIBO DE CONDOMINIO — JULIO 2026".
+          issueMonth: input.month,
+          issueYear: input.year,
           issuedAt: now,
           dueDate: now,
           status: "DRAFT",
@@ -1399,6 +1421,8 @@ export const financeRouter = router({
           paidBss: "0",
           creditUsd: previewCreditUsd > 0.005 ? previewCreditUsd.toFixed(2) : undefined,
           creditBss: previewCreditBss > 0.005 ? previewCreditBss.toFixed(2) : undefined,
+          debtUsd: previewDebtUsd > 0.005 ? previewDebtUsd.toFixed(2) : undefined,
+          debtBss: previewDebtBss > 0.005 ? previewDebtBss.toFixed(2) : undefined,
           bankAccounts: bankAccounts.map((b) => ({
             bankName: b.bankName,
             accountNumber: b.accountNumber,
@@ -1409,13 +1433,34 @@ export const financeRouter = router({
           })),
         });
 
+        // Si el total salió en $0, distinguir "no hay gastos cargados todavía" de
+        // "este período YA se emitió" (los gastos se consumieron en la emisión real) —
+        // pedido cliente 07-jul-2026: la vista previa vacía asustaba pensando que se
+        // habían perdido datos, cuando en realidad ya se había facturado todo.
+        let alreadyIssued: { issuedAt: string; invoiceNumber: string } | null = null;
+        if (totalUsd <= 0.005) {
+          const existing = await ctx.db.invoice.findFirst({
+            where: {
+              unitId: targetUnit.id,
+              periodYear: input.year,
+              periodMonth: input.month,
+              status: { not: "VOIDED" },
+            },
+            select: { issuedAt: true, invoiceNumber: true },
+          });
+          if (existing) {
+            alreadyIssued = { issuedAt: existing.issuedAt.toISOString(), invoiceNumber: existing.invoiceNumber };
+          }
+        }
+
         return {
           base64: buffer.toString("base64"),
           mimeType: "application/pdf",
-          fileName: `Preview-Recibo-${targetUnit.code}-${input.year}-${String(input.month).padStart(2, "0")}.pdf`,
+          fileName: `Preview-Recibo-${targetUnit.code}-${expensePeriodYear}-${String(expensePeriodMonth).padStart(2, "0")}.pdf`,
           unitCode: targetUnit.code,
           totalUsd: totalUsd.toFixed(2),
           totalBss: totalBss.toFixed(2),
+          alreadyIssued,
         };
       }),
 
@@ -1579,7 +1624,7 @@ export const financeRouter = router({
         });
         const community = await ctx.db.community.findFirstOrThrow({
           where: { id: inv.communityId },
-          select: { name: true, address: true },
+          select: { name: true, address: true, invoicePeriodShift: true },
         });
         const orgSmtp = await loadOrgSmtp(input.organizationId);
 
@@ -1613,8 +1658,8 @@ export const financeRouter = router({
           personName: `${person.firstName} ${person.lastName}`,
           unitCode: inv.unit.code,
           invoiceNumber: inv.invoiceNumber,
-          periodYear: inv.periodYear,
-          periodMonth: inv.periodMonth,
+          // Nombrar el recibo por el mes que cobra (emisión − shift).
+          ...shiftPeriod(inv.periodYear, inv.periodMonth, community.invoicePeriodShift ?? 0),
           issuedAt: inv.issuedAt,
           dueDate: inv.dueDate,
           items: inv.items.map((it) => ({
@@ -1821,7 +1866,7 @@ export const financeRouter = router({
         // Datos de la comunidad (nombre, dirección) para el email
         const community = await ctx.db.community.findFirstOrThrow({
           where: { id: communityId, organizationId },
-          select: { name: true, address: true },
+          select: { name: true, address: true, invoicePeriodShift: true },
         });
 
         let sent = 0, failed = 0;
@@ -1849,7 +1894,7 @@ export const financeRouter = router({
               orderBy: { expiresAt: "desc" },
             });
             const portalUrl = portalToken
-              ? `${portalBase}/portal?token=${portalToken.token}`
+              ? `${portalBase}/portal?t=${portalToken.token}`
               : portalBase;
 
             const emailData = buildInvoiceEmail({
@@ -1858,8 +1903,8 @@ export const financeRouter = router({
               personName:       `${person.firstName} ${person.lastName}`,
               unitCode:         inv.unit.code,
               invoiceNumber:    inv.invoiceNumber,
-              periodYear:       inv.periodYear,
-              periodMonth:      inv.periodMonth,
+              // Nombrar el recibo por el mes que cobra (emisión − shift).
+              ...shiftPeriod(inv.periodYear, inv.periodMonth, community.invoicePeriodShift ?? 0),
               issuedAt:         inv.issuedAt,
               dueDate:          inv.dueDate,
               items:            inv.items.map((item) => ({
@@ -1944,77 +1989,103 @@ export const financeRouter = router({
 
         if (pending.length === 0) return { sent: 0, failed: 0, total: 0, message: "Sin pendientes" };
 
-        const { sendEmail, buildInvoiceEmail } = await import("@/server/services/email");
+        const { sendBulkEmails, buildInvoiceEmail } = await import("@/server/services/email");
+        const { generateInvoicePdf } = await import("@/server/services/pdf");
+        const { buildInvoicePdfData } = await import("@/server/services/invoice-pdf-builder");
         const now = new Date();
         const portalBase = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
         const community = await ctx.db.community.findFirstOrThrow({
           where: { id: communityId, organizationId },
-          select: { name: true, address: true },
+          select: { name: true, address: true, invoicePeriodShift: true },
         });
 
-        let sent = 0, failed = 0;
-        // Procesar en grupos de 10 paralelos para no saturar (188/10 ≈ 19 grupos, ~38s total).
-        const CONCURRENCY = 10;
-        for (let i = 0; i < pending.length; i += CONCURRENCY) {
-          const chunk = pending.slice(i, i + CONCURRENCY);
-          await Promise.all(chunk.map(async (inv) => {
-            const person = inv.unit.ownerships[0]?.person;
-            const notifData = {
-              organizationId, communityId,
-              unitId:   inv.unit.id,
-              personId: person?.id ?? null,
-              channel:  "EMAIL" as const,
-              event:    "INVOICE_ISSUED" as const,
-              sentAt:   now,
-            };
-            if (!person?.email) {
-              await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Sin email" } }).catch(() => {/**/});
-              failed++;
-              return;
-            }
-            try {
-              const portalToken = await ctx.db.portalToken.findFirst({
-                where: { personId: person.id, expiresAt: { gt: now } },
-                orderBy: { expiresAt: "desc" },
-              });
-              const portalUrl = portalToken
-                ? `${portalBase}/portal?token=${portalToken.token}`
-                : portalBase;
-              const emailData = buildInvoiceEmail({
-                communityName:    community.name,
-                communityAddress: community.address ?? undefined,
-                personName:       `${person.firstName} ${person.lastName}`,
-                unitCode:         inv.unit.code,
-                invoiceNumber:    inv.invoiceNumber,
-                periodYear:       inv.periodYear,
-                periodMonth:      inv.periodMonth,
-                issuedAt:         inv.issuedAt,
-                dueDate:          inv.dueDate,
-                items:            inv.items.map((item) => ({
-                  description: item.description,
-                  amountUsd:   item.amountUsd.toString(),
-                  amountBss:   item.amountBss.toString(),
-                })),
-                totalUsd:     inv.totalUsd.toString(),
-                totalBss:     inv.totalBss.toString(),
-                paidUsd:      inv.paidUsd.toString(),
-                exchangeRate: inv.exchangeRate.toString(),
-                status:       inv.status,
-                portalUrl,
-              });
-              const result = await sendEmail({ to: person.email, ...emailData, orgSmtp });
-              await ctx.db.notification.create({
-                data: { ...notifData, status: result.success ? "SENT" : "FAILED", body: emailData.text ?? "" },
-              }).catch(() => {/**/});
-              if (result.success) sent++; else failed++;
-            } catch {
-              await ctx.db.notification.create({ data: { ...notifData, status: "FAILED", body: "Error al enviar" } }).catch(() => {/**/});
-              failed++;
-            }
-          }));
+        // 1) Armar la lista de correos (crea token, arma HTML). Los sin-email se marcan FAILED.
+        type NotifBase = { organizationId: string; communityId: string; unitId: string; personId: string | null; channel: "EMAIL"; event: "INVOICE_ISSUED"; sentAt: Date };
+        const items: { to: string; subject: string; html: string; text?: string; attachments?: { filename: string; content: Buffer }[] }[] = [];
+        const metas: { notif: NotifBase; email: string; body: string }[] = [];
+        const pdfJobs: { itemIndex: number; invoiceId: string; invoiceNumber: string }[] = [];
+        let noEmailFailed = 0;
+        for (const inv of pending) {
+          const person = inv.unit.ownerships[0]?.person;
+          const notif: NotifBase = {
+            organizationId, communityId, unitId: inv.unit.id,
+            personId: person?.id ?? null, channel: "EMAIL", event: "INVOICE_ISSUED", sentAt: now,
+          };
+          if (!person?.email) {
+            await ctx.db.notification.create({ data: { ...notif, status: "FAILED", body: "Sin email" } }).catch(() => {/**/});
+            noEmailFailed++;
+            continue;
+          }
+          const portalToken = await ctx.db.portalToken.findFirst({
+            where: { personId: person.id, expiresAt: { gt: now } },
+            orderBy: { expiresAt: "desc" },
+          });
+          const portalUrl = portalToken ? `${portalBase}/portal?t=${portalToken.token}` : portalBase;
+          const emailData = buildInvoiceEmail({
+            communityName:    community.name,
+            communityAddress: community.address ?? undefined,
+            personName:       `${person.firstName} ${person.lastName}`,
+            unitCode:         inv.unit.code,
+            invoiceNumber:    inv.invoiceNumber,
+            // Nombrar el recibo por el mes que cobra (emisión − shift).
+            ...shiftPeriod(inv.periodYear, inv.periodMonth, community.invoicePeriodShift ?? 0),
+            issuedAt:         inv.issuedAt,
+            dueDate:          inv.dueDate,
+            items:            inv.items.map((item) => ({
+              description: item.description,
+              amountUsd:   item.amountUsd.toString(),
+              amountBss:   item.amountBss.toString(),
+            })),
+            totalUsd:     inv.totalUsd.toString(),
+            totalBss:     inv.totalBss.toString(),
+            paidUsd:      inv.paidUsd.toString(),
+            exchangeRate: inv.exchangeRate.toString(),
+            status:       inv.status,
+            portalUrl,
+          });
+          items.push({ to: person.email, subject: emailData.subject, html: emailData.html, text: emailData.text });
+          pdfJobs.push({ itemIndex: items.length - 1, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber });
+          metas.push({ notif, email: person.email, body: emailData.text ?? "" });
         }
 
-        return { sent, failed, total: pending.length };
+        // 2) Generar el PDF de cada recibo y adjuntarlo (pedido cliente: "debe llegar
+        // como un pdf, no solo como cuerpo de correo"). Concurrencia limitada — generar
+        // 188 PDFs de golpe sería lento; en paralelo con tope se mantiene dentro del
+        // tiempo de la función. Si un PDF puntual falla, el correo igual sale (con el
+        // botón "Ver recibo en el portal" como respaldo), no se bloquea el envío.
+        {
+          const PDF_CONCURRENCY = 6;
+          let jobIdx = 0;
+          async function pdfWorker() {
+            while (jobIdx < pdfJobs.length) {
+              const job = pdfJobs[jobIdx++]!;
+              try {
+                const pdfData = await buildInvoicePdfData(job.invoiceId);
+                const buffer = await generateInvoicePdf(pdfData);
+                items[job.itemIndex]!.attachments = [
+                  { filename: `Recibo-${job.invoiceNumber}.pdf`, content: buffer },
+                ];
+              } catch {
+                // Sin adjunto para este recibo puntual — el correo sale igual.
+              }
+            }
+          }
+          await Promise.all(Array.from({ length: Math.min(PDF_CONCURRENCY, pdfJobs.length) }, () => pdfWorker()));
+        }
+
+        // 3) Enviar con conexión reutilizada (pool) + reintento automático de fallidos.
+        const result = await sendBulkEmails(items, { orgSmtp, retries: 3, concurrency: 4 });
+        const failedSet = new Set(result.failed.map((f) => f.to));
+
+        // 4) Registrar notificación SENT/FAILED por unidad.
+        for (const m of metas) {
+          const ok = !failedSet.has(m.email);
+          await ctx.db.notification.create({
+            data: { ...m.notif, status: ok ? "SENT" : "FAILED", body: m.body },
+          }).catch(() => {/**/});
+        }
+
+        return { sent: result.sent, failed: result.failed.length + noEmailFailed, total: pending.length };
       }),
 
     /** Preview de lo que se facturaría este mes (sin guardar nada). */
@@ -2025,21 +2096,36 @@ export const financeRouter = router({
         month: z.number().int().min(1).max(12),
       }))
       .query(async ({ ctx, input }) => {
-        const { prorate } = await import("@/lib/proration");
+        const { prorateUniform } = await import("@/lib/proration");
 
-        const [expenses, units, existing, community, deductibleIncomes] = await Promise.all([
+        // Shift post-mes: el recibo del mes M (LABEL) cobra gastos del mes M-shift.
+        // CRÍTICO: este preview DEBE aplicar el mismo shift que issueMonthlyInvoices,
+        // si no, al emitir "julio" (shift=1) el wizard mostraría vacío mientras la
+        // emisión real cobra junio. (Bug detectado el 01/jul/2026 con Reinaldo.)
+        const community = await ctx.db.community.findFirstOrThrow({
+          where: { id: input.communityId, organizationId: input.organizationId },
+          select: { monthlyFeeUsd: true, invoicePeriodShift: true },
+        });
+        const shift = community.invoicePeriodShift ?? 0;
+        let expensePeriodYear = input.year;
+        let expensePeriodMonth = input.month - shift;
+        while (expensePeriodMonth <= 0) { expensePeriodMonth += 12; expensePeriodYear -= 1; }
+
+        const [expenses, units, existing, deductibleIncomes] = await Promise.all([
           ctx.db.expense.findMany({
             where: {
               communityId: input.communityId,
-              periodYear: input.year,
-              periodMonth: input.month,
+              periodYear: expensePeriodYear,
+              periodMonth: expensePeriodMonth,
               invoicedAt: null,
               voidedAt: null,
             },
             select: {
               id: true, description: true, category: true, customCategory: true,
-              amountUsd: true, amountBss: true,
+              amountUsd: true, amountBss: true, currencyPrimary: true,
               isIndividual: true, targetUnitId: true, towerScope: true,
+              kind: true, recurringTemplateId: true,
+              recurringTemplate: { select: { isProvision: true, active: true } },
             },
           }),
           ctx.db.unit.findMany({
@@ -2047,6 +2133,8 @@ export const financeRouter = router({
             select: { id: true, code: true, aliquot: true, tower: true },
             orderBy: { code: "asc" },
           }),
+          // El bloqueo de "ya emitido" se chequea contra el período LABEL (input),
+          // igual que issueMonthlyInvoices.
           ctx.db.invoice.count({
             where: {
               communityId: input.communityId,
@@ -2055,15 +2143,11 @@ export const financeRouter = router({
               status: { not: "VOIDED" },
             },
           }),
-          ctx.db.community.findFirstOrThrow({
-            where: { id: input.communityId, organizationId: input.organizationId },
-            select: { monthlyFeeUsd: true },
-          }),
           ctx.db.income.findMany({
             where: {
               communityId: input.communityId,
-              periodYear: input.year,
-              periodMonth: input.month,
+              periodYear: expensePeriodYear,
+              periodMonth: expensePeriodMonth,
               affectsInvoice: true,
               voidedAt: null,
             },
@@ -2071,15 +2155,36 @@ export const financeRouter = router({
           }),
         ]);
 
-        const totalExpensesUsd = expenses.reduce((s, e) => s + Number(e.amountUsd), 0);
-        const totalExpensesBss = expenses.reduce((s, e) => s + Number(e.amountBss), 0);
+        // MODELO PROVISIÓN + AJUSTE (igual que issueMonthlyInvoices): se cobra SIEMPRE la
+        // provisión estimada + el ajuste del mes anterior. El REAL de un servicio
+        // provisionado (REGULAR vinculado a plantilla isProvision) NO se cobra directo,
+        // solo reconcilia. También se excluyen plantillas inactivas. Así el total del
+        // wizard coincide EXACTO con lo que se emite.
+        // Los montos se NORMALIZAN a la tasa del CIERRE DEL MES COBRADO respetando la
+        // moneda primaria (VES → Bs fijo, USD = Bs/tasa; USD → USD fijo, Bs = USD×tasa),
+        // igual que issueMonthlyInvoices, para que el total del wizard coincida con la emisión.
+        const previewUsdRate = Number((await getCurrentRate("BCV", new Date(expensePeriodYear, expensePeriodMonth, 0))).vesPerUsd);
+        const expenses2 = expenses
+          .filter((e) => {
+            if (e.recurringTemplate && e.recurringTemplate.active === false) return false;
+            if (e.kind === "REGULAR" && e.recurringTemplateId && e.recurringTemplate?.isProvision === true) return false;
+            return true;
+          })
+          .map((e) => ({
+            ...e,
+            amountUsd: e.currencyPrimary === "USD" ? Number(e.amountUsd) : Number(e.amountBss) / previewUsdRate,
+            amountBss: e.currencyPrimary === "USD" ? Number(e.amountUsd) * previewUsdRate : Number(e.amountBss),
+          }));
+
+        const totalExpensesUsd = expenses2.reduce((s, e) => s + Number(e.amountUsd), 0);
+        const totalExpensesBss = expenses2.reduce((s, e) => s + Number(e.amountBss), 0);
         const totalIncomeDeductionUsd = deductibleIncomes.reduce((s, i) => s + Number(i.amountUsd), 0);
 
         // Replicar el cálculo real de issueMonthlyInvoices para que el preview
         // coincida exactamente con lo que se va a emitir.
-        const individualExpenses = expenses.filter((e) => e.isIndividual && e.targetUnitId);
-        const towerExpenses = expenses.filter((e) => !e.isIndividual && e.towerScope);
-        const generalExpenses = expenses.filter((e) => !e.isIndividual && !e.towerScope);
+        const individualExpenses = expenses2.filter((e) => e.isIndividual && e.targetUnitId);
+        const towerExpenses = expenses2.filter((e) => !e.isIndividual && e.towerScope);
+        const generalExpenses = expenses2.filter((e) => !e.isIndividual && !e.towerScope);
         const generalUsd = generalExpenses.reduce((s, e) => s + Number(e.amountUsd), 0);
         const deductionFactor = generalUsd > 0
           ? Math.min(totalIncomeDeductionUsd / generalUsd, 1)
@@ -2106,8 +2211,8 @@ export const financeRouter = router({
           const towerUnits = units.filter((u) => u.tower === exp.towerScope);
           if (towerUnits.length === 0) continue;
           const participants = towerUnits.map((u) => ({ key: u.id, aliquot: u.aliquot.toString() }));
-          const usdDist = prorate(Number(exp.amountUsd).toFixed(2), participants);
-          const bssDist = prorate(Number(exp.amountBss).toFixed(2), participants);
+          const usdDist = prorateUniform(Number(exp.amountUsd).toFixed(2), participants);
+          const bssDist = prorateUniform(Number(exp.amountBss).toFixed(2), participants);
           for (const u of towerUnits) {
             const t = unitTotals.get(u.id)!;
             const uu = Number(usdDist.get(u.id)?.toString() ?? 0);
@@ -2122,8 +2227,8 @@ export const financeRouter = router({
         for (const exp of generalExpenses) {
           const adjUsd = Number(exp.amountUsd) * (1 - deductionFactor);
           const adjBss = Number(exp.amountBss) * (1 - deductionFactor);
-          const usdDist = prorate(adjUsd.toFixed(2), participants);
-          const bssDist = prorate(adjBss.toFixed(2), participants);
+          const usdDist = prorateUniform(adjUsd.toFixed(2), participants);
+          const bssDist = prorateUniform(adjBss.toFixed(2), participants);
           for (const u of units) {
             const t = unitTotals.get(u.id)!;
             const uu = Number(usdDist.get(u.id)?.toString() ?? 0);
@@ -2157,7 +2262,7 @@ export const financeRouter = router({
         const grandTotalUsd = unitPreviews.reduce((s, u) => s + Number(u.totalUsd), 0);
 
         return {
-          expenses: expenses.map(e => ({
+          expenses: expenses2.map(e => ({
             description: e.customCategory ?? e.description,
             amountUsd: Number(e.amountUsd).toFixed(2),
             amountBss: Number(e.amountBss).toFixed(2),
@@ -2174,6 +2279,10 @@ export const financeRouter = router({
           unitPreviews,
           grandTotalUsd: grandTotalUsd.toFixed(2),
           alreadyIssued: existing > 0,
+          // Período de gastos que realmente se cobra (aplicando el shift). El wizard
+          // lo muestra para que quede claro que "recibo de julio" cobra "gastos de junio".
+          shift,
+          expensePeriod: { year: expensePeriodYear, month: expensePeriodMonth },
         };
       }),
   }),
@@ -2372,6 +2481,7 @@ export const financeRouter = router({
           paidAt: z.coerce.date(),
           bankAccountId: z.string().optional(),
           notes: z.string().optional(),
+          exchangeRateOverride: z.coerce.number().positive().optional(),
           allocations: z
             .array(z.object({ invoiceId: z.string(), amount: z.coerce.number().positive() }))
             .optional(),
@@ -2426,6 +2536,7 @@ export const financeRouter = router({
           reference: z.string().optional(),
           paidAt: z.coerce.date(),
           notes: z.string().optional(),
+          exchangeRateOverride: z.coerce.number().positive().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -2449,13 +2560,16 @@ export const financeRouter = router({
           },
         });
 
-        // Tasa de la fecha del pago (para convertir facturas con totalBss=0
-        // cuando se paga en VES, p.ej. SALDO ANTERIOR del reset).
-        const rateRecord = await getCurrentRate("BCV", input.paidAt);
-        const rate = new (await import("decimal.js")).Decimal(rateRecord.vesPerUsd);
-
         // Construir allocations automáticas
         const { Decimal } = await import("decimal.js");
+
+        // Tasa de la fecha del pago (para convertir facturas con totalBss=0
+        // cuando se paga en VES, p.ej. SALDO ANTERIOR del reset). Si el admin
+        // especificó una tasa manual para este pago puntual, se usa esa.
+        const rate = input.exchangeRateOverride
+          ? new Decimal(input.exchangeRateOverride)
+          : new Decimal((await getCurrentRate("BCV", input.paidAt)).vesPerUsd);
+
         let remaining = new Decimal(input.amount);
         const allocations: { invoiceId: string; amount: Decimal.Value }[] = [];
 
@@ -2463,7 +2577,7 @@ export const financeRouter = router({
           if (remaining.lte(0)) break;
 
           // Calcular saldo pendiente de esta factura en moneda primaria del pago.
-          // Si la factura tiene totalBss=0 pero pagás en VES, convertimos via tasa.
+          // Si la factura tiene totalBss=0 pero pagas en VES, convertimos via tasa.
           const isPrimaryUsd = input.currencyPrimary === "USD";
           const totalUsdInv = new Decimal(inv.totalUsd.toString());
           const totalBssInv = new Decimal(inv.totalBss.toString());
@@ -2499,6 +2613,7 @@ export const financeRouter = router({
           reference: input.reference,
           paidAt: input.paidAt,
           notes: input.notes,
+          exchangeRateOverride: input.exchangeRateOverride,
           allocations,
           createdById: ctx.user.id,
         });
@@ -3981,17 +4096,44 @@ export const financeRouter = router({
         return Array.from(map.values()).sort((a, b) => a.customCategory.localeCompare(b.customCategory));
       }),
 
+    /** Subcategorías (nivel 2) ya en uso — para autocompletar el form de gasto/plantilla. */
+    subCategories: orgProcedure
+      .input(orgIdInput.extend({ communityId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const [fromTemplates, fromExpenses] = await Promise.all([
+          ctx.db.recurringExpenseTemplate.findMany({
+            where: { organizationId: input.organizationId, communityId: input.communityId, subCategory: { not: null } },
+            select: { subCategory: true },
+            distinct: ["subCategory"],
+          }),
+          ctx.db.expense.findMany({
+            where: { organizationId: input.organizationId, communityId: input.communityId, voidedAt: null, subCategory: { not: null } },
+            select: { subCategory: true },
+            distinct: ["subCategory"],
+            take: 200,
+          }),
+        ]);
+        const set = new Set<string>();
+        for (const r of [...fromTemplates, ...fromExpenses]) {
+          if (r.subCategory?.trim()) set.add(r.subCategory.trim());
+        }
+        return Array.from(set).sort((a, b) => a.localeCompare(b));
+      }),
+
     create: orgProcedure
       .input(
         orgIdInput.extend({
           communityId: z.string(),
           category: z.enum(EXPENSE_CATEGORIES),
           customCategory: z.string().max(80).optional(),
+          subCategory: z.string().max(80).optional().nullable(),
           description: z.string().min(2),
           supplierName: z.string().optional(),
           /** Monto en la moneda primaria de la plantilla. Si VES → almacenamos en amountBss
-           *  (autoritativo). Si USD → almacenamos en amountUsd (autoritativo). */
-          amount: z.coerce.number().positive(),
+           *  (autoritativo). Si USD → almacenamos en amountUsd (autoritativo).
+           *  Opcional (default 0): una plantilla puede ser solo un concepto/atajo sin
+           *  monto fijo — el monto real se pone al registrar el gasto del mes. */
+          amount: z.coerce.number().min(0).default(0),
           currencyPrimary: z.enum(["USD", "VES"]).default("USD"),
           towerScope: z.string().max(20).optional().nullable(),
           notes: z.string().optional(),
@@ -4020,6 +4162,7 @@ export const financeRouter = router({
             communityId: input.communityId,
             category: input.category,
             customCategory: input.customCategory ?? null,
+            subCategory: input.subCategory ?? null,
             description: input.description,
             supplierName: input.supplierName ?? null,
             amountUsd: amountUsd.toFixed(2),
@@ -4040,6 +4183,7 @@ export const financeRouter = router({
           // El cliente pidió poder editar la categoría también
           category: z.enum(EXPENSE_CATEGORIES).optional(),
           customCategory: z.string().max(80).optional().nullable(),
+          subCategory: z.string().max(80).optional().nullable(),
           description: z.string().min(2).optional(),
           supplierName: z.string().optional(),
           amount: z.coerce.number().positive().optional(),
@@ -4142,10 +4286,13 @@ export const financeRouter = router({
             ? new Decimal(tpl.amountBss!.toString())
             : new Decimal(tpl.amountUsd.toString()).mul(usdRate);
 
-          // — AJUSTE PROVISIÓN DEL MISMO MES (in-period). Cambio 8/jun/2026:
-          // antes el ajuste se calculaba sobre el mes anterior; ahora sobre el
-          // mismo mes (pedido cliente: el recibo de junio se emite en julio y
-          // debe incluir todos los gastos cargados durante junio). —
+          // — AJUSTE PROVISIÓN MES ANTERIOR (cambio 03-jul-2026, modelo del recibo Excel
+          // de Arrayanes). El ajuste reconcilia el MES ANTERIOR:
+          //   ajuste = Σ real(mes anterior, vinculado a la plantilla) − Σ provisión
+          //            estimada que se cobró el mes anterior (PROVISION_BASE de ese mes).
+          // Se guarda en el período CORRIENTE con la etiqueta estándar "AJUSTE PROVISION
+          // MES ANTERIOR". Solo existe si el mes anterior tuvo provisión Y real que
+          // reconciliar (si no, no hay nada que ajustar). —
           if (tpl.isProvision) {
             // Ya hay ajuste para este mes/plantilla? si sí, no duplicar.
             const existAdj = await ctx.db.expense.findFirst({
@@ -4158,35 +4305,43 @@ export const financeRouter = router({
               select: { id: true },
             });
             if (!existAdj) {
-              // Base = la PROVISION_BASE del MISMO mes (la que vamos a crear
-              // abajo si aún no existe, o la que ya existe). Usamos el monto
-              // de la plantilla como referencia — coincide con la base que se
-              // crea/existe.
-              const baseUsd = tplAmountUsd;
-              const baseBss = tplAmountBss;
-              // Reales del MISMO mes vinculados a esta plantilla.
-              const currentReal = await ctx.db.expense.findMany({
+              // Período anterior (el mes que se reconcilia).
+              let prevYear = year;
+              let prevMonth = month - 1;
+              if (prevMonth < 1) { prevMonth = 12; prevYear -= 1; }
+              // Provisión estimada realmente cobrada el mes anterior (no el estimado
+              // actual de la plantilla, que pudo cambiar).
+              const prevBase = await ctx.db.expense.findMany({
                 where: {
-                  communityId, periodYear: year, periodMonth: month,
-                  recurringTemplateId: tpl.id,
-                  kind: "REGULAR",
-                  voidedAt: null,
+                  communityId, periodYear: prevYear, periodMonth: prevMonth,
+                  recurringTemplateId: tpl.id, kind: "PROVISION_BASE", voidedAt: null,
                 },
                 select: { amountUsd: true, amountBss: true },
               });
-              if (currentReal.length > 0) {
-                const realSumUsd = currentReal.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
-                const realSumBss = currentReal.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
-                const adjUsd = realSumUsd.minus(baseUsd);
-                const adjBss = realSumBss.minus(baseBss);
-                if (adjUsd.abs().gt("0.01")) {
+              // Reales del mes anterior vinculados a esta plantilla.
+              const prevReal = await ctx.db.expense.findMany({
+                where: {
+                  communityId, periodYear: prevYear, periodMonth: prevMonth,
+                  recurringTemplateId: tpl.id, kind: "REGULAR", voidedAt: null,
+                },
+                select: { amountUsd: true, amountBss: true },
+              });
+              // Solo hay ajuste si el mes anterior tuvo provisión Y real.
+              if (prevBase.length > 0 && prevReal.length > 0) {
+                const baseUsd = prevBase.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+                const baseBss = prevBase.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+                const realUsd = prevReal.reduce((s, e) => s.plus(e.amountUsd.toString()), new Decimal(0));
+                const realBss = prevReal.reduce((s, e) => s.plus(e.amountBss.toString()), new Decimal(0));
+                const adjUsd = realUsd.minus(baseUsd);
+                const adjBss = realBss.minus(baseBss);
+                if (adjUsd.abs().gt("0.01") || adjBss.abs().gt("0.01")) {
                   await ctx.db.expense.create({
                     data: {
                       organizationId,
                       communityId,
                       category: tpl.category,
                       customCategory: tpl.customCategory ?? null,
-                      description: `Ajuste Provisión ${tpl.description}`,
+                      description: `AJUSTE PROVISION MES ANTERIOR`,
                       supplierName: tpl.supplierName ?? null,
                       periodYear: year,
                       periodMonth: month,
@@ -4194,7 +4349,7 @@ export const financeRouter = router({
                       amountBss: adjBss.toFixed(2),
                       exchangeRate: usdRate.toFixed(8),
                       exchangeSource: rate.source,
-                      currencyPrimary: "USD",
+                      currencyPrimary: tpl.currencyPrimary,
                       towerScope: tpl.towerScope ?? null,
                       isIndividual: false,
                       recurringTemplateId: tpl.id,
@@ -4215,6 +4370,7 @@ export const financeRouter = router({
               communityId,
               category: tpl.category,
               customCategory: tpl.customCategory ?? null,
+              subCategory: tpl.subCategory ?? null,
               description: tpl.isProvision ? `Provisión ${tpl.description}` : tpl.description,
               supplierName: tpl.supplierName ?? null,
               periodYear: year,

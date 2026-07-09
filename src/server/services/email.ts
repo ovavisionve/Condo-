@@ -44,6 +44,8 @@ export interface SendEmailParams {
   text?: string;
   /** SMTP de la organización (tiene prioridad sobre el global) */
   orgSmtp?: OrgSmtp | null;
+  /** PDF adjunto opcional (ej. el recibo). */
+  attachments?: { filename: string; content: Buffer }[];
 }
 
 export async function sendEmail(params: SendEmailParams): Promise<{ success: boolean; error?: string }> {
@@ -76,11 +78,104 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
   }
 
   try {
-    await transport.sendMail({ from, to: params.to, subject: params.subject, html: params.html, text: params.text });
+    await transport.sendMail({ from, to: params.to, subject: params.subject, html: params.html, text: params.text, attachments: params.attachments });
     return { success: true };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Error desconocido" };
   }
+}
+
+// ─── Envío MASIVO robusto ───────────────────────────────────────────────────
+// El envío masivo antes creaba UNA conexión SMTP nueva (con login) por CADA email
+// → Gmail bloquea tras ~130 logins seguidos → fallaban los últimos ~50. Este helper:
+//   1. Usa UNA sola conexión reutilizada (pool) → un solo login.
+//   2. Reintenta automáticamente cada email que falle (hasta `retries` veces, con backoff).
+//   3. Limita la concurrencia para no saturar el servidor.
+//   4. Devuelve la lista exacta de los que fallaron (para reintentar solo esos).
+
+function resolveSmtpConfig(orgSmtp?: OrgSmtp | null): { host: string; port: number; user: string; pass: string; secure: boolean; from: string } | null {
+  if (orgSmtp?.host && orgSmtp.user && orgSmtp.pass) {
+    return {
+      host: orgSmtp.host, port: orgSmtp.port ?? 587, user: orgSmtp.user, pass: orgSmtp.pass,
+      secure: orgSmtp.secure ?? false, from: orgSmtp.from || orgSmtp.user,
+    };
+  }
+  return globalSmtp();
+}
+
+export interface BulkEmailItem {
+  to: string; subject: string; html: string; text?: string;
+  /** PDF adjunto opcional (ej. el recibo), para que llegue listo para abrir/guardar. */
+  attachments?: { filename: string; content: Buffer }[];
+}
+export interface BulkEmailResult {
+  sent: number;
+  failed: { to: string; error: string }[];
+  dryRun?: boolean;
+}
+
+export async function sendBulkEmails(
+  items: BulkEmailItem[],
+  opts?: { orgSmtp?: OrgSmtp | null; retries?: number; concurrency?: number },
+): Promise<BulkEmailResult> {
+  if (items.length === 0) return { sent: 0, failed: [] };
+
+  const cfg = resolveSmtpConfig(opts?.orgSmtp);
+  if (!cfg) {
+    // Sin SMTP configurado → dry-run (no bloquear en dev)
+    for (const it of items) {
+      const redacted = it.to.replace(/^(.{2}).*@(.*)$/, "$1***@$2");
+      console.log(`[email:dry-run] → ${redacted} | ${it.subject}`);
+    }
+    return { sent: items.length, failed: [], dryRun: true };
+  }
+
+  // Transporte POOL: reutiliza conexiones (un solo login), con rate limit suave.
+  const transport = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    connectionTimeout: 20_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 30_000,
+  });
+
+  const retries = opts?.retries ?? 3;
+  const concurrency = Math.max(1, Math.min(opts?.concurrency ?? 4, 6));
+  const failed: { to: string; error: string }[] = [];
+  let sent = 0;
+  let idx = 0;
+
+  async function worker() {
+    while (idx < items.length) {
+      const it = items[idx++]!;
+      let ok = false;
+      let lastErr = "";
+      for (let attempt = 0; attempt <= retries && !ok; attempt++) {
+        try {
+          await transport.sendMail({ from: cfg!.from, to: it.to, subject: it.subject, html: it.html, text: it.text, attachments: it.attachments });
+          ok = true;
+        } catch (err) {
+          lastErr = err instanceof Error ? err.message : "error";
+          // Backoff creciente antes de reintentar (700ms, 1.4s, 2.1s…)
+          if (attempt < retries) await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+        }
+      }
+      if (ok) sent++;
+      else failed.push({ to: it.to, error: lastErr });
+    }
+  }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  } finally {
+    transport.close();
+  }
+  return { sent, failed };
 }
 
 // ─── Invoice email template ────────────────────────────────────────────────
@@ -228,12 +323,18 @@ export function buildInvoiceEmail(data: InvoiceEmailData): { subject: string; ht
         <p style="margin:6px 0 0;color:#1e40af;font-size:13px;">Contáctenos para coordinar su pago:${data.adminEmail ? ` <a href="mailto:${data.adminEmail}" style="color:#1d4ed8;">${data.adminEmail}</a>` : ""}${data.adminPhone ? ` · ${data.adminPhone}` : ""}</p>
       </div>` : ""}
 
+      <div style="text-align:center;margin-bottom:8px;">
+        <p style="margin:0 0 12px;color:#374151;font-size:13px;">
+          📎 Tu recibo en PDF está adjunto a este correo.
+        </p>
+      </div>
+
       ${data.portalUrl ? `
       <!-- Portal link -->
       <div style="text-align:center;margin-bottom:8px;">
         <a href="${data.portalUrl}"
            style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
-          🏠 Ver recibo en el portal
+          ⬇️ Ver y descargar recibo en el portal
         </a>
         <p style="margin:8px 0 0;color:#9ca3af;font-size:11px;">
           Este enlace es personal — no lo comparta.

@@ -12,7 +12,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 const CATS = [
   "ELECTRICITY", "WATER", "GAS", "INTERNET", "CLEANING", "GARDENING",
   "SECURITY", "ELEVATOR", "STAFF_PAYROLL", "ADMINISTRATION", "INSURANCE",
-  "REPAIRS", "RESERVE_FUND", "TAXES", "OTHER",
+  "REPAIRS", "RESERVE_FUND", "TAXES", "LEGAL", "OTHER",
 ] as const;
 
 const CAT_LABELS: Record<string, string> = {
@@ -30,6 +30,7 @@ const CAT_LABELS: Record<string, string> = {
   REPAIRS:        "Reparaciones",
   RESERVE_FUND:   "Fondo de reserva",
   TAXES:          "Impuestos",
+  LEGAL:          "Legal / Honorarios profesionales",
   OTHER:          "Otro",
 };
 
@@ -156,10 +157,10 @@ export default function ExpensesPage() {
               <span className="text-2xl">⚠️</span>
               <div className="flex-1">
                 <p className="text-sm font-medium text-amber-900">
-                  Tenés gastos pendientes en un período con recibos ya emitidos
+                  Tienes gastos pendientes en un período con recibos ya emitidos
                 </p>
                 <p className="text-xs text-amber-700 mt-1">
-                  Los recibos actuales NO incluyen estos gastos. Para cobrarlos a los residentes andá
+                  Los recibos actuales NO incluyen estos gastos. Para cobrarlos a los residentes ve
                   a <strong>Recibos de Condominio</strong> y pulsá <strong>🔄 Re-emitir período</strong>
                   {" "}(solo funciona si nadie ha pagado todavía).
                 </p>
@@ -412,6 +413,8 @@ export default function ExpensesPage() {
             void list.refetch();
             // Invalidar el preview del recibo para que refleje el nuevo gasto en vivo
             void utils.finance.invoices.previewReceiptPdf.invalidate();
+            void utils.finance.recurringTemplates.customCategories.invalidate();
+            void utils.finance.recurringTemplates.subCategories.invalidate();
           }}
           create={create}
           units={units.data ?? []}
@@ -430,6 +433,8 @@ export default function ExpensesPage() {
             setEditExpense(null);
             void list.refetch();
             void utils.finance.invoices.previewReceiptPdf.invalidate();
+            void utils.finance.recurringTemplates.customCategories.invalidate();
+            void utils.finance.recurringTemplates.subCategories.invalidate();
           }}
           updateExpense={updateExpense}
           towers={towers}
@@ -531,6 +536,7 @@ function RecurringTemplatesPanel({
   const blankForm = {
     category: "ELECTRICITY" as (typeof CATS)[number],
     customCategory: "",
+    subCategory: "",
     description: "",
     supplierName: "",
     // Renombrado: ahora "amount" puede ser USD o VES según currencyPrimary.
@@ -546,7 +552,7 @@ function RecurringTemplatesPanel({
   const startEdit = (tpl: TplRecord) => {
     setEditingId(tpl.id);
     const t = tpl as unknown as {
-      category: typeof CATS[number]; customCategory?: string | null;
+      category: typeof CATS[number]; customCategory?: string | null; subCategory?: string | null;
       description: string; supplierName?: string | null; amountUsd: { toString(): string };
       amountBss?: { toString(): string } | null; currencyPrimary?: "USD" | "VES";
       towerScope?: string | null; notes?: string | null; isProvision: boolean;
@@ -558,6 +564,7 @@ function RecurringTemplatesPanel({
     setForm({
       category: t.category,
       customCategory: t.customCategory ?? "",
+      subCategory: t.subCategory ?? "",
       description: t.description,
       supplierName: t.supplierName ?? "",
       amountUsd: amount,
@@ -586,6 +593,7 @@ function RecurringTemplatesPanel({
           // Cliente pidió poder editar categoría también
           category: form.category,
           customCategory: form.customCategory.trim() || null,
+          subCategory: form.subCategory.trim() || null,
           description: form.description,
           supplierName: form.supplierName || undefined,
           amount: Number(form.amountUsd),
@@ -599,6 +607,7 @@ function RecurringTemplatesPanel({
           organizationId, communityId,
           category: form.category,
           customCategory: form.customCategory.trim() || undefined,
+          subCategory: form.subCategory.trim() || null,
           description: form.description,
           supplierName: form.supplierName || undefined,
           amount: Number(form.amountUsd),
@@ -674,7 +683,7 @@ function RecurringTemplatesPanel({
           </div>
           <p>
             <strong>¿Por qué este modelo y no cobrar el real directo?</strong> Porque el recibo se emite el día 1 del
-            mes (necesitás cobrar para pagar facturas durante el mes) y las facturas reales (Hidrocapital, Luz, etc.)
+            mes (necesitas cobrar para pagar facturas durante el mes) y las facturas reales (Hidrocapital, Luz, etc.)
             llegan después. La provisión garantiza liquidez; el ajuste corrige al mes siguiente cuando ya se conoce el
             costo real.
           </p>
@@ -830,6 +839,10 @@ function RecurringTemplatesPanel({
                 <Label>Descripción</Label>
                 <Input required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
               </div>
+              <div>
+                <Label>Subcategoría <span className="text-muted-foreground text-xs">(opcional — agrupa en el recibo)</span></Label>
+                <Input value={form.subCategory} onChange={(e) => setForm((f) => ({ ...f, subCategory: e.target.value }))} maxLength={80} placeholder="Ej: Ascensores, Nómina..." />
+              </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <Label>Monto</Label>
@@ -868,8 +881,8 @@ function RecurringTemplatesPanel({
                 )}
               </div>
               <p className="text-xs text-muted-foreground -mt-1">
-                💡 Si elegís <strong>Bs</strong>, el monto se mantiene fijo en bolívares cada mes
-                (sin variar con la tasa). Si elegís <strong>USD</strong>, se convierte a Bs con la tasa del mes.
+                💡 Si eliges <strong>Bs</strong>, el monto se mantiene fijo en bolívares cada mes
+                (sin variar con la tasa). Si eliges <strong>USD</strong>, se convierte a Bs con la tasa del mes.
               </p>
 
               {/* Toggle: Provisión — agrupa gastos reales y calcula ajuste mes anterior */}
@@ -938,6 +951,7 @@ function NewExpenseDialog({
   const [form, setForm] = useState({
     category: "ELECTRICITY" as (typeof CATS)[number],
     customCategory: "",
+    subCategory: "",
     description: "",
     amount: "",
     // Bs por defecto (pedido del cliente: "Por defecto TODO en bolivares pero
@@ -967,6 +981,14 @@ function NewExpenseDialog({
   });
   const provisionTemplates = (provisionTemplatesQ.data ?? [])
     .filter((t) => t.isProvision && t.active);
+  // TODAS las plantillas activas — se ofrecen como "concepto guardado" para
+  // prellenar el gasto (pedido Reinaldo: "que mis plantillas aparezcan al
+  // registrar un gasto"). Elegir una NO la cobra: solo copia sus datos al form.
+  const allTemplates = (provisionTemplatesQ.data ?? []).filter((t) => t.active);
+  const subCatsQ = trpc.finance.recurringTemplates.subCategories.useQuery(
+    { organizationId, communityId }, { staleTime: 30_000 },
+  );
+  const subCats = subCatsQ.data ?? [];
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -985,6 +1007,7 @@ function NewExpenseDialog({
         // Ahora cualquier categoría puede llevar customCategory (pedido del cliente:
         // "Crear nuevas categorías en los gastos").
         customCategory: form.customCategory.trim() || undefined,
+        subCategory: form.subCategory.trim() || null,
         description: form.description,
         periodYear: py,
         periodMonth: pm,
@@ -1010,16 +1033,60 @@ function NewExpenseDialog({
       <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg overflow-y-auto max-h-[90vh]">
         <h3 className="mb-4 text-lg font-semibold">Registrar gasto común</h3>
         <form onSubmit={onSubmit} className="space-y-3">
+          {/* Atajo: prellenar el gasto desde una plantilla/concepto guardado.
+              Elegir una plantilla NO la cobra — solo copia sus datos a este form,
+              y puedes editar todo antes de guardar (pedido de Reinaldo). */}
+          {allTemplates.length > 0 && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50/60 p-3">
+              <Label className="font-semibold text-sky-900">📋 Usar una plantilla / concepto guardado</Label>
+              <p className="mb-2 text-[11px] text-sky-700">
+                Opcional. Copia el concepto y el monto de una plantilla a este gasto. Puedes editarlo todo antes de guardar.
+              </p>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value=""
+                onChange={(e) => {
+                  const t = allTemplates.find((x) => x.id === e.target.value);
+                  if (!t) return;
+                  const cp = ((t.currencyPrimary as "USD" | "VES") ?? "USD");
+                  const amt = cp === "VES" && t.amountBss
+                    ? Number(t.amountBss.toString())
+                    : Number(t.amountUsd.toString());
+                  setForm((f) => ({
+                    ...f,
+                    category: t.category as (typeof CATS)[number],
+                    customCategory: t.customCategory ?? "",
+                    subCategory: (t as { subCategory?: string | null }).subCategory ?? "",
+                    description: t.description,
+                    supplierName: t.supplierName ?? f.supplierName,
+                    currencyPrimary: cp,
+                    amount: amt > 0 ? String(amt) : "",
+                    // Si es provisión, vincular el gasto real contra ella automáticamente.
+                    recurringTemplateId: t.isProvision ? t.id : "",
+                  }));
+                }}
+              >
+                <option value="">— Elegir plantilla para prellenar —</option>
+                {allTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.isProvision ? "🔒 provisión · " : ""}{t.description}{t.customCategory ? ` · ${t.customCategory}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Categoría</Label>
-              <select
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={form.category}
-                onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as (typeof CATS)[number], customCategory: "" }))}
-              >
-                {CATS.map((c) => <option key={c} value={c}>{CAT_LABELS[c] ?? c}</option>)}
-              </select>
+              <CategoryCombobox
+                organizationId={organizationId}
+                communityId={communityId}
+                category={form.category}
+                customCategory={form.customCategory}
+                onChange={(category, customCategory) =>
+                  setForm((f) => ({ ...f, category, customCategory }))
+                }
+              />
             </div>
             <div>
               <Label>Proveedor</Label>
@@ -1029,17 +1096,19 @@ function NewExpenseDialog({
 
           <div>
             <Label>
-              Subcategoría / Nombre específico{" "}
-              <span className="text-muted-foreground text-xs">(opcional — se muestra en el recibo en lugar de la categoría genérica)</span>
+              Subcategoría{" "}
+              <span className="text-muted-foreground text-xs">(opcional — agrupa dentro de la categoría en el recibo)</span>
             </Label>
             <Input
-              placeholder={form.category === "OTHER"
-                ? "Ej: Piscina, Planta eléctrica, Pintura..."
-                : `Ej: subcategoría específica de ${CAT_LABELS[form.category] ?? form.category}...`}
-              value={form.customCategory}
-              onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))}
+              list="expense-subcats"
+              placeholder="Ej: Ascensores, Tornillos, 2da quincena..."
+              value={form.subCategory}
+              onChange={(e) => setForm((f) => ({ ...f, subCategory: e.target.value }))}
               maxLength={80}
             />
+            <datalist id="expense-subcats">
+              {subCats.map((s) => <option key={s} value={s} />)}
+            </datalist>
           </div>
 
           <div>
@@ -1077,9 +1146,9 @@ function NewExpenseDialog({
               📊 ¿Es el gasto real de alguna provisión?
             </Label>
             <p className="mb-2 text-[11px] text-amber-700">
-              Si este gasto es el cobro real de un servicio que ya tenés provisionado (Hidrocapital, Luz, etc.),
-              vinculalo aquí. El sistema lo usa para calcular el <strong>AJUSTE PROVISIÓN</strong> del mes siguiente
-              (diferencia entre lo estimado y lo real).
+              Si este gasto es el cobro real de un servicio que ya tienes provisionado (Hidrocapital, Luz, etc.),
+              vincúlalo aquí. El sistema cobrará el <strong>monto REAL de este gasto</strong> en lugar del
+              estimado de la provisión — así el recibo refleja lo que de verdad se gastó (sin cobrar dos veces).
             </p>
             <select
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -1106,8 +1175,7 @@ function NewExpenseDialog({
             )}
             {form.recurringTemplateId && (
               <p className="mt-1 text-[11px] text-emerald-700">
-                ✓ Este gasto NO se facturará al residente (ya pagaron la provisión).
-                Se usará para calcular el ajuste del mes siguiente.
+                ✓ Se cobrará este monto REAL en el recibo, y NO el estimado de la provisión.
               </p>
             )}
           </div>
@@ -1225,6 +1293,14 @@ function CategoryCombobox({
     ? `custom:${customCategory}`
     : `base:${category}`;
 
+  // Lista de categorías personalizadas = las ya usadas + la actual (aunque aún no
+  // esté guardada en la BD, para que una recién creada quede visible/seleccionada).
+  const customList = (() => {
+    const names = (customCatsQ.data ?? []).map((c) => c.customCategory);
+    if (customCategory && !names.includes(customCategory)) names.unshift(customCategory);
+    return names;
+  })();
+
   if (mode === "create") {
     return (
       <div className="flex gap-1">
@@ -1287,11 +1363,11 @@ function CategoryCombobox({
           <option key={c} value={`base:${c}`}>{CAT_LABELS[c]}</option>
         ))}
       </optgroup>
-      {(customCatsQ.data?.length ?? 0) > 0 && (
+      {customList.length > 0 && (
         <optgroup label="Categorías personalizadas">
-          {customCatsQ.data?.map((c) => (
-            <option key={c.customCategory} value={`custom:${c.customCategory}`}>
-              ✨ {c.customCategory}
+          {customList.map((name) => (
+            <option key={name} value={`custom:${name}`}>
+              ✨ {name}
             </option>
           ))}
         </optgroup>
@@ -1318,6 +1394,7 @@ type EditExpenseRow = {
   towerScope?: string | null;
   recurringTemplateId?: string | null;
   customCategory?: string | null;
+  subCategory?: string | null;
   isIndividual?: boolean;
 };
 
@@ -1348,8 +1425,10 @@ function EditExpenseDialog({
     : new Date().toISOString().slice(0, 10);
 
   const [form, setForm] = useState({
+    category: (CATS.includes(expense.category as (typeof CATS)[number]) ? expense.category : "OTHER") as (typeof CATS)[number],
     description: expense.description,
     customCategory: expense.customCategory ?? "",
+    subCategory: expense.subCategory ?? "",
     supplierName: expense.supplierName ?? "",
     invoiceNumber: expense.invoiceNumber ?? "",
     notes: expense.notes ?? "",
@@ -1367,6 +1446,10 @@ function EditExpenseDialog({
   });
   const provisionTemplates = (provisionTemplatesQ.data ?? [])
     .filter((t) => t.isProvision && t.active);
+  const subCatsQ = trpc.finance.recurringTemplates.subCategories.useQuery(
+    { organizationId, communityId }, { staleTime: 30_000 },
+  );
+  const subCats = subCatsQ.data ?? [];
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1375,8 +1458,10 @@ function EditExpenseDialog({
       await updateExpense.mutateAsync({
         organizationId,
         id: expense.id,
+        category: form.category,
         description: form.description,
         customCategory: form.customCategory.trim() || null,
+        subCategory: form.subCategory.trim() || null,
         supplierName: form.supplierName || null,
         invoiceNumber: form.invoiceNumber || null,
         notes: form.notes || null,
@@ -1397,19 +1482,32 @@ function EditExpenseDialog({
       <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg overflow-y-auto max-h-[90vh]">
         <h3 className="mb-4 text-lg font-semibold">✏️ Editar gasto</h3>
         <form onSubmit={onSubmit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Categoría</Label>
+              <CategoryCombobox
+                organizationId={organizationId}
+                communityId={communityId}
+                category={form.category}
+                customCategory={form.customCategory}
+                onChange={(category, customCategory) =>
+                  setForm((f) => ({ ...f, category, customCategory }))
+                }
+              />
+            </div>
+            <div>
+              <Label>Subcategoría <span className="text-muted-foreground text-xs">(agrupa en el recibo)</span></Label>
+              <Input list="edit-subcats" value={form.subCategory} onChange={(e) => setForm((f) => ({ ...f, subCategory: e.target.value }))} maxLength={80} placeholder="Ej: Ascensores, 2da quincena..." />
+              <datalist id="edit-subcats">{subCats.map((s) => <option key={s} value={s} />)}</datalist>
+            </div>
+          </div>
           <div>
             <Label>Descripción</Label>
             <Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Proveedor</Label>
-              <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
-            </div>
-            <div>
-              <Label>Subcategoría / nombre</Label>
-              <Input value={form.customCategory} onChange={(e) => setForm((f) => ({ ...f, customCategory: e.target.value }))} maxLength={80} />
-            </div>
+          <div>
+            <Label>Proveedor</Label>
+            <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

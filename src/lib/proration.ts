@@ -80,6 +80,37 @@ export function prorate<K extends string>(
 }
 
 /**
+ * Prorrateo UNIFORME (decisión cliente 02/jul/2026: "que todos paguen lo mismo y
+ * lo que sobre va para anticipo"). A diferencia de `prorate` (Hamilton, suma exacta
+ * repartiendo centavos), aquí cada participante recibe `round(total × peso/Σpeso)` a
+ * centavo. Así **dos unidades con la misma alícuota pagan EXACTAMENTE lo mismo**. La
+ * suma puede quedar unos céntimos por encima/debajo del total — esa diferencia es el
+ * "anticipo/sobrante" que absorbe el edificio. Maneja montos negativos (ajustes).
+ */
+export function prorateUniform<K extends string>(
+  total: Decimal.Value,
+  participants: ReadonlyArray<{ key: K; aliquot: Decimal.Value }>,
+  scale = 2,
+): Map<K, Decimal> {
+  const totalDec = new Decimal(total);
+  const result = new Map<K, Decimal>();
+  if (participants.length === 0) return result;
+  const sumAliquot = participants.reduce((acc, p) => acc.plus(p.aliquot), new Decimal(0));
+  if (sumAliquot.lte(0)) {
+    for (const p of participants) result.set(p.key, new Decimal(0));
+    return result;
+  }
+  for (const p of participants) {
+    const share = totalDec.mul(new Decimal(p.aliquot)).div(sumAliquot);
+    // ROUND_CEIL (hacia +∞): los cargos se redondean hacia arriba y los créditos
+    // hacia cero → el edificio SIEMPRE queda con un pequeño sobrante (anticipo),
+    // nunca en déficit. Todos con la misma alícuota pagan idéntico.
+    result.set(p.key, share.toDecimalPlaces(scale, Decimal.ROUND_CEIL));
+  }
+  return result;
+}
+
+/**
  * Helper: dada una distribución, valida que la suma sea exactamente el total esperado.
  * Útil en tests y como guard antes de persistir.
  */

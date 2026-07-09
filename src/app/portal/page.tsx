@@ -222,7 +222,8 @@ type InvoiceDetailData = {
   exchangeRate: string; exchangeSource: string;
   items: { invoiceNumber?: string; description: string; aliquot: string | null; amountUsd: string; amountBss: string }[];
   totalUsd: string; totalBss: string; paidUsd: string; paidBss: string;
-  prevDebtUsd: string; thisPendingUsd: string; totalToPayUsd: string; totalToPayBss: string;
+  prevDebtUsd: string; debtMonthsCount?: number; creditUsd?: string;
+  thisPendingUsd: string; totalToPayUsd: string; totalToPayBss: string;
 };
 
 function AvisoCobroContent({ data }: { data: InvoiceDetailData }) {
@@ -373,9 +374,19 @@ function AvisoCobroContent({ data }: { data: InvoiceDetailData }) {
                 )}
                 {Number(data.prevDebtUsd) > 0 && (
                   <tr className="border-b">
-                    <td className="px-3 py-1 text-amber-700">Pendiente anterior</td>
+                    <td className="px-3 py-1 text-amber-700">
+                      Pendiente anterior
+                      {data.debtMonthsCount ? ` (${data.debtMonthsCount} ${data.debtMonthsCount === 1 ? "mes" : "meses"})` : ""}
+                    </td>
                     <td className="px-3 py-1 text-right font-medium text-amber-700">+${Number(data.prevDebtUsd).toFixed(2)}</td>
                     <td className="px-3 py-1 text-right text-amber-700">—</td>
+                  </tr>
+                )}
+                {Number(data.creditUsd ?? 0) > 0 && (
+                  <tr className="border-b">
+                    <td className="px-3 py-1 text-green-700">Saldo a favor (anticipo)</td>
+                    <td className="px-3 py-1 text-right font-medium text-green-700">−${Number(data.creditUsd).toFixed(2)}</td>
+                    <td className="px-3 py-1 text-right text-green-700">—</td>
                   </tr>
                 )}
                 <tr className="bg-[#1e3a5f]/10 font-bold">
@@ -428,6 +439,10 @@ function AccessPasswordCard({ token, email, hasPassword }: { token?: string; ema
   const [pw2, setPw2] = useState("");
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // El email de LOGIN puede diferir del email de contacto si lo comparte otro residente
+  // (ej. familia con un solo Gmail para 2 apartamentos) — el backend genera un alias "+"
+  // único para cada quien. Mostrar siempre el que devuelve el servidor, no el de contacto.
+  const [loginEmail, setLoginEmail] = useState<string | null>(null);
   const setPassword = trpc.portal.setOwnPassword.useMutation();
 
   if (!email) return null; // sin email no se puede crear cuenta
@@ -439,7 +454,8 @@ function AccessPasswordCard({ token, email, hasPassword }: { token?: string; ema
     if (!ok) { setError(pw.length < 8 ? "La contraseña debe tener al menos 8 caracteres." : "Las contraseñas no coinciden."); return; }
     setError(null);
     try {
-      await setPassword.mutateAsync({ token, password: pw });
+      const result = await setPassword.mutateAsync({ token, password: pw });
+      setLoginEmail(result.loginEmail);
       setDone(true);
       setPw(""); setPw2("");
     } catch (err) {
@@ -448,9 +464,16 @@ function AccessPasswordCard({ token, email, hasPassword }: { token?: string; ema
   };
 
   if (done) {
+    const shown = loginEmail ?? email;
+    const shared = loginEmail && loginEmail !== email.toLowerCase().trim();
     return (
       <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
-        ✅ <strong>Contraseña guardada.</strong> La próxima vez entrá en el portal con <strong>"🔑 Tengo usuario y contraseña"</strong> usando tu email <strong>{email}</strong> y esta clave — sin esperar el enlace.
+        ✅ <strong>Contraseña guardada.</strong> La próxima vez entra en el portal con <strong>"🔑 Tengo usuario y contraseña"</strong> usando <strong>{shown}</strong> y esta clave — sin esperar el enlace.
+        {shared && (
+          <p className="mt-2 text-amber-800">
+            ⚠️ Como tu correo <strong>{email}</strong> lo comparte otro residente, tu usuario de acceso lleva un "+" para que cada quien tenga su propio ingreso. Usa exactamente <strong>{shown}</strong> (no tu correo tal cual) la próxima vez.
+          </p>
+        )}
       </div>
     );
   }
@@ -462,8 +485,8 @@ function AccessPasswordCard({ token, email, hasPassword }: { token?: string; ema
           <p className="font-semibold text-[#1e3a5f]">🔒 {hasPassword ? "Cambiar mi contraseña" : "Crear una contraseña"}</p>
           <p className="text-xs text-muted-foreground mt-0.5">
             {hasPassword
-              ? "Ya podés entrar con tu email y contraseña. Acá la podés cambiar."
-              : "Creá una clave para entrar con tu email la próxima vez, sin esperar el enlace por correo."}
+              ? "Ya puedes entrar con tu email y contraseña. Acá la puedes cambiar."
+              : "Crea una clave para entrar con tu email la próxima vez, sin esperar el enlace por correo."}
           </p>
         </div>
         {hasPassword && (
@@ -1659,7 +1682,7 @@ function OnboardingModal({
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ok) { setError("Completá todos los campos obligatorios correctamente."); return; }
+    if (!ok) { setError("Completa todos los campos obligatorios correctamente."); return; }
     setError(null);
     try {
       await updateProfile.mutateAsync({
@@ -1683,7 +1706,7 @@ function OnboardingModal({
           <div className="text-3xl mb-2">👋</div>
           <h2 className="text-2xl font-bold text-[#1e3a5f]">¡Bienvenido/a al portal!</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Antes de continuar, <strong>revisá y confirmá tus datos</strong>. Corregí lo que haga falta. Solo te lo pediremos esta vez.
+            Antes de continuar, <strong>revisa y confirma tus datos</strong>. Corregí lo que haga falta. Solo te lo pediremos esta vez.
           </p>
         </div>
 
@@ -1753,7 +1776,7 @@ function OnboardingModal({
           </button>
 
           <p className="text-[10px] text-center text-muted-foreground">
-            Al continuar aceptás que la Junta de Condominio use estos datos para enviarte recibos, avisos y comunicaciones oficiales.
+            Al continuar aceptas que la Junta de Condominio use estos datos para enviarte recibos, avisos y comunicaciones oficiales.
           </p>
         </form>
       </div>

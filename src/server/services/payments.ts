@@ -13,6 +13,8 @@ export type RecordPaymentInput = {
   amount: Decimal.Value;
   currencyPrimary: Currency;
   exchangeSource?: ExchangeSource;
+  /** Si se provee, se usa esta tasa exacta en vez de la tasa automática del día (getCurrentRate). */
+  exchangeRateOverride?: Decimal.Value;
   method: PaymentMethod;
   reference?: string;
   paidAt: Date;
@@ -59,8 +61,9 @@ export async function recordPayment(input: RecordPaymentInput) {
     }
   }
 
-  const source = input.exchangeSource ?? "BCV";
-  const rate = await getCurrentRate(source, input.paidAt);
+  const rate = input.exchangeRateOverride
+    ? { date: input.paidAt, source: "MANUAL" as ExchangeSource, vesPerUsd: new Decimal(input.exchangeRateOverride) }
+    : await getCurrentRate(input.exchangeSource ?? "BCV", input.paidAt);
   const { amountBss, amountUsd } = buildBimonetary(
     input.amount,
     input.currencyPrimary,

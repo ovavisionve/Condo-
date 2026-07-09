@@ -271,7 +271,7 @@ function EditCommunityForm({
               />
               <p className="text-xs text-muted-foreground">
                 Aparecerá arriba a la izquierda en todos los recibos PDF emitidos.
-                Subí tu logo a un host público (Imgur, Cloudinary, Supabase Storage) y pegá el link aquí.
+                Subí tu logo a un host público (Imgur, Cloudinary, Supabase Storage) y pega el link aquí.
               </p>
             </div>
             {logoUrl.trim() && (

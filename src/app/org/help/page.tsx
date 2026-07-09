@@ -249,35 +249,35 @@ const GUIDES: Guide[] = [
     id: "provisiones",
     icon: "📊",
     title: "Provisiones y Ajuste mes anterior",
-    summary: "Modelo contable estándar para gastos variables (Hidrocapital, Luz, etc.): cobrás una estimación fija mensual y se ajusta el mes siguiente con la diferencia real.",
+    summary: "Modelo contable estándar para gastos variables (Hidrocapital, Luz, etc.): cobras una estimación fija mensual y se ajusta el mes siguiente con la diferencia real.",
     steps: [
       {
         step: 1,
         title: "Entender el concepto",
         description: "La provisión es un monto FIJO que se cobra cada mes como estimado del gasto (ej. Hidrocapital Bs 20.000). El AJUSTE PROVISIÓN MES ANTERIOR es la diferencia entre lo que se gastó realmente y lo que se provisionó.",
-        tip: "Ejemplo: provisión Bs 20k, real Bs 25k → mes siguiente cobrás 20k de provisión + 5k de ajuste. Si real Bs 18k → cobrás 20k − 2k = crédito a favor del residente.",
+        tip: "Ejemplo: provisión Bs 20k, real Bs 25k → mes siguiente cobras 20k de provisión + 5k de ajuste. Si real Bs 18k → cobras 20k − 2k = crédito a favor del residente.",
       },
       {
         step: 2,
         title: "Crear la plantilla recurrente",
-        description: "Andá a Finanzas → Gastos → tab Plantillas Recurrentes → '+ Nueva plantilla'. Llená nombre, monto fijo en Bs o USD, alcance (general/torre) y MARCÁ el checkbox '📊 Tratar como provisión'.",
+        description: "Ve a Finanzas → Gastos → tab Plantillas Recurrentes → '+ Nueva plantilla'. Llená nombre, monto fijo en Bs o USD, alcance (general/torre) y Marca el checkbox '📊 Tratar como provisión'.",
         tip: "Las plantillas con isProvision activan el modelo de provisión + ajuste. Sin ese check, simplemente cobra el monto fijo cada mes sin ajustes.",
       },
       {
         step: 3,
         title: "Aplicar plantillas al mes",
-        description: "Al inicio de cada mes, apretá '⚡ Aplicar plantillas recurrentes'. El sistema crea automáticamente la línea 'Provisión X' del mes + calcula el AJUSTE del mes anterior basado en gastos reales registrados.",
+        description: "Al inicio de cada mes, aprieta '⚡ Aplicar plantillas recurrentes'. El sistema crea automáticamente la línea 'Provisión X' del mes + calcula el AJUSTE del mes anterior basado en gastos reales registrados.",
       },
       {
         step: 4,
         title: "Registrar gastos reales vinculados",
-        description: "Durante el mes, cuando llegue la factura real (ej. Hidrocapital Bs 25.000), registrá el gasto. En el formulario, en la caja ÁMBAR '📊 ¿Es el gasto real de alguna provisión?', SELECCIONÁ la plantilla correspondiente. Este gasto NO se factura al residente — solo sirve para calcular el ajuste el mes siguiente.",
-        tip: "Si no vinculás el gasto real a la plantilla, el sistema no podrá calcular el ajuste y el residente seguirá pagando solo la provisión sin reflejar el real.",
+        description: "Durante el mes, cuando llegue la factura real (ej. Hidrocapital Bs 25.000), registra el gasto. En el formulario, en la caja ÁMBAR '📊 ¿Es el gasto real de alguna provisión?', Selecciona la plantilla correspondiente. Este gasto NO se factura al residente — solo sirve para calcular el ajuste el mes siguiente.",
+        tip: "Si no vinculas el gasto real a la plantilla, el sistema no podrá calcular el ajuste y el residente seguirá pagando solo la provisión sin reflejar el real.",
       },
       {
         step: 5,
         title: "Verificar en el preview",
-        description: "Apretá el botón flotante 📄 (esquina inferior izquierda) y seleccioná el mes. Vas a ver 2 líneas separadas por cada plantilla isProvision: 'Provisión X' (mes actual) y 'Ajuste Provisión X — mes anterior' (con la diferencia).",
+        description: "Aprieta el botón flotante 📄 (esquina inferior izquierda) y selecciona el mes. Vas a ver 2 líneas separadas por cada plantilla isProvision: 'Provisión X' (mes actual) y 'Ajuste Provisión X — mes anterior' (con la diferencia).",
       },
     ],
   },
@@ -295,14 +295,14 @@ const GUIDES: Guide[] = [
       {
         step: 2,
         title: "Funcionamiento automático",
-        description: "Cuando emitís el recibo del mes, el sistema suma todos los gastos comunes prorrateados (sin contar Cuota mensual ni descuentos) y agrega una línea 'Fondo de Reserva (10%)' al final de la sección GASTOS COMUNES.",
+        description: "Cuando emites el recibo del mes, el sistema suma todos los gastos comunes prorrateados (sin contar Cuota mensual ni descuentos) y agrega una línea 'Fondo de Reserva (10%)' al final de la sección GASTOS COMUNES.",
         tip: "El recibo muestra: SUBTOTAL GASTOS COMUNES → Fondo de Reserva (10%) → TOTAL GASTOS COMUNES, igual que el Aviso de Cobro tradicional venezolano.",
       },
       {
         step: 3,
         title: "Anti-doble-cobro",
-        description: "Si ya tenés una plantilla 'Fondo de Reserva' cargada manualmente como gasto, el sistema detecta que ya existe un Expense con category=RESERVE_FUND y NO duplica. Respeta tu monto manual.",
-        tip: "Recomendación: si vas a usar el cálculo automático, desactivá o eliminá la plantilla manual de Fondo de Reserva.",
+        description: "Si ya tienes una plantilla 'Fondo de Reserva' cargada manualmente como gasto, el sistema detecta que ya existe un Expense con category=RESERVE_FUND y NO duplica. Respeta tu monto manual.",
+        tip: "Recomendación: si vas a usar el cálculo automático, desactivá o elimina la plantilla manual de Fondo de Reserva.",
       },
       {
         step: 4,
@@ -320,18 +320,18 @@ const GUIDES: Guide[] = [
       {
         step: 1,
         title: "Cuándo cerrar el mes",
-        description: "Una vez emitidos todos los recibos del mes y registrados todos los gastos reales vinculados a provisiones, andá a Finanzas → General → card '🔒 Cierre de mes' y apretá '🔒 Cerrar [Mes] [Año]'.",
+        description: "Una vez emitidos todos los recibos del mes y registrados todos los gastos reales vinculados a provisiones, ve a Finanzas → General → card '🔒 Cierre de mes' y aprieta '🔒 Cerrar [Mes] [Año]'.",
       },
       {
         step: 2,
         title: "Qué se bloquea al cerrar",
-        description: "No se podrán crear ni editar gastos ni ingresos en ese mes. Si intentás, el sistema lanza error 'El mes X/Y está cerrado. Reabrelo para registrar...'.",
+        description: "No se podrán crear ni editar gastos ni ingresos en ese mes. Si intentas, el sistema lanza error 'El mes X/Y está cerrado. Reabrelo para registrar...'.",
         tip: "Excepción: los gastos vinculados a plantilla de provisión SÍ se pueden registrar aunque el mes esté cerrado, porque no se facturan al residente — solo sirven para el ajuste del mes siguiente.",
       },
       {
         step: 3,
         title: "Reabrir si es necesario",
-        description: "Si necesitás corregir algo, andá al mismo card y apretá '🔓 Reabrir mes'. El sistema pide confirmación y deja un audit log de la reapertura.",
+        description: "Si necesitas corregir algo, ve al mismo card y aprieta '🔓 Reabrir mes'. El sistema pide confirmación y deja un audit log de la reapertura.",
       },
       {
         step: 4,
@@ -349,12 +349,12 @@ const GUIDES: Guide[] = [
       {
         step: 1,
         title: "Acceder al preview",
-        description: "El botón verde con ícono 📄 aparece en cualquier pantalla del panel admin, en la esquina inferior izquierda. Apretá para abrir.",
+        description: "El botón verde con ícono 📄 aparece en cualquier pantalla del panel admin, en la esquina inferior izquierda. Aprieta para abrir.",
       },
       {
         step: 2,
         title: "Seleccionar mes y unidad",
-        description: "En la sidebar elegí el mes y año + buscá la unidad. El PDF se carga automáticamente. Podés cambiar de unidad y ver cómo varía el recibo según la alícuota.",
+        description: "En la sidebar elige el mes y año + busca la unidad. El PDF se carga automáticamente. Puedes cambiar de unidad y ver cómo varía el recibo según la alícuota.",
       },
       {
         step: 3,
@@ -364,13 +364,13 @@ const GUIDES: Guide[] = [
       {
         step: 4,
         title: "Actualizaciones en vivo",
-        description: "El preview se actualiza automáticamente cuando: creás/editás/eliminás un gasto, una plantilla, un ingreso, o cuando cerrás/reabrís el mes.",
-        tip: "Si no se ve un cambio reciente, recargá con Ctrl+Shift+R (recarga sin caché).",
+        description: "El preview se actualiza automáticamente cuando: creas/editas/eliminas un gasto, una plantilla, un ingreso, o cuando cierras/reabres el mes.",
+        tip: "Si no se ve un cambio reciente, recarga con Ctrl+Shift+R (recarga sin caché).",
       },
       {
         step: 5,
         title: "Proyección automática",
-        description: "El preview proyecta automáticamente las plantillas activas no aplicadas todavía + el AJUSTE PROVISION del mes anterior. Es decir, podés ver cómo se verá el recibo sin necesidad de apretar 'Aplicar plantillas' primero.",
+        description: "El preview proyecta automáticamente las plantillas activas no aplicadas todavía + el AJUSTE PROVISION del mes anterior. Es decir, puedes ver cómo se verá el recibo sin necesidad de apretar 'Aplicar plantillas' primero.",
       },
     ],
   },
@@ -384,12 +384,12 @@ const GUIDES: Guide[] = [
         step: 1,
         title: "Descargar el estado de cuenta del banco",
         description: "Desde la web/app de tu banco (Banesco, Mercantil, Provincial, etc.), exportá el extracto del período en formato CSV, Excel o OFX.",
-        tip: "Si querés probar el flujo sin tener un extracto real, usá el link '🧪 Descargar CSV de prueba (mock Banesco)' que aparece en la página de Conciliación.",
+        tip: "Si quieres probar el flujo sin tener un extracto real, usa el link '🧪 Descargar CSV de prueba (mock Banesco)' que aparece en la página de Conciliación.",
       },
       {
         step: 2,
         title: "Subir el archivo",
-        description: "Andá a Finanzas → Conciliación → 'Seleccionar archivo' o arrastrá el archivo. El sistema detecta automáticamente: formato, separador (coma/punto y coma/tab), fila de cabecera (los bancos VE meten título arriba) y celdas vacías.",
+        description: "Ve a Finanzas → Conciliación → 'Seleccionar archivo' o arrastrá el archivo. El sistema detecta automáticamente: formato, separador (coma/punto y coma/tab), fila de cabecera (los bancos VE meten título arriba) y celdas vacías.",
       },
       {
         step: 3,
@@ -399,12 +399,12 @@ const GUIDES: Guide[] = [
       {
         step: 4,
         title: "Procesar pendientes",
-        description: "Para créditos pendientes (sin pago en el sistema), usá: 🏭 Registrar como gasto (comisiones), 📦 Aparcar como pago no identificado (para asignarlo después a una unidad), o ignorar.",
+        description: "Para créditos pendientes (sin pago en el sistema), usa: 🏭 Registrar como gasto (comisiones), 📦 Aparcar como pago no identificado (para asignarlo después a una unidad), o ignorar.",
       },
       {
         step: 5,
         title: "Filtros y tabs",
-        description: "Usá los tabs 'Todos / Conciliados / Sin conciliar / Débitos+Comis' para filtrar. KPIs arriba: total créditos, comisiones, neto disponible, % conciliado.",
+        description: "Usa los tabs 'Todos / Conciliados / Sin conciliar / Débitos+Comis' para filtrar. KPIs arriba: total créditos, comisiones, neto disponible, % conciliado.",
       },
     ],
   },
@@ -412,7 +412,7 @@ const GUIDES: Guide[] = [
     id: "tasas-bcv",
     icon: "💱",
     title: "Tasa BCV automática + histórico",
-    summary: "El sistema mantiene la tasa BCV actualizada y usa la tasa histórica correcta cuando registrás pagos con fecha pasada.",
+    summary: "El sistema mantiene la tasa BCV actualizada y usa la tasa histórica correcta cuando registras pagos con fecha pasada.",
     steps: [
       {
         step: 1,
@@ -422,12 +422,12 @@ const GUIDES: Guide[] = [
       {
         step: 2,
         title: "Refresh manual",
-        description: "Si necesitás actualizar al instante: Finanzas → General → card 'Tasa BCV' → botón '🔄 Actualizar desde BCV'. El sistema consulta bcv.org.ve, dolarapi.com y pydolarve en orden y guarda la primera respuesta válida.",
+        description: "Si necesitas actualizar al instante: Finanzas → General → card 'Tasa BCV' → botón '🔄 Actualizar desde BCV'. El sistema consulta bcv.org.ve, dolarapi.com y pydolarve en orden y guarda la primera respuesta válida.",
       },
       {
         step: 3,
         title: "Tasa manual de respaldo",
-        description: "Si todas las fuentes BCV están caídas, podés cargar la tasa manualmente en la misma card. Marca la fuente como MANUAL en lugar de BCV.",
+        description: "Si todas las fuentes BCV están caídas, puedes cargar la tasa manualmente en la misma card. Marca la fuente como MANUAL en lugar de BCV.",
       },
       {
         step: 4,
@@ -446,22 +446,22 @@ const GUIDES: Guide[] = [
       {
         step: 1,
         title: "Crear nueva orden",
-        description: "Andá a Mantenimiento → '+ Nueva orden de trabajo'. Llená título, descripción, categoría, prioridad.",
+        description: "Ve a Mantenimiento → '+ Nueva orden de trabajo'. Llená título, descripción, categoría, prioridad.",
       },
       {
         step: 2,
         title: "Definir alcance",
-        description: "En el selector 'Alcance' elegí: 🏢 Todo el condominio (default), 🏗️ Solo Torre A, o 🏗️ Solo Torre B. Esto sirve para mantenimientos específicos por torre (ej. 'Limpieza de tanques Torre A').",
+        description: "En el selector 'Alcance' elige: 🏢 Todo el condominio (default), 🏗️ Solo Torre A, o 🏗️ Solo Torre B. Esto sirve para mantenimientos específicos por torre (ej. 'Limpieza de tanques Torre A').",
       },
       {
         step: 3,
         title: "Unidad específica (opcional)",
-        description: "Si la orden afecta a UNA sola unidad (ej. 'Filtración en apto 84A'), seleccioná la unidad en 'Unidad específica'. Eso deshabilita el selector de torre porque son mutuamente excluyentes.",
+        description: "Si la orden afecta a UNA sola unidad (ej. 'Filtración en apto 84A'), selecciona la unidad en 'Unidad específica'. Eso deshabilita el selector de torre porque son mutuamente excluyentes.",
       },
       {
         step: 4,
         title: "Asignar contratista y seguimiento",
-        description: "Una vez creada, asigná un contratista, cambiá el status (OPEN → ASSIGNED → IN_PROGRESS → COMPLETED), agregá notas durante el proceso, y registrá pagos al contratista.",
+        description: "Una vez creada, asigna un contratista, cambiá el status (OPEN → ASSIGNED → IN_PROGRESS → COMPLETED), agrega notas durante el proceso, y registra pagos al contratista.",
       },
     ],
   },
@@ -553,11 +553,11 @@ const FAQS: FAQ[] = [
   // ── FAQs nuevas (mayo 2026) ────────────────────────────────────
   {
     q: "¿Cómo funciona el Modelo A de provisiones (provisión + ajuste)?",
-    a: "Cobrás un monto FIJO estimado cada mes (provisión, ej. Bs 20.000 de Hidrocapital). Durante el mes registrás los gastos REALES vinculados a la plantilla. El mes siguiente, al apretar 'Aplicar plantillas', el sistema calcula AUTOMÁTICAMENTE el AJUSTE = real − provisión y lo carga al recibo. Si gastaste más, se cobra la diferencia. Si gastaste menos, queda como crédito (negativo) al residente. Es el modelo estándar venezolano según LPH.",
+    a: "Cobras un monto FIJO estimado cada mes (provisión, ej. Bs 20.000 de Hidrocapital). Durante el mes registras los gastos REALES vinculados a la plantilla. El mes siguiente, al apretar 'Aplicar plantillas', el sistema calcula AUTOMÁTICAMENTE el AJUSTE = real − provisión y lo carga al recibo. Si gastaste más, se cobra la diferencia. Si gastaste menos, queda como crédito (negativo) al residente. Es el modelo estándar venezolano según LPH.",
   },
   {
     q: "Estoy registrando un gasto real de Hidrocapital. ¿Por qué tengo que vincularlo a la plantilla?",
-    a: "Porque el sistema necesita saber que ese gasto NO se cobra al residente directamente (ya pagaron la provisión), sino que sirve para calcular el AJUSTE del mes siguiente. Si no vinculás, el sistema no sabe que es 'gasto contra provisión' y nunca calcula el ajuste. La caja ámbar '📊 ¿Es el gasto real de alguna provisión?' del formulario es exactamente para esto.",
+    a: "Porque el sistema necesita saber que ese gasto NO se cobra al residente directamente (ya pagaron la provisión), sino que sirve para calcular el AJUSTE del mes siguiente. Si no vinculas, el sistema no sabe que es 'gasto contra provisión' y nunca calcula el ajuste. La caja ámbar '📊 ¿Es el gasto real de alguna provisión?' del formulario es exactamente para esto.",
   },
   {
     q: "Quité el check 'Tratar como provisión' de una plantilla. ¿Qué pasa?",
@@ -565,19 +565,19 @@ const FAQS: FAQ[] = [
   },
   {
     q: "¿Por qué aparece 'Fondo de Reserva (10%)' automáticamente en el recibo?",
-    a: "Es el estándar venezolano. El sistema calcula el 10% del subtotal de gastos comunes prorrateados y lo agrega como línea separada en el recibo. Si querés cambiar el porcentaje, eso se hace por código (Community.reserveFundPct). Si ya tenés un Expense manual con category=RESERVE_FUND para el período, el sistema NO duplica — respeta tu monto manual.",
+    a: "Es el estándar venezolano. El sistema calcula el 10% del subtotal de gastos comunes prorrateados y lo agrega como línea separada en el recibo. Si quieres cambiar el porcentaje, eso se hace por código (Community.reserveFundPct). Si ya tienes un Expense manual con category=RESERVE_FUND para el período, el sistema NO duplica — respeta tu monto manual.",
   },
   {
     q: "Cerré el mes y ahora no puedo agregar gastos. ¿Cómo destrabo?",
-    a: "Andá a Finanzas → General → card '🔒 Cierre de mes' → seleccioná el mes cerrado → apretá '🔓 Reabrir mes'. El sistema te pide confirmación y deja un audit log. Después podés modificar gastos/ingresos libremente.",
+    a: "Ve a Finanzas → General → card '🔒 Cierre de mes' → selecciona el mes cerrado → aprieta '🔓 Reabrir mes'. El sistema te pide confirmación y deja un audit log. Después puedes modificar gastos/ingresos libremente.",
   },
   {
     q: "El preview del recibo no muestra el gasto que acabo de cargar. ¿Bug?",
-    a: "Probablemente el cache del preview no se invalidó. Recargá con Ctrl+Shift+R (recarga sin caché). El preview se invalida automáticamente cuando creás/editás gastos, ingresos, plantillas y cuando cerrás/reabrís el mes. Si después de recargar sigue sin verse, verificá que el gasto tenga el período correcto (año/mes).",
+    a: "Probablemente el cache del preview no se invalidó. Recarga con Ctrl+Shift+R (recarga sin caché). El preview se invalida automáticamente cuando creas/editas gastos, ingresos, plantillas y cuando cierras/reabres el mes. Si después de recargar sigue sin verse, verifica que el gasto tenga el período correcto (año/mes).",
   },
   {
     q: "¿Cómo registro un pago que el residente hizo hace 2 meses?",
-    a: "En el formulario de Notificar/Registrar pago, simplemente seleccioná la fecha pasada en 'Fecha del pago'. El sistema usa AUTOMÁTICAMENTE la tasa BCV histórica de ese día (tenemos 85+ tasas cargadas desde enero 2026), no la de hoy. Eso garantiza que la conversión Bs↔USD sea exacta y no haya distorsión de diferencial cambiario.",
+    a: "En el formulario de Notificar/Registrar pago, simplemente selecciona la fecha pasada en 'Fecha del pago'. El sistema usa AUTOMÁTICAMENTE la tasa BCV histórica de ese día (tenemos 85+ tasas cargadas desde enero 2026), no la de hoy. Eso garantiza que la conversión Bs↔USD sea exacta y no haya distorsión de diferencial cambiario.",
   },
   {
     q: "Reinaldo (admin Arrayanes) registró provisiones en marzo pero no aparecen en abril.",
@@ -585,15 +585,15 @@ const FAQS: FAQ[] = [
   },
   {
     q: "¿Por qué solo aparece 'Ajuste Provisión X' y no 'Provisión X' en el preview?",
-    a: "Era un bug ya corregido (mayo 2026). El sistema colapsaba las 2 líneas en una sola por usar el mismo group key. Si todavía ves esto: recargá con Ctrl+Shift+R y volvé a abrir el preview. Ahora cada plantilla isProvision muestra 2 líneas separadas: 'Provisión X' (mes actual) y 'Ajuste Provisión X — mes anterior'.",
+    a: "Era un bug ya corregido (mayo 2026). El sistema colapsaba las 2 líneas en una sola por usar el mismo group key. Si todavía ves esto: recarga con Ctrl+Shift+R y vuelve a abrir el preview. Ahora cada plantilla isProvision muestra 2 líneas separadas: 'Provisión X' (mes actual) y 'Ajuste Provisión X — mes anterior'.",
   },
   {
     q: "¿Cómo asigno una orden de trabajo solo a la Torre A?",
-    a: "En Mantenimiento → '+ Nueva orden' → selector 'Alcance' elegí '🏗️ Solo Torre A'. La unidad específica queda deshabilitada (es para órdenes que afectan a UNA unidad). En el listado y detalle aparece el badge 🏗️ Torre A para identificarla.",
+    a: "En Mantenimiento → '+ Nueva orden' → selector 'Alcance' elige '🏗️ Solo Torre A'. La unidad específica queda deshabilitada (es para órdenes que afectan a UNA unidad). En el listado y detalle aparece el badge 🏗️ Torre A para identificarla.",
   },
   {
     q: "El residente Olga solicitó un visitante desde su portal. ¿Dónde lo veo?",
-    a: "Andá a Seguridad → tab Visitantes. Los visitantes con status PENDING aparecen ARRIBA con fondo ámbar destacado. Cuando el visitante llegue al edificio, el vigilante lo identifica por nombre, apreta '✓ Ingreso' y queda con status CHECKED_IN. El sistema registra el timestamp exacto.",
+    a: "Ve a Seguridad → tab Visitantes. Los visitantes con status PENDING aparecen ARRIBA con fondo ámbar destacado. Cuando el visitante llegue al edificio, el vigilante lo identifica por nombre, apreta '✓ Ingreso' y queda con status CHECKED_IN. El sistema registra el timestamp exacto.",
   },
   {
     q: "¿Cómo configuro la conciliación bancaria si mi banco tiene un formato raro?",

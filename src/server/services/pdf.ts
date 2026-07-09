@@ -352,7 +352,10 @@ export type InvoicePdfData = {
   // Factura
   invoiceNumber: string;
   periodYear: number;
-  periodMonth: number;    // 1-12
+  periodMonth: number;    // 1-12 — mes COBRADO (contenido del recibo)
+  /** Mes/año de EMISIÓN (el ciclo del recibo). Va en el título "RECIBO DE CONDOMINIO — JULIO 2026". */
+  issueMonth?: number;    // 1-12
+  issueYear?: number;
   issuedAt: Date;
   dueDate: Date;
   status: string;
@@ -414,6 +417,15 @@ export type InvoicePdfData = {
    */
   creditUsd?: string;
   creditBss?: string;
+  /**
+   * Deuda ACUMULADA de meses anteriores (saldo pendiente de OTRAS facturas de la unidad,
+   * ej. saldo Sisconin + recibos previos impagos). Se suma al TOTAL A PAGAR.
+   */
+  debtUsd?: string;
+  debtBss?: string;
+  /** Cantidad de meses distintos con saldo pendiente (deuda acumulada), para mostrar
+   * "X meses" junto al monto — pedido cliente: "que sepamos cuántos meses debe cada quien". */
+  debtMonthsCount?: number;
   // Pagos aplicados a esta factura
   paymentsApplied?: {
     paidAt: Date;
@@ -497,7 +509,9 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
 
       // ── Título del documento ───────────────────────────────────
       React.createElement(View, { style: inv.docTitleBlock },
-        React.createElement(Text, { style: inv.docTitle }, "RECIBO DE CONDOMINIO"),
+        React.createElement(Text, { style: inv.docTitle },
+          "RECIBO DE CONDOMINIO" +
+          (data.issueMonth ? ` — ${(MESES_ES[data.issueMonth - 1] ?? "").toUpperCase()} ${data.issueYear ?? ""}` : "")),
         React.createElement(Text, { style: inv.docSubtitle },
           "Documento con fuerza ejecutiva — Art. 14 de la Ley de Propiedad Horizontal"),
         React.createElement(View, { style: inv.docMeta },
@@ -658,13 +672,15 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
       (() => {
         const creditU = Number(data.creditUsd ?? 0);
         const creditB = Number(data.creditBss ?? 0);
+        const debtU   = Number(data.debtUsd ?? 0);
+        const debtB   = Number(data.debtBss ?? 0);
         const paidU   = Number(data.paidUsd);
         const paidB   = Number(data.paidBss);
-        // TOTAL A PAGAR = TOTAL DEL MES − Saldo a favor − Abonos
+        // TOTAL A PAGAR = TOTAL DEL MES + Deuda acumulada − Saldo a favor − Abonos
         const totalMesU = Number(data.totalUsd);
         const totalMesB = Number(data.totalBss);
-        const aPagarU = Math.max(0, totalMesU - creditU - paidU);
-        const aPagarB = Math.max(0, totalMesB - creditB - paidB);
+        const aPagarU = Math.max(0, totalMesU + debtU - creditU - paidU);
+        const aPagarB = Math.max(0, totalMesB + debtB - creditB - paidB);
         const isPaidCalc = aPagarU < 0.005;
 
         return React.createElement(View, { style: inv.totalsBox },
@@ -673,6 +689,14 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
             React.createElement(Text, { style: inv.totalLineLabel }, "TOTAL DEL MES"),
             React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(totalMesU)),
             React.createElement(Text, { style: inv.totalLineBss }, fmtBss(totalMesB)),
+          ),
+          // DEUDA ACUMULADA de meses anteriores (saldo pendiente de otras facturas),
+          // con la cantidad de MESES distintos que adeuda (pedido cliente 05-jul-2026).
+          debtU > 0.005 && React.createElement(View, { style: inv.totalLineRow },
+            React.createElement(Text, { style: inv.totalLineLabel },
+              `(+) DEUDA ACUMULADA (meses anteriores)${data.debtMonthsCount ? ` — ${data.debtMonthsCount} ${data.debtMonthsCount === 1 ? "mes" : "meses"}` : ""}`),
+            React.createElement(Text, { style: inv.totalLineUsd }, fmtUsd(debtU)),
+            React.createElement(Text, { style: inv.totalLineBss }, fmtBss(debtB)),
           ),
           // SALDO A FAVOR (anticipo del residente que se aplica)
           creditU > 0.005 && React.createElement(View, { style: inv.deductionRow },
@@ -729,7 +753,7 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
         ),
         React.createElement(View, { style: inv.payInfoBody },
           React.createElement(Text, { style: inv.payInfoText },
-            "Métodos aceptados: Transferencia bancaria  ·  Pago Móvil  ·  Zelle  ·  Efectivo USD  ·  Efectivo Bs"),
+            "Método de pago: Transferencia bancaria"),
           ...(data.bankAccounts && data.bankAccounts.length > 0
             ? data.bankAccounts.map((acc, i) =>
                 React.createElement(Text, { key: i, style: inv.payInfoText },
@@ -744,6 +768,9 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
                 "Contacte a la Junta de Condominio para obtener los datos bancarios.")]),
           React.createElement(Text, { style: inv.payInfoRef },
             `Incluir el N° de recibo ${data.invoiceNumber} en el concepto de la transferencia.`),
+          React.createElement(Text, { style: inv.payInfoText },
+            "El saldo se mantiene fijo en USD. Si paga después de la fecha de emisión y la tasa BCV cambió, " +
+            "el monto en bolívares se recalcula a la tasa BCV del día en que realiza el pago (no la de emisión)."),
         ),
       ),
 
@@ -755,7 +782,7 @@ function InvoiceDoc({ data }: { data: InvoicePdfData }) {
           React.createElement(Text, { style: inv.footerLeft },
             `Emitido el ${genStr}   ${data.communityName}`),
           React.createElement(Text, { style: inv.footerRight },
-            "Los montos en Bs.S se calculan con la tasa BCV del período de emisión"),
+            "Bs.S referencial a la tasa BCV del cierre del período · el pago se registra a la tasa del día en que se paga"),
         ),
         React.createElement(Text, { style: inv.footerLegal },
           "Titulo Ejecutivo — Articulo 14, Ley de Propiedad Horizontal de la Republica Bolivariana de Venezuela"),
