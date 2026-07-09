@@ -279,6 +279,20 @@ console.log(`[email:dry-run] → ${redacted}`);
 
 **Estado:** `next-auth@5.0.0-beta.x` y `@trpc/*@11.0.0-rc.x`. Migrar a stable cuando estén disponibles. Por ahora, se monitorean changelogs.
 
+### 4.4 🟡 Recuperación de contraseña falla en silencio — SMTP global caído
+
+**Encontrado:** 04-jul-2026, al enviar un correo de verificación de prueba.
+
+**Problema:** el SMTP global de la plataforma (env vars de Vercel, cuenta Hotmail) tiene la autenticación básica deshabilitada por Microsoft (`"SmtpClientAuthentication is disabled for the Mailbox"`). `auth-security.ts` (`requestPasswordReset`) llama `sendEmail()` **sin** pasar el SMTP de la organización (usa el fallback global roto) y **no revisa `result.success`** — el endpoint devuelve `{ok: true}` igual aunque el correo nunca haya salido. Un residente/admin que pida "olvidé mi contraseña" ve el mensaje de "revisa tu correo" pero el correo nunca llega, sin ningún error visible para nadie.
+
+**Otros sitios con el mismo patrón** (dependen del SMTP global en vez del de organización): `notifications.ts`, varios puntos de `comercial.ts`.
+
+**Mitigación pendiente (elegir una):**
+1. Generar una contraseña de aplicación nueva para la cuenta Hotmail del SMTP global.
+2. Migrar `requestPasswordReset` y los demás sitios afectados a resolver el SMTP de la organización (como ya hacen `sendPortalCredentials`/`sendEmailAllAtOnce`), con el global solo como último fallback.
+
+**Estado:** no corregido — requiere decisión del cliente sobre cuál mitigación aplicar.
+
 ---
 
 ## 5. Principios universales de seguridad

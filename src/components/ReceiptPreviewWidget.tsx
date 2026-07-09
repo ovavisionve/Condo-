@@ -61,7 +61,10 @@ export function ReceiptPreviewWidget() {
   );
 
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [previewMeta, setPreviewMeta] = useState<{ unitCode: string; totalUsd: string; totalBss: string } | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<{
+    unitCode: string; totalUsd: string; totalBss: string;
+    alreadyIssued: { issuedAt: string; invoiceNumber: string } | null;
+  } | null>(null);
 
   useEffect(() => {
     if (!previewQ.data) return;
@@ -71,6 +74,7 @@ export function ReceiptPreviewWidget() {
       unitCode: previewQ.data.unitCode,
       totalUsd: previewQ.data.totalUsd,
       totalBss: previewQ.data.totalBss,
+      alreadyIssued: previewQ.data.alreadyIssued ?? null,
     });
   }, [previewQ.data]);
 
@@ -111,7 +115,7 @@ export function ReceiptPreviewWidget() {
           <button onClick={() => setOpen(false)} aria-label="Cerrar" className="opacity-80 hover:opacity-100">✕</button>
         </div>
         <div className="p-6 text-center text-sm text-muted-foreground">
-          Entrá a una comunidad (Finanzas → cualquier sub-página) para ver el preview del recibo.
+          Entra a una comunidad (Finanzas → cualquier sub-página) para ver el preview del recibo.
         </div>
       </div>
     );
@@ -248,7 +252,7 @@ export function ReceiptPreviewWidget() {
           <div className="p-6 text-sm text-destructive">
             <strong>Error:</strong> {previewQ.error.message}
             <p className="mt-2 text-xs text-muted-foreground">
-              Verificá que haya gastos cargados para {MONTHS[month - 1]} {year} y que la tasa BCV esté disponible.
+              Verifica que haya gastos cargados para {MONTHS[month - 1]} {year} y que la tasa BCV esté disponible.
             </p>
           </div>
         )}
@@ -281,13 +285,21 @@ export function ReceiptPreviewWidget() {
         )}
         {!pdfUrl && !previewQ.isLoading && !previewQ.error && (
           <div className="p-6 text-center text-sm text-muted-foreground">
-            Seleccioná una unidad de la lista para ver su recibo.
+            Selecciona una unidad de la lista para ver su recibo.
           </div>
         )}
-        {pdfUrl && previewMeta && Number(previewMeta.totalUsd) === 0 && (
+        {pdfUrl && previewMeta && Number(previewMeta.totalUsd) === 0 && previewMeta.alreadyIssued && (
+          <div className="absolute top-3 right-3 bg-emerald-50 border border-emerald-300 rounded-md px-3 py-1.5 text-xs text-emerald-800 max-w-[280px]">
+            ✅ Este período ya fue emitido el{" "}
+            {new Date(previewMeta.alreadyIssued.issuedAt).toLocaleDateString("es-VE")}
+            {" "}(recibo <strong>{previewMeta.alreadyIssued.invoiceNumber}</strong>). No hay
+            gastos nuevos que facturar — no se perdió ningún dato.
+          </div>
+        )}
+        {pdfUrl && previewMeta && Number(previewMeta.totalUsd) === 0 && !previewMeta.alreadyIssued && (
           <div className="absolute top-3 right-3 bg-amber-50 border border-amber-300 rounded-md px-3 py-1.5 text-xs text-amber-800 max-w-[260px]">
             ⚠️ Sin gastos cargados para {MONTHS[month - 1]} {year}. El recibo aparece vacío.
-            Cargá gastos en <strong>Finanzas → Gastos</strong> o aplicá plantillas.
+            Carga gastos en <strong>Finanzas → Gastos</strong> o aplica plantillas.
           </div>
         )}
       </div>

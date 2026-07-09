@@ -9,6 +9,7 @@ import { router, publicProcedure } from "@/server/trpc/init";
 import { TRPCError } from "@trpc/server";
 import { sendEmail } from "@/server/services/email";
 import { getCurrentRate } from "@/server/services/exchange";
+import { shiftPeriod, unshiftPeriod } from "@/server/services/invoice-pdf-builder";
 import { Decimal } from "decimal.js";
 import { db } from "@/server/db/client";
 import bcrypt from "bcryptjs";
@@ -53,7 +54,13 @@ const MONTHS_SHORT = [
   "Jul.","Ago.","Sep.","Oct.","Nov.","Dic.",
 ];
 
+// "Vigente" (aún no vence) va PRIMERO, igual que el "current" del aging admin
+// (reports.ts communitySummary) — antes se recortaba a 0 y una factura recién emitida
+// (que ni siquiera ha vencido) caía en el bucket "0-30 días" como si ya estuviera
+// vencida. Bug encontrado 04-jul-2026 con impacto ACTUAL: el recibo de julio (vence
+// 8/jul, hoy 4/jul) se mostraba como "vencido 0-30 días" en las 188 unidades.
 const AGING_BUCKETS = [
+  { label: "Vigente (no vence aún)", min: -Infinity, max: -1 },
   { label: "0 - 30 días",   min: 0,   max: 30  },
   { label: "31 - 60 días",  min: 31,  max: 60  },
   { label: "61 - 90 días",  min: 61,  max: 90  },
@@ -61,10 +68,13 @@ const AGING_BUCKETS = [
   { label: "+120 días",     min: 121, max: Infinity },
 ];
 
+/** Días desde el vencimiento — puede ser NEGATIVO si la factura aún no vence (igual
+ * que el aging admin, reports.ts). No recortar a 0 aquí: eso perdía la distinción entre
+ * "vigente" y "recién vencida" en los buckets. Para mostrar "meses vencida" en pantalla,
+ * usar Math.max(0, ...) en el punto de uso, no acá. */
 function daysOverdue(dueDate: Date | null, today: Date): number {
   if (!dueDate) return 0;
-  const diff = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
-  return Math.max(0, diff);
+  return Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 function agingBucketIndex(days: number): number {
@@ -146,7 +156,7 @@ async function buildUnitPayload(
   todayRate: Decimal,
   today: Date,
 ) {
-  const [invoices, payments] = await Promise.all([
+  const [invoices, payments, communityShiftRow] = await Promise.all([
     dbClient.invoice.findMany({
       where: { unitId: entry.unitId, status: { not: "VOIDED" } },
       orderBy: [{ periodYear: "desc" }, { periodMonth: "desc" }, { issuedAt: "desc" }],
@@ -178,7 +188,15 @@ async function buildUnitPayload(
       },
       orderBy: { paidAt: "desc" },
     }),
+    dbClient.community.findUnique({
+      where: { id: entry.communityId },
+      select: { invoicePeriodShift: true },
+    }),
   ]);
+
+  // El recibo se nombra por el mes que COBRA (período de emisión − shift). Igual que
+  // en el PDF y el email: recibo emitido en julio (período 7) con shift=1 → "Junio".
+  const periodShift = communityShiftRow?.invoicePeriodShift ?? 0;
 
   // Pending invoices (ISSUED / PARTIAL / OVERDUE)
   const pendingStatuses = new Set(["ISSUED", "PARTIAL", "OVERDUE"]);
@@ -192,8 +210,7 @@ async function buildUnitPayload(
       invoiceNumber: inv.invoiceNumber,
       type: inv.type,
       typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
-      periodYear: inv.periodYear,
-      periodMonth: inv.periodMonth,
+      ...shiftPeriod(inv.periodYear, inv.periodMonth, periodShift),
       issuedAt: inv.issuedAt,
       dueDate: inv.dueDate,
       totalUsd: inv.totalUsd.toString(),
@@ -203,12 +220,18 @@ async function buildUnitPayload(
       status: inv.status,
       statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
       daysOverdue: days,
-      monthsOverdue: Math.ceil(days / 30),
+      // Nunca negativo en pantalla: si aún no vence, "0 meses vencida" (no "-1").
+      monthsOverdue: Math.max(0, Math.ceil(days / 30)),
     };
   });
 
-  // Total pending USD across all invoices (gross — before applying unallocated credit)
-  const totalPendingUsd = invoices.reduce(
+  // Total pending USD (gross, antes de aplicar el crédito no asignado). Se calcula SOLO
+  // sobre facturas ISSUED/PARTIAL/OVERDUE (pendingInvoicesRaw) — antes sumaba `invoices`
+  // completo, que también incluye PAID (pending=0, inofensivo) y DRAFT (facturas aún no
+  // publicadas al residente, que si tuvieran monto pendiente se contarían igual sin deber
+  // contarse). Con esto la deuda del portal queda IDÉNTICA a la fórmula del admin
+  // (residentes list / getDeudaGeneral), que siempre filtró por estos 3 estados.
+  const totalPendingUsd = pendingInvoicesRaw.reduce(
     (acc, inv) => acc.plus(inv.totalUsd.toString()).minus(inv.paidUsd.toString()),
     new Decimal(0),
   );
@@ -249,8 +272,7 @@ async function buildUnitPayload(
         id: invoices[0].id,
         totalUsd: invoices[0].totalUsd.toString(),
         totalBss: invoices[0].totalBss.toString(),
-        periodYear: invoices[0].periodYear,
-        periodMonth: invoices[0].periodMonth,
+        ...shiftPeriod(invoices[0].periodYear, invoices[0].periodMonth, periodShift),
       }
     : null;
 
@@ -303,8 +325,7 @@ async function buildUnitPayload(
       invoiceNumber: inv.invoiceNumber,
       type: inv.type,
       typeLabel: INVOICE_TYPE_LABELS[inv.type] ?? inv.type,
-      periodYear: inv.periodYear,
-      periodMonth: inv.periodMonth,
+      ...shiftPeriod(inv.periodYear, inv.periodMonth, periodShift),
       issuedAt: inv.issuedAt,
       dueDate: inv.dueDate,
       totalUsd: inv.totalUsd.toString(),
@@ -448,35 +469,34 @@ export const portalRouter = router({
       if (!person.email) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Necesitás un email registrado para crear una contraseña. Confirmá tus datos primero.",
+          message: "Necesitas un email registrado para crear una contraseña. Confirma tus datos primero.",
         });
       }
 
       const passwordHash = await bcrypt.hash(input.password, 12);
+      // El login (NextAuth) siempre busca por email en minúsculas — normalizar aquí
+      // también, o el User quedaría con mayúsculas y el residente nunca podría entrar
+      // (bug encontrado 03-jul-2026: emails importados del Excel con mayúsculas).
+      // resolveLoginEmail además maneja emails COMPARTIDOS entre residentes distintos
+      // (ej. familia con un solo Gmail para 2 apartamentos): si el email ya es de OTRA
+      // persona activa, genera un alias único "+unidad" en vez de robarle el acceso.
+      const { resolveLoginEmail } = await import("@/server/services/login-email");
+      const loginEmail = await resolveLoginEmail(person.id, person.email);
 
       // Crear o vincular el User (email = usuario)
       let user = person.userId
         ? await ctx.db.user.findUnique({ where: { id: person.userId } })
-        : await ctx.db.user.findUnique({ where: { email: person.email } });
+        : await ctx.db.user.findUnique({ where: { email: loginEmail } });
 
-      // Si el User existe y está vinculado a OTRA Person (email compartido),
-      // desvincular a esa otra (el último que setea clave toma el control del email).
       if (user) {
-        const otherPerson = await ctx.db.person.findFirst({
-          where: { userId: user.id, id: { not: person.id }, organizationId: person.organizationId },
-          select: { id: true },
-        });
-        if (otherPerson) {
-          await ctx.db.person.update({ where: { id: otherPerson.id }, data: { userId: null } });
-        }
         user = await ctx.db.user.update({
           where: { id: user.id },
-          data: { passwordHash, active: true, emailVerified: new Date() },
+          data: { passwordHash, active: true, emailVerified: new Date(), email: loginEmail },
         });
       } else {
         user = await ctx.db.user.create({
           data: {
-            email: person.email,
+            email: loginEmail,
             name: `${person.firstName} ${person.lastName}`,
             passwordHash,
             emailVerified: new Date(),
@@ -489,14 +509,20 @@ export const portalRouter = router({
         await ctx.db.person.update({ where: { id: person.id }, data: { userId: user.id } });
       }
 
-      return { ok: true, email: person.email };
+      // loginEmail puede diferir de person.email (alias "+" si el correo es compartido
+      // con otro residente) — el frontend debe mostrárselo al residente para que sepa
+      // con qué dirección exacta debe iniciar sesión la próxima vez.
+      return { ok: true, email: person.email, loginEmail };
     }),
 
   requestAccess: publicProcedure
     .input(z.object({ email: z.string().email() }))
     .mutation(async ({ ctx, input }) => {
+      // mode:"insensitive" porque Person.email puede tener mayúsculas de importaciones
+      // viejas (Excel) que no se normalizaron — sin esto, un residente con email
+      // "Nombre@Gmail.com" nunca se encontraba al escribir su correo en minúsculas.
       const person = await ctx.db.person.findFirst({
-        where: { email: input.email.toLowerCase(), deletedAt: null },
+        where: { email: { equals: input.email, mode: "insensitive" }, deletedAt: null },
       });
       if (!person) return { sent: true };
 
@@ -543,7 +569,7 @@ export const portalRouter = router({
             </div>
             <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">
               <p>Hola <strong>${person.firstName} ${person.lastName}</strong>,</p>
-              <p>Este es tu acceso digital al condominio. Desde tu celular o computadora podés:</p>
+              <p>Este es tu acceso digital al condominio. Desde tu celular o computadora puedes:</p>
               <ul style="padding-left:18px;line-height:1.8;color:#374151">
                 <li>📄 Ver y descargar tu recibo</li>
                 <li>💵 Notificar tus pagos</li>
@@ -559,7 +585,7 @@ export const portalRouter = router({
                 ⚠️ La primera vez te pediremos <strong>confirmar tu correo y WhatsApp</strong>. Solo toma un minuto y nos ayuda a tener tus datos al día.
               </div>
               <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:16px;text-align:center">
-                <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabés por dónde empezar? Tenemos un manual paso a paso 👇</div>
+                <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabes por dónde empezar? Tenemos un manual paso a paso 👇</div>
                 <a href="${portalUrl.replace(/\/portal\?t=.*/, "/portal/help")}" style="color:#1e3a5f;font-size:14px;font-weight:600;text-decoration:none">
                   📖 Ver el manual: cómo usar el portal →
                 </a>
@@ -569,7 +595,7 @@ export const portalRouter = router({
             </div>
           </div>
         `,
-        text: `Hola ${person.firstName}, bienvenido/a al portal de tu condominio. Entrá aquí para ver tu recibo, pagos y saldo: ${portalUrl} (válido 7 días). La primera vez te pediremos confirmar tu correo y WhatsApp. Manual de uso paso a paso: ${portalUrl.replace(/\/portal\?t=.*/, "/portal/help")}`,
+        text: `Hola ${person.firstName}, bienvenido/a al portal de tu condominio. Entra aquí para ver tu recibo, pagos y saldo: ${portalUrl} (válido 7 días). La primera vez te pediremos confirmar tu correo y WhatsApp. Manual de uso paso a paso: ${portalUrl.replace(/\/portal\?t=.*/, "/portal/help")}`,
         orgSmtp,
       });
 
@@ -700,7 +726,15 @@ export const portalRouter = router({
         where: { id: input.invoiceId },
         include: {
           unit: { select: { code: true, floor: true, tower: true, aliquot: true } },
-          items: { orderBy: { description: "asc" } },
+          // Sin orderBy por descripción: separaba Provisión de Ajuste (bug 07-jul-2026,
+          // el orden se reconstruye abajo con buildProvisionPairKeys).
+          items: {
+            include: {
+              expense: {
+                select: { id: true, kind: true, category: true, towerScope: true, recurringTemplateId: true, createdAt: true },
+              },
+            },
+          },
         },
       });
 
@@ -708,10 +742,31 @@ export const portalRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "No tienes acceso a este recibo" });
       }
 
+      // Reordenar items para intercalar Provisión→Ajuste (mismo patrón que
+      // buildInvoicePdfData / getInvoicesByMonth).
+      {
+        const { buildProvisionPairKeys } = await import("@/server/services/invoicing");
+        const pairKeys = buildProvisionPairKeys(
+          inv.items.map((it) => it.expense).filter((e): e is NonNullable<typeof e> => e != null),
+        );
+        const itemSortKey = (it: (typeof inv.items)[number]): string => {
+          const exp = it.expense;
+          if (exp && (exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT")) {
+            const token = pairKeys.get(exp.id) ?? exp.id;
+            const sub = exp.kind === "PROVISION_ADJUSTMENT" ? "1" : "0";
+            return `1|${token}|${sub}`;
+          }
+          if (!exp) return `3|${it.description}`;
+          if (exp.category === "RESERVE_FUND") return "5";
+          return `4|${exp.createdAt.toISOString()}|${it.description}`;
+        };
+        inv.items.sort((a, b) => itemSortKey(a).localeCompare(itemSortKey(b)));
+      }
+
       const [community, ownership, prevDebtAgg] = await Promise.all([
         ctx.db.community.findFirstOrThrow({
           where: { id: inv.communityId },
-          select: { name: true, address: true, rif: true, phone: true, email: true },
+          select: { name: true, address: true, rif: true, phone: true, email: true, invoicePeriodShift: true },
         }),
         ctx.db.ownership.findFirst({
           where: { unitId: inv.unitId, endDate: null },
@@ -743,8 +798,9 @@ export const portalRouter = router({
         communityPhone:   community.phone,
         communityEmail:   community.email,
         invoiceNumber:    inv.invoiceNumber,
-        periodYear:       inv.periodYear,
-        periodMonth:      inv.periodMonth,
+        // Mostrar el mes COBRADO (charged), no el de emisión — mismo bug de shift ya
+        // corregido en getInvoicesByMonth pero nunca aplicado acá (07-jul-2026).
+        ...shiftPeriod(inv.periodYear, inv.periodMonth, community.invoicePeriodShift ?? 0),
         issuedAt:         inv.issuedAt,
         dueDate:          inv.dueDate,
         status:           inv.status,
@@ -818,20 +874,68 @@ export const portalRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Sin acceso a esta unidad" });
       }
 
-      // Todas las facturas no anuladas del período
+      // input.year/month viene del selector de "Avisos de cobro", que muestra el mes
+      // COBRADO (ya desplazado, ej. "Junio"). Pero Invoice.periodYear/periodMonth siempre
+      // guarda el mes de EMISIÓN (ej. Julio). Hay que revertir el shift ANTES de consultar,
+      // o esta query encuentra la factura equivocada (bug encontrado 04-jul-2026: el
+      // selector mostraba "Junio" pero al abrirlo traía el recibo de mayo, emitido en junio).
+      const unitForShift = await ctx.db.unit.findUniqueOrThrow({
+        where: { id: input.unitId },
+        select: { communityId: true },
+      });
+      const communityForShift = await ctx.db.community.findUniqueOrThrow({
+        where: { id: unitForShift.communityId },
+        select: { invoicePeriodShift: true },
+      });
+      const shift = communityForShift.invoicePeriodShift ?? 0;
+      const rawPeriod = unshiftPeriod(input.year, input.month, shift);
+
+      // Todas las facturas no anuladas del período (en su período de EMISIÓN real).
+      // Sin orderBy por descripción en items: separaba "AJUSTE PROVISION MES ANTERIOR"
+      // (alfabéticamente antes) de "PROVISION X" — el orden se reconstruye abajo con
+      // buildProvisionPairKeys, igual que buildInvoicePdfData (bug encontrado 07-jul-2026,
+      // Reinaldo: "el recibo está todo desordenado" — esta pestaña nunca recibió el fix
+      // que sí se aplicó al PDF descargado).
       const invoices = await ctx.db.invoice.findMany({
         where: {
           unitId:      input.unitId,
-          periodYear:  input.year,
-          periodMonth: input.month,
+          periodYear:  rawPeriod.periodYear,
+          periodMonth: rawPeriod.periodMonth,
           status:      { not: "VOIDED" },
         },
         include: {
-          unit:  { select: { code: true, floor: true, tower: true, aliquot: true } },
-          items: { orderBy: { description: "asc" } },
+          unit: { select: { code: true, floor: true, tower: true, aliquot: true } },
+          items: {
+            include: {
+              expense: {
+                select: { id: true, kind: true, category: true, towerScope: true, recurringTemplateId: true, createdAt: true },
+              },
+            },
+          },
         },
         orderBy: { issuedAt: "asc" },
       });
+
+      // Reordenar los items de CADA factura para intercalar Provisión→Ajuste (mismo
+      // patrón que invoice-pdf-builder.ts buildInvoicePdfData).
+      const { buildProvisionPairKeys } = await import("@/server/services/invoicing");
+      for (const inv of invoices) {
+        const pairKeys = buildProvisionPairKeys(
+          inv.items.map((it) => it.expense).filter((e): e is NonNullable<typeof e> => e != null),
+        );
+        const itemSortKey = (it: (typeof inv.items)[number]): string => {
+          const exp = it.expense;
+          if (exp && (exp.kind === "PROVISION_BASE" || exp.kind === "PROVISION_ADJUSTMENT")) {
+            const token = pairKeys.get(exp.id) ?? exp.id;
+            const sub = exp.kind === "PROVISION_ADJUSTMENT" ? "1" : "0";
+            return `1|${token}|${sub}`;
+          }
+          if (!exp) return `3|${it.description}`;
+          if (exp.category === "RESERVE_FUND") return "5";
+          return `4|${exp.createdAt.toISOString()}|${it.description}`;
+        };
+        inv.items.sort((a, b) => itemSortKey(a).localeCompare(itemSortKey(b)));
+      }
 
       if (invoices.length === 0) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Sin facturas para ese período" });
@@ -839,7 +943,7 @@ export const portalRouter = router({
 
       const first = invoices[0]!;
 
-      const [community, ownership, prevDebtAgg] = await Promise.all([
+      const [community, ownership, prevDebtInvoices, creditPayments] = await Promise.all([
         ctx.db.community.findFirstOrThrow({
           where: { id: first.communityId },
           select: { name: true, address: true, rif: true, phone: true, email: true },
@@ -848,18 +952,48 @@ export const portalRouter = router({
           where: { unitId: input.unitId, endDate: null },
           include: { person: { select: { firstName: true, lastName: true, idType: true, idNumber: true } } },
         }),
-        ctx.db.invoice.aggregate({
+        // "Deuda anterior" = facturas con mes de EMISIÓN estrictamente anterior a esta
+        // (misma unidad de período que rawPeriod, no el input ya desplazado). Se trae la
+        // lista (no un aggregate) para poder contar cuántos MESES distintos debe.
+        ctx.db.invoice.findMany({
           where: {
             unitId: input.unitId,
             status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
             OR: [
-              { periodYear: { lt: input.year } },
-              { AND: [{ periodYear: input.year }, { periodMonth: { lt: input.month } }] },
+              { periodYear: { lt: rawPeriod.periodYear } },
+              { AND: [{ periodYear: rawPeriod.periodYear }, { periodMonth: { lt: rawPeriod.periodMonth } }] },
             ],
           },
-          _sum: { totalUsd: true, paidUsd: true },
+          select: { totalUsd: true, paidUsd: true, periodYear: true, periodMonth: true },
+        }),
+        // Saldo a favor (anticipo): SOLO pagos reales (isHistorical: false) — igual que
+        // buildUnitPayload/previewReceiptPdf/buildInvoicePdfData. Bug corregido 05-jul-2026:
+        // este endpoint no aplicaba ningún crédito (ni falso ni real), mostrando un total a
+        // pagar más alto de lo debido para las unidades con anticipo genuino.
+        ctx.db.payment.findMany({
+          where: { unitId: input.unitId, voidedAt: null, isHistorical: false },
+          select: { amountUsd: true, allocations: { select: { amountUsd: true } } },
         }),
       ]);
+
+      const prevDebtAgg = {
+        _sum: {
+          totalUsd: prevDebtInvoices.reduce((s, i) => s + Number(i.totalUsd), 0),
+          paidUsd: prevDebtInvoices.reduce((s, i) => s + Number(i.paidUsd), 0),
+        },
+      };
+      const debtMonthsSet = new Set<string>();
+      for (const i of prevDebtInvoices) {
+        if (Number(i.totalUsd) - Number(i.paidUsd) > 0.005) debtMonthsSet.add(`${i.periodYear}-${i.periodMonth}`);
+      }
+      const debtMonthsCount = debtMonthsSet.size;
+
+      let creditUsd = 0;
+      for (const p of creditPayments) {
+        const tU = Number(p.amountUsd);
+        const aU = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+        if (tU - aU > 0.005) creditUsd += tU - aU;
+      }
 
       // Combinar totales y todos los ítems
       let totalUsd = 0;
@@ -891,6 +1025,8 @@ export const portalRouter = router({
         Number(prevDebtAgg._sum.totalUsd ?? 0) - Number(prevDebtAgg._sum.paidUsd ?? 0),
       );
       const thisPendingUsd = Math.max(0, totalUsd - paidUsd);
+      // Crédito real (anticipo) tope al total a pagar — nunca deja el total en negativo.
+      const creditApplyUsd = Math.min(creditUsd, thisPendingUsd + prevDebtUsd);
 
       return {
         communityName:    community.name,
@@ -900,8 +1036,10 @@ export const portalRouter = router({
         communityEmail:   community.email,
         invoiceNumbers,
         primaryInvoiceId: first.id,
-        periodYear:       first.periodYear,
-        periodMonth:      first.periodMonth,
+        // Mostrar el mes COBRADO (charged), no el de emisión — igual que el resto del
+        // portal/PDF/email (bug encontrado 04-jul-2026: el aviso mostraba "Julio" cuando
+        // debía decir "Junio").
+        ...shiftPeriod(first.periodYear, first.periodMonth, shift),
         issuedAt:         first.issuedAt,
         dueDate:          first.dueDate,
         status:           first.status,
@@ -921,9 +1059,13 @@ export const portalRouter = router({
         paidUsd:        paidUsd.toFixed(2),
         paidBss:        paidBss.toFixed(2),
         prevDebtUsd:    prevDebtUsd.toFixed(2),
+        // Meses distintos (no filas de factura) con saldo pendiente de meses anteriores —
+        // pedido cliente 05-jul-2026: "que sepamos cuántos meses debe cada quien".
+        debtMonthsCount,
         thisPendingUsd: thisPendingUsd.toFixed(2),
-        totalToPayUsd:  (thisPendingUsd + prevDebtUsd).toFixed(2),
-        totalToPayBss:  ((thisPendingUsd + prevDebtUsd) * Number(first.exchangeRate.toString())).toFixed(2),
+        creditUsd:      creditApplyUsd > 0.005 ? creditApplyUsd.toFixed(2) : undefined,
+        totalToPayUsd:  Math.max(0, thisPendingUsd + prevDebtUsd - creditApplyUsd).toFixed(2),
+        totalToPayBss:  (Math.max(0, thisPendingUsd + prevDebtUsd - creditApplyUsd) * Number(first.exchangeRate.toString())).toFixed(2),
       };
     }),
 
@@ -1103,7 +1245,8 @@ export const portalRouter = router({
         .map((u) => ({
           unitCode: u.unitCode,
           pendingUsd: u.pendingUsd.toFixed(2),
-          overdueMonths: Math.ceil(u.maxDaysOverdue / 30),
+          // Nunca negativo: si el mayor vencimiento de la unidad todavía no vence, 0 meses.
+          overdueMonths: Math.max(0, Math.ceil(u.maxDaysOverdue / 30)),
         }))
         .sort((a, b) => Number(b.pendingUsd) - Number(a.pendingUsd));
 
@@ -1138,7 +1281,7 @@ export const portalRouter = router({
           unit: {
             include: {
               community: {
-                select: { name: true, address: true, rif: true, phone: true },
+                select: { name: true, address: true, rif: true, phone: true, invoicePeriodShift: true },
               },
               ownerships: {
                 where: { endDate: null },
@@ -1172,12 +1315,13 @@ export const portalRouter = router({
         : undefined;
 
       const MONTHS_PDF_P = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+      const vShift = payment.unit.community.invoicePeriodShift ?? 0;
       const invoicesData = payment.allocations.map((alloc) => {
         const inv = alloc.invoice;
-        const period =
-          inv.periodMonth && inv.periodYear
-            ? `${MONTHS_PDF_P[inv.periodMonth - 1]} ${inv.periodYear}`
-            : "";
+        const sp = inv.periodMonth && inv.periodYear
+          ? shiftPeriod(inv.periodYear, inv.periodMonth, vShift)
+          : null;
+        const period = sp ? `${MONTHS_PDF_P[sp.periodMonth - 1]} ${sp.periodYear}` : "";
         return {
           number: inv.invoiceNumber,
           period,

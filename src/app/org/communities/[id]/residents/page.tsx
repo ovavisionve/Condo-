@@ -115,7 +115,15 @@ export default function ResidentsPage() {
     setAccessAllMsg("Enviando… esto puede tardar hasta 1-2 minutos, no cierres la pestaña.");
     try {
       const r = await sendAccessToAll.mutateAsync({ organizationId, communityId });
-      setAccessAllMsg(`✅ Enviados ${r.enviados} de ${r.conEmail} · ${r.fallidos} fallidos · ${r.sinEmail} sin email (de ${r.totalPropietarios} propietarios).`);
+      let msg = `✅ Enviados ${r.enviados} de ${r.conEmail} · ${r.fallidos} fallidos · ${r.sinEmail} sin email (de ${r.totalPropietarios} propietarios).`;
+      const detalle = (r as { fallidosDetalle?: { to: string; error: string }[] }).fallidosDetalle ?? [];
+      if (detalle.length > 0) {
+        msg += `\n\nCorreos que aún fallaron tras los reintentos (revisa que estén bien escritos; vuelve a darle "Enviar tutorial a TODOS" y se reintentarán):\n` +
+          detalle.map((f) => `• ${f.to}`).join("\n");
+      } else if (r.fallidos === 0) {
+        msg += ` 🎉 Todos entregados.`;
+      }
+      setAccessAllMsg(msg);
     } catch (err) {
       setAccessAllMsg(`❌ ${err instanceof Error ? err.message : "Error al enviar."}`);
     }
@@ -299,7 +307,7 @@ export default function ResidentsPage() {
       </div>
 
       {accessAllMsg && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 whitespace-pre-line max-h-64 overflow-y-auto">
           {accessAllMsg}
         </div>
       )}
@@ -614,7 +622,10 @@ function ResidentRow({
 
   const sendReminder = trpc.org.persons.sendReminder.useMutation();
   const setManualPassword = trpc.org.persons.setPortalPasswordManual.useMutation();
+  const resetResident = trpc.org.persons.resetResident.useMutation();
   const [manualCreds, setManualCreds] = useState<{ email: string; password: string } | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
 
   const handleManualPassword = async () => {
     setSending(true); setSendErr(null);
@@ -648,6 +659,26 @@ function ResidentRow({
       setTimeout(() => setReminderSent(false), 4000);
     } finally {
       setReminding(false);
+    }
+  };
+
+  const handleResetResident = async () => {
+    const ok = window.confirm(
+      `¿Resetear a ${person.firstName} ${person.lastName} (${unit.code}) a cero?\n\n` +
+      `Perderá su clave actual y tendrá que confirmar sus datos y crear una clave nueva ` +
+      `la próxima vez que entre. ${person.email ? "Se le enviará un enlace de acceso fresco." : "No tiene email, tendrás que darle acceso manual."}`,
+    );
+    if (!ok) return;
+    setResetting(true); setSendErr(null);
+    try {
+      await resetResident.mutateAsync({ organizationId, personId: person.id, resendAccess: true });
+      setResetDone(true);
+      setManualCreds(null);
+      setTimeout(() => setResetDone(false), 5000);
+    } catch (err: unknown) {
+      setSendErr(err instanceof Error ? err.message : "Error al resetear");
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -744,6 +775,14 @@ function ResidentRow({
               {reminding ? "..." : reminderSent ? "✓ Enviado" : "🔔 Recordar"}
             </button>
           )}
+          <button
+            onClick={handleResetResident}
+            disabled={resetting}
+            className="rounded-md border px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 whitespace-nowrap"
+            title="Resetear a cero: pierde la clave, vuelve a pedirle confirmar sus datos desde el tutorial"
+          >
+            {resetting ? "..." : resetDone ? "✓ Reseteado" : "🔄 Resetear"}
+          </button>
           {sendErr && <div className="text-xs text-destructive w-full">{sendErr}</div>}
         </div>
       </td>

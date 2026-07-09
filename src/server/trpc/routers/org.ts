@@ -813,60 +813,34 @@ export const orgRouter = router({
           rawPassword += chars[Math.floor(Math.random() * chars.length)];
         }
         const passwordHash = await bcrypt.hash(rawPassword, 12);
+        // El login (NextAuth) siempre busca por email en minúsculas — normalizar aquí
+        // también (bug 03-jul-2026: emails importados con mayúsculas rompían el login).
+        // resolveLoginEmail además maneja emails COMPARTIDOS entre residentes distintos
+        // (ej. familia con un solo Gmail para 2 apartamentos, encontrado en Arrayanes):
+        // antes, "el último que solicita credenciales toma el control del email"
+        // desvinculaba al OTRO residente (perdía su acceso). Ahora, si el email base ya
+        // es de OTRA persona activa, se genera un alias único "+unidad" (ej.
+        // nombre+41b@gmail.com) — Gmail/Outlook lo entregan al mismo buzón, pero cada
+        // residente conserva su propio login independiente. Ya no hace falta desvincular
+        // a nadie.
+        const { resolveLoginEmail } = await import("@/server/services/login-email");
+        const loginEmail = await resolveLoginEmail(person.id, person.email);
 
         // Crear o actualizar el User vinculado a la Person
         let user = person.userId
           ? await ctx.db.user.findUnique({ where: { id: person.userId } })
-          : await ctx.db.user.findUnique({ where: { email: person.email } });
-
-        // CRÍTICO: si hay otro Person YA vinculado a ese User (mismo email compartido),
-        // tenemos un conflicto en Person.userId @unique. En el demo del cliente, varios
-        // residentes de prueba compartían email → al enviar credenciales a uno de ellos,
-        // el sistema tiraba "Ya existe un registro con el mismo valor en: userId".
-        //
-        // Fix: si el User existe y está vinculado a OTRA Person, desvinculamos a esa otra
-        // Person primero (es lo que el admin querría: el último que solicita credenciales
-        // toma el control del email). Auditamos el cambio.
-        if (user) {
-          const otherPerson = await ctx.db.person.findFirst({
-            where: {
-              userId: user.id,
-              id: { not: person.id },
-              organizationId: input.organizationId,
-            },
-            select: { id: true, firstName: true, lastName: true },
-          });
-          if (otherPerson) {
-            await ctx.db.person.update({
-              where: { id: otherPerson.id },
-              data: { userId: null },
-            });
-            await ctx.db.auditLog.create({
-              data: {
-                organizationId: input.organizationId,
-                actorId: ctx.user.id,
-                action: "UPDATE",
-                entityType: "Person",
-                entityId: otherPerson.id,
-                after: {
-                  reason: "Email reasignado a otro residente — userId desvinculado",
-                  reassignedTo: person.id,
-                },
-              },
-            });
-          }
-        }
+          : await ctx.db.user.findUnique({ where: { email: loginEmail } });
 
         if (user) {
           // Actualizar hash y activar
           user = await ctx.db.user.update({
             where: { id: user.id },
-            data: { passwordHash, active: true, emailVerified: new Date() },
+            data: { passwordHash, active: true, emailVerified: new Date(), email: loginEmail },
           });
         } else {
           user = await ctx.db.user.create({
             data: {
-              email: person.email,
+              email: loginEmail,
               name: `${person.firstName} ${person.lastName}`,
               passwordHash,
               emailVerified: new Date(),
@@ -908,10 +882,14 @@ export const orgRouter = router({
                 <p>La administración te ha creado un acceso permanente al portal. Puedes entrar cuando quieras usando estas credenciales:</p>
                 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px 20px;margin:20px 0">
                   <p style="margin:0 0 8px;font-size:13px;color:#6b7280">USUARIO (email)</p>
-                  <p style="margin:0 0 16px;font-size:16px;font-weight:600">${person.email}</p>
+                  <p style="margin:0 0 16px;font-size:16px;font-weight:600">${loginEmail}</p>
                   <p style="margin:0 0 8px;font-size:13px;color:#6b7280">CONTRASEÑA</p>
                   <p style="margin:0;font-size:20px;font-weight:700;letter-spacing:2px;font-family:monospace">${rawPassword}</p>
                 </div>
+                ${loginEmail !== person.email.toLowerCase().trim() ? `
+                <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:12px 16px;margin:0 0 20px;font-size:13px;color:#92400e">
+                  ⚠️ Este correo (${person.email}) lo comparte otro residente. Para que ambos puedan entrar por separado, tu usuario de acceso es la dirección exacta de arriba (con el "+"), no tu correo tal cual.
+                </div>` : ""}
                 <p style="text-align:center;margin:28px 0">
                   <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
                     Entrar al Portal
@@ -922,7 +900,7 @@ export const orgRouter = router({
               </div>
             </div>
           `,
-          text: `Hola ${person.firstName}, tu acceso al portal: ${portalUrl} — Usuario: ${person.email} — Contraseña: ${rawPassword}`,
+          text: `Hola ${person.firstName}, tu acceso al portal: ${portalUrl} — Usuario: ${loginEmail} — Contraseña: ${rawPassword}`,
           orgSmtp,
         });
 
@@ -940,11 +918,11 @@ export const orgRouter = router({
             action: "UPDATE",
             entityType: "Person",
             entityId: person.id,
-            after: { email: person.email, userId: user.id },
+            after: { email: person.email, loginEmail, userId: user.id },
           },
         });
 
-        return { ok: true, email: person.email };
+        return { ok: true, email: person.email, loginEmail };
       }),
 
     /**
@@ -976,21 +954,20 @@ export const orgRouter = router({
         }
         const withEmail = recipients.filter((p) => p.email && p.email.includes("@"));
 
-        const { sendEmail } = await import("@/server/services/email");
+        const { sendBulkEmails } = await import("@/server/services/email");
         const base = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
         const helpUrl = `${base}/portal/help`;
-        let enviados = 0, fallidos = 0;
-        const BATCH = 8;
-        for (let i = 0; i < withEmail.length; i += BATCH) {
-          await Promise.all(withEmail.slice(i, i + BATCH).map(async (p) => {
-            try {
-              const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-              const tok = await ctx.db.portalToken.create({ data: { personId: p.id, expiresAt } });
-              const portalUrl = `${base}/portal?t=${tok.token}`;
-              const r = await sendEmail({
-                to: p.email!,
-                subject: "Acceso a tu portal de condominio",
-                html: `
+
+        // 1) Crear el token de cada residente y armar la lista de correos.
+        const items: { to: string; subject: string; html: string; text?: string }[] = [];
+        for (const p of withEmail) {
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+          const tok = await ctx.db.portalToken.create({ data: { personId: p.id, expiresAt } });
+          const portalUrl = `${base}/portal?t=${tok.token}`;
+          items.push({
+            to: p.email!,
+            subject: "Acceso a tu portal de condominio",
+            html: `
                   <div style="font-family:sans-serif;max-width:480px;margin:auto;color:#1f2937">
                     <div style="background:#1e3a5f;border-radius:12px 12px 0 0;padding:24px;text-align:center">
                       <div style="color:#cfe0f5;font-size:13px;font-weight:600;letter-spacing:.5px">ResidIA</div>
@@ -998,7 +975,7 @@ export const orgRouter = router({
                     </div>
                     <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">
                       <p>Hola <strong>${p.firstName} ${p.lastName}</strong>,</p>
-                      <p>Este es tu acceso digital al condominio. Desde tu celular o computadora podés:</p>
+                      <p>Este es tu acceso digital al condominio. Desde tu celular o computadora puedes:</p>
                       <ul style="padding-left:18px;line-height:1.8;color:#374151">
                         <li>📄 Ver y descargar tu recibo</li>
                         <li>💵 Notificar tus pagos</li>
@@ -1012,20 +989,28 @@ export const orgRouter = router({
                         ⚠️ La primera vez te pediremos <strong>confirmar tu correo y WhatsApp</strong>. Solo toma un minuto.
                       </div>
                       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:16px;text-align:center">
-                        <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabés por dónde empezar? Tenemos un manual paso a paso 👇</div>
+                        <div style="font-size:13px;color:#475569;margin-bottom:8px">¿No sabes por dónde empezar? Tenemos un manual paso a paso 👇</div>
                         <a href="${helpUrl}" style="color:#1e3a5f;font-size:14px;font-weight:600;text-decoration:none">📖 Ver el manual: cómo usar el portal →</a>
                       </div>
                       <p style="color:#9ca3af;font-size:12px;margin-top:18px">Este enlace es válido por 7 días y es personal — no lo compartas.</p>
                     </div>
                   </div>`,
-                text: `Hola ${p.firstName}, entrá a tu portal: ${portalUrl} (válido 7 días). Manual: ${helpUrl}`,
-                orgSmtp,
-              });
-              if (r.success) enviados++; else fallidos++;
-            } catch { fallidos++; }
-          }));
+            text: `Hola ${p.firstName}, entra a tu portal: ${portalUrl} (válido 7 días). Manual: ${helpUrl}`,
+          });
         }
-        return { totalPropietarios: recipients.length, conEmail: withEmail.length, sinEmail: recipients.length - withEmail.length, enviados, fallidos };
+
+        // 2) Enviar con conexión reutilizada (pool) + reintento automático de fallidos.
+        const result = await sendBulkEmails(items, { orgSmtp, retries: 3, concurrency: 4 });
+
+        return {
+          totalPropietarios: recipients.length,
+          conEmail: withEmail.length,
+          sinEmail: recipients.length - withEmail.length,
+          enviados: result.sent,
+          fallidos: result.failed.length,
+          // Lista de los que aún fallaron tras los reintentos (para volver a intentar solo esos).
+          fallidosDetalle: result.failed.slice(0, 60),
+        };
       }),
 
     /**
@@ -1051,36 +1036,23 @@ export const orgRouter = router({
         const rawPassword = input.password ?? Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
         const passwordHash = await bcrypt.hash(rawPassword, 12);
 
-        // Email para login: usar el real si existe, si no auto-generar
-        const loginEmail = person.email ?? `residente-${person.id.slice(-8)}@residente.local`;
+        // Email para login: usar el real si existe, si no auto-generar (ya en minúsculas).
+        // resolveLoginEmail maneja emails COMPARTIDOS entre residentes distintos (ej.
+        // familia con un solo Gmail para 2 apartamentos): si el email base ya es de OTRA
+        // persona activa, genera un alias único "+unidad" en vez de robarle el acceso.
+        const { resolveLoginEmail } = await import("@/server/services/login-email");
+        const baseEmail = person.email ?? `residente-${person.id.slice(-8)}@residente.local`;
+        const loginEmail = await resolveLoginEmail(person.id, baseEmail);
 
         // Buscar User existente
         let user = person.userId
           ? await ctx.db.user.findUnique({ where: { id: person.userId } })
           : await ctx.db.user.findUnique({ where: { email: loginEmail } });
 
-        // Desvincular otros Person si conflictan con userId @unique
-        if (user) {
-          const otherPerson = await ctx.db.person.findFirst({
-            where: {
-              userId: user.id,
-              id: { not: person.id },
-              organizationId: input.organizationId,
-            },
-            select: { id: true },
-          });
-          if (otherPerson) {
-            await ctx.db.person.update({
-              where: { id: otherPerson.id },
-              data: { userId: null },
-            });
-          }
-        }
-
         if (user) {
           user = await ctx.db.user.update({
             where: { id: user.id },
-            data: { passwordHash, active: true, emailVerified: new Date() },
+            data: { passwordHash, active: true, emailVerified: new Date(), email: loginEmail },
           });
         } else {
           user = await ctx.db.user.create({
@@ -1113,6 +1085,91 @@ export const orgRouter = router({
         });
 
         return { ok: true, email: loginEmail, password: rawPassword };
+      }),
+
+    /**
+     * Resetea a un residente "a cero": vuelve a pedirle confirmar sus datos y crear una
+     * clave nueva la próxima vez que entre. Pedido cliente 07-jul-2026 (Reinaldo):
+     * "borrar y que lo hagan de nuevo... desde 0".
+     *
+     * NO borra el `User` (podría fallar por FK — reservas, auditoría, etc. — y borraría
+     * historial legítimo). En vez de eso, lo desvincula de forma segura:
+     *  1. Person.userId = null → ya no puede entrar con lo que tenía.
+     *  2. El User huérfano queda inactivo y sin clave (por si acaso).
+     *  3. Person.portalConfirmedAt = null → dispara de nuevo el modal obligatorio de
+     *     "confirma tus datos" (portal/page.tsx, condición needsOnboarding).
+     *
+     * Opcionalmente reenvía de una vez el enlace de acceso fresco.
+     */
+    resetResident: orgProcedure
+      .input(orgIdInput.extend({ personId: z.string(), resendAccess: z.boolean().default(true) }))
+      .mutation(async ({ ctx, input }) => {
+        const person = await ctx.db.person.findFirstOrThrow({
+          where: { id: input.personId, organizationId: input.organizationId, deletedAt: null },
+        });
+
+        if (person.userId) {
+          const userId = person.userId;
+          await ctx.db.person.update({ where: { id: person.id }, data: { userId: null } });
+          await ctx.db.user.update({
+            where: { id: userId },
+            data: { active: false, passwordHash: null },
+          });
+        }
+
+        await ctx.db.person.update({
+          where: { id: person.id },
+          data: { portalConfirmedAt: null },
+        });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Person",
+            entityId: person.id,
+            after: { reason: "Reset a cero solicitado por admin", clearedUserId: person.userId, portalConfirmedAt: null },
+          },
+        });
+
+        let accessEmailSent = false;
+        if (input.resendAccess && person.email) {
+          const org = await ctx.db.organization.findUnique({
+            where: { id: input.organizationId },
+            select: { smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true, smtpFrom: true, smtpSecure: true },
+          });
+          const orgSmtp = org?.smtpHost && org.smtpUser && org.smtpPass
+            ? { host: org.smtpHost, port: org.smtpPort ?? 587, user: org.smtpUser, pass: org.smtpPass, from: org.smtpFrom ?? org.smtpUser, secure: org.smtpSecure }
+            : null;
+          const { sendEmail } = await import("@/server/services/email");
+          const base = process.env.NEXTAUTH_URL ?? "https://condominios-theta.vercel.app";
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+          const tok = await ctx.db.portalToken.create({ data: { personId: person.id, expiresAt } });
+          const portalUrl = `${base}/portal?t=${tok.token}`;
+          const result = await sendEmail({
+            to: person.email,
+            subject: "Tu acceso al portal fue reiniciado",
+            html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;color:#1f2937">
+              <div style="background:#1e3a5f;border-radius:12px 12px 0 0;padding:24px;text-align:center">
+                <div style="color:#cfe0f5;font-size:13px;font-weight:600">ResidIA</div>
+                <div style="color:#fff;font-size:20px;font-weight:600;margin-top:6px">Tu acceso fue reiniciado</div>
+              </div>
+              <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">
+                <p>Hola <strong>${person.firstName} ${person.lastName}</strong>,</p>
+                <p>La administración reinició tu acceso al portal. Entra con este enlace, confirma tus datos y crea una clave nueva.</p>
+                <p style="text-align:center;margin:28px 0">
+                  <a href="${portalUrl}" style="background:#1e3a5f;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Entrar a mi portal →</a>
+                </p>
+                <p style="color:#9ca3af;font-size:12px;margin-top:18px">Este enlace es válido por 7 días y es personal — no lo compartas.</p>
+              </div></div>`,
+            text: `Hola ${person.firstName}, tu acceso fue reiniciado. Entra y confirma tus datos: ${portalUrl}`,
+            orgSmtp,
+          });
+          accessEmailSent = result.success;
+        }
+
+        return { ok: true, accessEmailSent };
       }),
 
     /**
@@ -1233,19 +1290,30 @@ export const orgRouter = router({
         return membership;
       }),
 
-    /** Actualiza cargo y/o permisos de un miembro del personal. */
+    /** Actualiza cargo, permisos y/o correo de un miembro del personal. */
     update: orgProcedure
       .input(
         orgIdInput.extend({
           membershipId: z.string(),
           cargo: z.string().min(2).optional(),
           permissions: z.array(z.string()).optional(),
+          email: emailSchema.optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
         const mem = await ctx.db.membership.findFirstOrThrow({
           where: { id: input.membershipId, organizationId: input.organizationId, active: true },
         });
+
+        if (input.email !== undefined) {
+          const newEmail = input.email.toLowerCase();
+          const existing = await ctx.db.user.findUnique({ where: { email: newEmail } });
+          if (existing && existing.id !== mem.userId) {
+            throw new TRPCError({ code: "CONFLICT", message: "Ese correo ya está en uso por otro usuario" });
+          }
+          await ctx.db.user.update({ where: { id: mem.userId }, data: { email: newEmail } });
+        }
+
         return ctx.db.membership.update({
           where: { id: mem.id },
           data: {
@@ -1254,6 +1322,37 @@ export const orgRouter = router({
           } as never,
           include: { user: { select: { id: true, email: true, name: true } } },
         });
+      }),
+
+    /** Resetea la clave de un miembro del personal (genera una nueva si no se especifica). */
+    resetPassword: orgProcedure
+      .input(orgIdInput.extend({
+        membershipId: z.string(),
+        password: z.string().min(6).max(50).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const mem = await ctx.db.membership.findFirstOrThrow({
+          where: { id: input.membershipId, organizationId: input.organizationId, active: true },
+          include: { user: { select: { id: true, email: true } } },
+        });
+
+        const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+        const rawPassword = input.password ?? Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+        const passwordHash = await bcrypt.hash(rawPassword, 12);
+        await ctx.db.user.update({ where: { id: mem.userId }, data: { passwordHash } });
+
+        await ctx.db.auditLog.create({
+          data: {
+            organizationId: input.organizationId,
+            actorId: ctx.user.id,
+            action: "UPDATE",
+            entityType: "Membership",
+            entityId: mem.id,
+            after: { passwordResetManual: true },
+          },
+        });
+
+        return { ok: true, email: mem.user.email, password: rawPassword };
       }),
 
     /** Revoca el acceso de un miembro del personal. */

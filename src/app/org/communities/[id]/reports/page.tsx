@@ -161,8 +161,19 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Estilos de impresión: solo se ven al imprimir/exportar a PDF (Ctrl+P). Oculta
+          los controles (selects, botones) y la barra lateral/nav del layout — pedido
+          cliente 07-jul-2026: "los reportes no se imprimen" (no existía ninguna opción). */}
+      <style jsx global>{`
+        @media print {
+          .print\\:hidden { display: none !important; }
+          nav, aside, header { display: none !important; }
+          body { background: white !important; }
+        }
+      `}</style>
+
       {/* ── Header ─────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between print:hidden">
         <div>
           <h2 className="text-lg font-semibold">Reportes y Dashboard</h2>
           <p className="text-sm text-muted-foreground">Período seleccionado: {MONTHS_ES[month - 1]} {year}</p>
@@ -197,7 +208,15 @@ export default function ReportsPage() {
           <Button variant="outline" onClick={() => void downloadMorososCsv()} disabled={debtors.isFetching}>
             {debtors.isFetching ? "Generando..." : "📋 Expediente morosos"}
           </Button>
+          <Button variant="outline" onClick={() => window.print()} title="Imprimir o guardar como PDF (Ctrl+P)">
+            🖨️ Imprimir / PDF
+          </Button>
         </div>
+      </div>
+
+      {/* Título visible SOLO al imprimir (reemplaza el header oculto arriba) */}
+      <div className="hidden print:block mb-4">
+        <h2 className="text-xl font-bold">Reportes y Dashboard — {MONTHS_ES[month - 1]} {year}</h2>
       </div>
 
       {/* ── Feature 8 + 10: Exportaciones por módulo ───────── */}

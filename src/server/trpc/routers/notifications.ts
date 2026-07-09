@@ -306,6 +306,39 @@ export const notificationsRouter = router({
       }).filter(Boolean);
     }),
 
+  /**
+   * Descarta un pago reportado por un residente sin registrar ningún Payment
+   * (para reportes duplicados, equivocados o inválidos). Pedido cliente 07-jul-2026:
+   * "el botón de eliminar los reportes de pago" — no existía forma de sacar un
+   * reporte inválido de la cola de "por aprobar" sin aprobarlo.
+   *
+   * Mismo patrón que la aprobación (finance.ts ~2598): cambia el prefijo del
+   * Notification.body para que listPaymentReports deje de mostrarlo. No borra el
+   * registro — queda auditable con el motivo.
+   */
+  dismissPaymentReport: orgProcedure
+    .input(z.object({
+      organizationId: z.string(),
+      communityId: z.string(),
+      notificationId: z.string(),
+      reason: z.string().max(300).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const notif = await db.notification.findFirst({
+        where: { id: input.notificationId, organizationId: input.organizationId, communityId: input.communityId },
+        select: { id: true, body: true },
+      });
+      if (!notif || !notif.body.startsWith("PAGO_POR_VERIFICAR:")) {
+        return { ok: false, reason: "No es un reporte de pago pendiente" };
+      }
+      const suffix = input.reason ? ` | Motivo: ${input.reason}` : "";
+      await db.notification.update({
+        where: { id: notif.id },
+        data: { body: notif.body.replace("PAGO_POR_VERIFICAR:", "PAGO_DESCARTADO:") + suffix },
+      });
+      return { ok: true };
+    }),
+
   sendDirectEmail: orgProcedure
     .input(
       z.object({

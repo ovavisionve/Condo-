@@ -60,6 +60,7 @@ function guessMethodFromBanco(banco: string): string {
 function PorAprobarSection({ organizationId, communityId }: { organizationId: string; communityId: string }) {
   const reportsQ = trpc.notifications.listPaymentReports.useQuery({ organizationId, communityId });
   const approvePayment = trpc.finance.payments.approve.useMutation();
+  const dismissReport = trpc.notifications.dismissPaymentReport.useMutation();
   const utils = trpc.useUtils();
 
   type Report = {
@@ -74,6 +75,8 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
   const [confirmMethod, setConfirmMethod] = useState("TRANSFER_BSS");
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [registered, setRegistered] = useState<Set<string>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [dismissingId, setDismissingId] = useState<string | null>(null);
   // Campos editables antes de aprobar (pedido cliente: "antes de aprobar, poder editar
   // cualquier dato, tipo la referencia, el monto, el banco, etc.")
   const [editAmount, setEditAmount] = useState<string>("");
@@ -81,8 +84,24 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
   const [editReference, setEditReference] = useState<string>("");
   const [editBanco, setEditBanco] = useState<string>("");
   const [editPaidAt, setEditPaidAt] = useState<string>("");
+  const [editRateOverride, setEditRateOverride] = useState<string>("");
 
-  const pending = reports.filter(r => !registered.has(r.id));
+  const pending = reports.filter(r => !registered.has(r.id) && !dismissed.has(r.id));
+
+  const handleDismiss = async (r: Report) => {
+    const reason = window.prompt(
+      `¿Descartar el reporte de pago de ${r.unitCode} (${r.personName})? Escribe el motivo (opcional) o deja vacío:`,
+    );
+    if (reason === null) return; // canceló
+    setDismissingId(r.id);
+    try {
+      await dismissReport.mutateAsync({ organizationId, communityId, notificationId: r.id, reason: reason || undefined });
+      setDismissed((prev) => new Set(prev).add(r.id));
+      utils.notifications.listPaymentReports.invalidate({ organizationId, communityId });
+    } finally {
+      setDismissingId(null);
+    }
+  };
   if (pending.length === 0) return null;
 
   return (
@@ -123,22 +142,33 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                   {new Date(r.fechaPago).toLocaleDateString("es-VE")}
                 </td>
                 <td className="px-3 py-2">
-                  <button
-                    className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 whitespace-nowrap"
-                    onClick={() => {
-                      setConfirmRep(r);
-                      setConfirmMethod(guessMethodFromBanco(r.banco));
-                      setConfirmErr(null);
-                      // Pre-cargar campos editables con lo que reportó el residente
-                      setEditAmount(r.monto.toString());
-                      setEditCurrency((r.moneda as "USD" | "VES") || "VES");
-                      setEditReference(r.referencia);
-                      setEditBanco(r.banco);
-                      setEditPaidAt(new Date(r.fechaPago).toISOString().slice(0, 10));
-                    }}
-                  >
-                    ✅ Aprobar
-                  </button>
+                  <div className="flex gap-1.5">
+                    <button
+                      className="rounded bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 whitespace-nowrap"
+                      onClick={() => {
+                        setConfirmRep(r);
+                        setConfirmMethod(guessMethodFromBanco(r.banco));
+                        setConfirmErr(null);
+                        // Pre-cargar campos editables con lo que reportó el residente
+                        setEditAmount(r.monto.toString());
+                        setEditCurrency((r.moneda as "USD" | "VES") || "VES");
+                        setEditReference(r.referencia);
+                        setEditBanco(r.banco);
+                        setEditPaidAt(new Date(r.fechaPago).toISOString().slice(0, 10));
+                        setEditRateOverride("");
+                      }}
+                    >
+                      ✅ Aprobar
+                    </button>
+                    <button
+                      className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-200 whitespace-nowrap disabled:opacity-50"
+                      disabled={dismissingId === r.id}
+                      onClick={() => handleDismiss(r)}
+                      title="Descartar este reporte sin registrar un pago (duplicado, equivocado, inválido)"
+                    >
+                      {dismissingId === r.id ? "..." : "🗑️ Descartar"}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -225,6 +255,18 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
               </div>
             </div>
 
+            <div>
+              <Label className="text-xs text-muted-foreground">Tasa manual para este pago (opcional)</Label>
+              <Input
+                type="number"
+                step="0.0001"
+                min="0"
+                placeholder="Dejar vacío para usar la tasa BCV de la fecha"
+                value={editRateOverride}
+                onChange={(e) => setEditRateOverride(e.target.value)}
+              />
+            </div>
+
             {confirmRep.tipoPago === "ANTICIPO" && (
               <p className="rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
                 💰 El residente eligió ANTICIPO — pero si tiene deuda, se aplicará FIFO a la más antigua.
@@ -236,19 +278,31 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
               <details className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
                 <summary className="cursor-pointer font-medium">📎 Ver captura del comprobante</summary>
                 <div className="mt-2">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={confirmRep.screenshot}
-                    alt="Comprobante del residente"
-                    className="max-h-96 rounded border"
-                  />
-                  <a
-                    href={confirmRep.screenshot}
-                    download={`comprobante-${confirmRep.referencia || confirmRep.id.slice(-6)}.png`}
-                    className="block mt-1 text-blue-600 hover:underline text-[11px]"
-                  >
-                    ⬇️ Descargar
+                  <a href={confirmRep.screenshot} target="_blank" rel="noopener noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={confirmRep.screenshot}
+                      alt="Comprobante del residente"
+                      className="max-h-96 rounded border cursor-zoom-in"
+                    />
                   </a>
+                  <div className="flex gap-3 mt-1">
+                    <a
+                      href={confirmRep.screenshot}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline text-[11px]"
+                    >
+                      🔍 Ver tamaño completo
+                    </a>
+                    <a
+                      href={confirmRep.screenshot}
+                      download={`comprobante-${confirmRep.referencia || confirmRep.id.slice(-6)}.png`}
+                      className="text-blue-600 hover:underline text-[11px]"
+                    >
+                      ⬇️ Descargar
+                    </a>
+                  </div>
                 </div>
               </details>
             )}
@@ -283,6 +337,7 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                       reference: editReference,
                       paidAt: new Date(editPaidAt + "T12:00:00"),
                       notes: `Pago notificado por residente · Banco: ${editBanco}${confirmRep.notas ? ` · ${confirmRep.notas}` : ""}`,
+                      exchangeRateOverride: Number(editRateOverride) > 0 ? Number(editRateOverride) : undefined,
                     });
                     setRegistered(prev => new Set([...prev, confirmRep.id]));
                     setConfirmRep(null);
@@ -475,6 +530,8 @@ function NewPaymentDialog({
   );
   const [allocs, setAllocs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Tasa manual para ESTE pago puntual (opcional) — sobreescribe la tasa automática de la fecha.
+  const [rateOverride, setRateOverride] = useState("");
   // Feature 7: también registrar como ingreso con la misma referencia
   const [alsoCreateIncome, setAlsoCreateIncome]             = useState(false);
   const [incomeDescription, setIncomeDescription]           = useState("");
@@ -504,8 +561,11 @@ function NewPaymentDialog({
 
   const sumAllocs = Object.values(allocs).reduce((s, v) => s + (Number(v) || 0), 0);
 
-  // Equivalente en Bs del monto ingresado
-  const rate = exchangeRate.data ? Number(exchangeRate.data.vesPerUsd) : null;
+  // Equivalente en Bs del monto ingresado. Si se especificó una tasa manual
+  // para este pago puntual, tiene prioridad sobre la tasa automática de la fecha.
+  const rate = Number(rateOverride) > 0
+    ? Number(rateOverride)
+    : exchangeRate.data ? Number(exchangeRate.data.vesPerUsd) : null;
   const amountNum = Number(form.amount) || 0;
   const bsEquiv = useMemo(() => {
     if (!rate || !amountNum) return null;
@@ -577,6 +637,7 @@ function NewPaymentDialog({
         paidAt: new Date(form.paidAt),
         notes: form.notes || undefined,
         allocations: allocations.length > 0 ? allocations : undefined,
+        exchangeRateOverride: Number(rateOverride) > 0 ? Number(rateOverride) : undefined,
         alsoCreateIncome,
         incomeDescription: alsoCreateIncome && incomeDescription ? incomeDescription : undefined,
       });
@@ -599,7 +660,14 @@ function NewPaymentDialog({
         <form onSubmit={onSubmit} className="space-y-4">
 
           {/* ── Tasa de cambio según fecha del pago ── */}
-          {rate ? (
+          {rateOverride ? (
+            <div className="rounded-md border border-purple-200 bg-purple-50 px-3 py-2 text-sm text-purple-800">
+              💱 Tasa manual para este pago:{" "}
+              <span className="font-semibold">
+                Bs {Number(rateOverride).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / USD
+              </span>
+            </div>
+          ) : rate ? (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
               💱 Tasa BCV de la fecha del pago:{" "}
               <span className="font-semibold">
@@ -620,6 +688,17 @@ function NewPaymentDialog({
               Cargando tasa de la fecha…
             </div>
           )}
+          <div>
+            <Label className="text-xs text-muted-foreground">Tasa manual para este pago (opcional)</Label>
+            <Input
+              type="number"
+              step="0.0001"
+              min="0"
+              placeholder="Dejar vacío para usar la tasa BCV de la fecha"
+              value={rateOverride}
+              onChange={(e) => setRateOverride(e.target.value)}
+            />
+          </div>
 
           {/* ── Unidad ── */}
           <div>
