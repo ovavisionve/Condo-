@@ -278,7 +278,7 @@ export function buildInvoiceEmail(data: InvoiceEmailData): { subject: string; ht
         </tr>
         <tr>
           <td style="padding:4px 0;color:#6b7280;font-size:13px;">Tasa de cambio</td>
-          <td style="padding:4px 0;color:#111827;font-size:13px;">1 USD = ${Number(data.exchangeRate).toFixed(2)} Bs</td>
+          <td style="padding:4px 0;color:#111827;font-size:13px;">1 USD = ${Number(data.exchangeRate).toFixed(4)} Bs</td>
         </tr>
       </table>
 
@@ -460,7 +460,7 @@ export function buildCcInvoiceEmail(data: CcInvoiceEmailData): { subject: string
         </tr>
         <tr>
           <td style="padding:4px 0;color:#6b7280;font-size:13px;">Tasa de cambio</td>
-          <td style="padding:4px 0;color:#111827;font-size:13px;">1 USD = ${Number(data.exchangeRate).toFixed(2)} Bs</td>
+          <td style="padding:4px 0;color:#111827;font-size:13px;">1 USD = ${Number(data.exchangeRate).toFixed(4)} Bs</td>
         </tr>
       </table>
 

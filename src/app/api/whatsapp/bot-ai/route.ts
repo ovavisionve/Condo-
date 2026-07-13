@@ -156,7 +156,7 @@ async function buildResidentFacts(params: {
       : "",
     unit ? `DÍAS DE VENCIMIENTO: ${unit.community.dueDaysAfterIssue}` : "",
     unit ? `FONDO DE RESERVA: ${(Number(unit.community.reserveFundPct) * 100).toFixed(1)}%` : "",
-    rate ? `TASA BCV (${rate.date.toISOString().slice(0, 10)}, ${rate.source}): Bs ${Number(rate.vesPerUsd).toFixed(2)} por USD` : "",
+    rate ? `TASA BCV (${rate.date.toISOString().slice(0, 10)}, ${rate.source}): Bs ${Number(rate.vesPerUsd).toFixed(4)} por USD` : "",
     `SALDO DEUDOR ACTUAL: $${debtUsd.toFixed(2)} USD`,
     "",
     "ÚLTIMOS RECIBOS:",

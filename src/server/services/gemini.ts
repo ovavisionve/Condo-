@@ -861,7 +861,7 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
       if (!rate) return { message: "No hay tasas de cambio registradas." };
       return {
         date: rate.date.toISOString().split("T")[0],
-        vesPerUsd: Number(rate.vesPerUsd).toFixed(2),
+        vesPerUsd: Number(rate.vesPerUsd).toFixed(4),
         source: rate.source,
       };
     }
@@ -1295,7 +1295,7 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
         supplier: e.supplierName ?? null,
         amountUsd: Number(e.amountUsd).toFixed(2),
         amountBss: Number(e.amountBss).toFixed(2),
-        exchangeRate: Number(e.exchangeRate).toFixed(2),
+        exchangeRate: Number(e.exchangeRate).toFixed(4),
         period: `${e.periodYear}-${String(e.periodMonth).padStart(2, "0")}`,
         towerScope: e.towerScope ?? "General",
         isIndividual: e.isIndividual,
@@ -1463,7 +1463,7 @@ async function runResidentialFunction(name: string, args: Record<string, unknown
       });
       return rates.map(r => ({
         date: r.date.toISOString().split("T")[0],
-        vesPerUsd: Number(r.vesPerUsd).toFixed(2),
+        vesPerUsd: Number(r.vesPerUsd).toFixed(4),
         source: r.source,
       }));
     }
@@ -1784,7 +1784,7 @@ async function runCommercialFunction(name: string, args: Record<string, unknown>
     case "get_exchange_rate": {
       const rate = await db.exchangeRate.findFirst({ orderBy: { date: "desc" } });
       if (!rate) return { message: "No hay tasas de cambio registradas." };
-      return { date: rate.date.toISOString().split("T")[0], vesPerUsd: Number(rate.vesPerUsd).toFixed(2), source: rate.source };
+      return { date: rate.date.toISOString().split("T")[0], vesPerUsd: Number(rate.vesPerUsd).toFixed(4), source: rate.source };
     }
 
     case "get_exchange_rate_history": {
@@ -1795,7 +1795,7 @@ async function runCommercialFunction(name: string, args: Record<string, unknown>
       });
       return rates.map(r => ({
         date: r.date.toISOString().split("T")[0],
-        vesPerUsd: Number(r.vesPerUsd).toFixed(2),
+        vesPerUsd: Number(r.vesPerUsd).toFixed(4),
         source: r.source,
       }));
     }
@@ -1828,7 +1828,7 @@ async function runCommercialFunction(name: string, args: Record<string, unknown>
         supplier: e.supplierName ?? null,
         amountUsd: Number(e.amountUsd).toFixed(2),
         amountBss: Number(e.amountBss).toFixed(2),
-        exchangeRate: Number(e.exchangeRate).toFixed(2),
+        exchangeRate: Number(e.exchangeRate).toFixed(4),
         period: `${e.periodYear}-${String(e.periodMonth).padStart(2,"0")}`,
         isIndividual: e.isIndividual,
         mall: e.mall.name,

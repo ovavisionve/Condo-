@@ -1,3 +1,4 @@
+import { Decimal } from "decimal.js";
 import { db } from "@/server/db/client";
 import { getCurrentRate } from "@/server/services/exchange";
 import type { IncomeCategory, ExchangeSource, Currency } from "@prisma/client";
@@ -17,6 +18,9 @@ interface RegisterIncomeInput {
   notes?: string;
   /** Fecha real del ingreso (para tasa histórica). Default: hoy. */
   receivedAt?: Date;
+  /** Tasa exacta a usar (ej. la misma del pago vinculado, si tuvo tasa manual para
+   * ese pago puntual) — si se provee, se salta la búsqueda en ExchangeRate. */
+  rateOverride?: Decimal.Value;
   /**
    * Si true, este ingreso reduce el total de gastos antes del prorrateo mensual.
    * Aparece como descuento en los recibos del período.
@@ -26,9 +30,9 @@ interface RegisterIncomeInput {
 }
 
 export async function registerIncome(input: RegisterIncomeInput) {
-  const source = input.exchangeSource === "MANUAL" ? "MANUAL" : "BCV";
-  // Tasa del día del ingreso, no del registro.
-  const rate = await getCurrentRate(source, input.receivedAt ?? new Date());
+  const rate = input.rateOverride
+    ? { date: input.receivedAt ?? new Date(), source: "MANUAL" as ExchangeSource, vesPerUsd: new Decimal(input.rateOverride) }
+    : await getCurrentRate(input.exchangeSource === "MANUAL" ? "MANUAL" : "BCV", input.receivedAt ?? new Date());
   const vesPerUsd = Number(rate.vesPerUsd.toString());
 
   let amountUsd: number;

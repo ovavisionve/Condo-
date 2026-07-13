@@ -14,10 +14,11 @@ import {
   voidInvoice,
   getAging,
 } from "@/server/services/invoicing";
-import { recordPayment, voidPayment } from "@/server/services/payments";
+import { recordPayment, voidPayment, updatePayment, deletePayment } from "@/server/services/payments";
 import { registerIncome, voidIncome } from "@/server/services/income";
 import { sendEmail, buildInvoiceEmail, type OrgSmtp } from "@/server/services/email";
 import { shiftPeriod } from "@/server/services/invoice-pdf-builder";
+import { todayInVenezuela } from "@/lib/utils";
 import { db as prismaDb } from "@/server/db/client";
 
 const orgIdInput = z.object({ organizationId: z.string() });
@@ -86,7 +87,10 @@ export const financeRouter = router({
       // refrescar en background (fire-and-forget). Esto compensa que el cron de
       // Vercel Hobby solo corre 1×/día — cuando un admin visita cualquier pantalla
       // de finanzas, si la tasa es vieja se intenta actualizar automáticamente.
-      const todayMidnight = new Date(); todayMidnight.setUTCHours(0, 0, 0, 0);
+      // "Hoy" según el calendario de Venezuela, no el día UTC del servidor —
+      // si no, entre 8pm y medianoche hora VE esto dispara un refresh de más
+      // y lo cachea bajo el día UTC siguiente (bug "tasa un día adelantado").
+      const todayMidnight = todayInVenezuela();
       const rateDay = new Date(rate.date); rateDay.setUTCHours(0, 0, 0, 0);
       if (rateDay.getTime() < todayMidnight.getTime()) {
         void (async () => {
@@ -134,7 +138,9 @@ export const financeRouter = router({
         }),
       )
       .mutation(async ({ input }) => {
-        const r = await setManualRate(input.vesPerUsd, input.date ?? new Date(), input.notes);
+        // Sin fecha explícita, setManualRate usa "hoy" en Venezuela (no new Date()
+        // acá, que traería el día UTC del servidor — bug "tasa un día adelantado").
+        const r = await setManualRate(input.vesPerUsd, input.date, input.notes);
         return { date: r.date, source: r.source, vesPerUsd: r.vesPerUsd.toString() };
       }),
     refreshBcv: orgProcedure
@@ -265,6 +271,7 @@ export const financeRouter = router({
           amount: z.coerce.number().positive(),
           currencyPrimary: z.enum(["VES", "USD"]),
           supplierName: z.string().optional(),
+          supplierRif: z.string().optional(),
           invoiceNumber: z.string().optional(),
           receiptDate: z.coerce.date().optional(),
           notes: z.string().optional(),
@@ -273,6 +280,8 @@ export const financeRouter = router({
           targetUnitId: z.string().optional().nullable(),
           /** Plantilla recurrente asociada (para agrupar en el recibo). */
           recurringTemplateId: z.string().optional().nullable(),
+          /** % de retención de ISLR sobre honorarios (ej. 3 = 3%). */
+          retentionPct: z.coerce.number().min(0).max(100).optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -301,6 +310,7 @@ export const financeRouter = router({
           customCategory: z.string().max(80).optional().nullable(),
           subCategory: z.string().max(80).optional().nullable(),
           supplierName: z.string().optional().nullable(),
+          supplierRif: z.string().optional().nullable(),
           invoiceNumber: z.string().optional().nullable(),
           notes: z.string().optional().nullable(),
           amount: z.coerce.number().positive().optional(),
@@ -308,6 +318,8 @@ export const financeRouter = router({
           receiptDate: z.coerce.date().optional(),
           towerScope: z.string().max(20).optional().nullable(),
           recurringTemplateId: z.string().optional().nullable(),
+          /** % de retención de ISLR sobre honorarios — null explícito para quitarla. */
+          retentionPct: z.coerce.number().min(0).max(100).optional().nullable(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -332,18 +344,23 @@ export const financeRouter = router({
         if (input.customCategory !== undefined) data.customCategory = input.customCategory;
         if (input.subCategory !== undefined) data.subCategory = input.subCategory;
         if (input.supplierName !== undefined) data.supplierName = input.supplierName;
+        if (input.supplierRif !== undefined) data.supplierRif = input.supplierRif;
         if (input.invoiceNumber !== undefined) data.invoiceNumber = input.invoiceNumber;
         if (input.notes !== undefined) data.notes = input.notes;
         if (input.towerScope !== undefined) data.towerScope = input.towerScope;
         if (input.recurringTemplateId !== undefined) data.recurringTemplateId = input.recurringTemplateId;
 
+        let amountUsd = new Decimal(exp.amountUsd.toString());
+        let amountBss = new Decimal(exp.amountBss.toString());
         if (input.amount !== undefined || input.currencyPrimary !== undefined || input.receiptDate !== undefined) {
           const cp = input.currencyPrimary ?? exp.currencyPrimary;
           const rDate = input.receiptDate ?? exp.receiptDate ?? new Date();
           const newAmount = input.amount ?? Number(cp === "VES" ? exp.amountBss : exp.amountUsd);
           const rate = await getCurrentRate("BCV", rDate);
           const { buildBimonetary } = await import("@/server/services/invoicing");
-          const { amountBss, amountUsd } = buildBimonetary(newAmount, cp, rate.vesPerUsd);
+          const built = buildBimonetary(newAmount, cp, rate.vesPerUsd);
+          amountBss = built.amountBss;
+          amountUsd = built.amountUsd;
           data.amountBss = amountBss.toFixed(2);
           data.amountUsd = amountUsd.toFixed(2);
           data.exchangeRate = rate.vesPerUsd.toFixed(8);
@@ -356,6 +373,17 @@ export const financeRouter = router({
             data.periodYear = d.getUTCFullYear();
             data.periodMonth = d.getUTCMonth() + 1;
           }
+        }
+
+        // Retención: recalcular si cambió el % o si cambió el monto/moneda (misma
+        // fórmula que registerExpense — % sobre el bimonetario ya resuelto).
+        if (input.retentionPct !== undefined || data.amountUsd !== undefined) {
+          const pct = input.retentionPct !== undefined
+            ? (input.retentionPct === null ? null : new Decimal(input.retentionPct))
+            : (exp.retentionPct ? new Decimal(exp.retentionPct.toString()) : null);
+          data.retentionPct = pct?.toFixed(2) ?? null;
+          data.retentionAmountUsd = pct ? amountUsd.mul(pct).div(100).toFixed(2) : null;
+          data.retentionAmountBss = pct ? amountBss.mul(pct).div(100).toFixed(2) : null;
         }
 
         return ctx.db.expense.update({ where: { id: exp.id }, data });
@@ -2491,12 +2519,21 @@ export const financeRouter = router({
             "HALL_RENTAL", "PARKING_FEE", "GUEST_FEE", "INTEREST", "DONATION", "PENALTY", "OTHER",
           ]).optional(),
           incomeDescription: z.string().optional(),
+          // Monto del ingreso adicional — si no se manda, se usa el mismo monto del pago
+          // (comportamiento viejo). Pedido cliente 11-jul-2026: el mismo depósito puede
+          // repartirse entre cuota + ingreso extra con montos DISTINTOS.
+          incomeAmount: z.coerce.number().positive().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
         const payment = await recordPayment({ ...input, createdById: ctx.user.id });
 
-        // Feature 7: Si se pidió también registrar como ingreso, crearlo con la misma referencia
+        // Feature 7: Si se pidió también registrar como ingreso, crearlo con la misma
+        // referencia, fecha y tasa del pago — pedido cliente 12-jul-2026: "que traiga
+        // toda la información del pago". Usa la MISMA tasa que se aplicó al pago (la
+        // manual del pago si se especificó, si no la BCV de esa fecha) — antes forzaba
+        // exchangeSource:"MANUAL" sin fecha, cayendo en la tasa MANUAL más vieja disponible
+        // (o ninguna) en vez de la tasa real de ese pago.
         if (input.alsoCreateIncome) {
           const paidAt = new Date(input.paidAt);
           await registerIncome({
@@ -2506,11 +2543,13 @@ export const financeRouter = router({
             description:     input.incomeDescription ?? `Ingreso vinculado a pago — ref ${input.reference ?? payment.id}`,
             periodYear:      paidAt.getFullYear(),
             periodMonth:     paidAt.getMonth() + 1,
-            amount:          input.amount,
+            amount:          input.incomeAmount ?? input.amount,
             currencyPrimary: input.currencyPrimary,
             reference:       input.reference,
             affectsInvoice:  false,
-            exchangeSource:  "MANUAL",
+            exchangeSource:  "BCV",
+            receivedAt:      paidAt,
+            rateOverride:    input.exchangeRateOverride,
             createdById:     ctx.user.id,
           });
         }
@@ -2638,6 +2677,51 @@ export const financeRouter = router({
       .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3) }))
       .mutation(async ({ ctx, input }) =>
         voidPayment({
+          organizationId: input.organizationId,
+          paymentId: input.id,
+          reason: input.reason,
+          actorId: ctx.user.id,
+        }),
+      ),
+
+    /** Edita un pago ya registrado (fecha, método, referencia, banco, notas, monto, tasa). */
+    update: orgProcedure
+      .input(
+        orgIdInput.extend({
+          id: z.string(),
+          paidAt: z.coerce.date().optional(),
+          method: z.enum(PAYMENT_METHODS).optional(),
+          reference: z.string().optional(),
+          bankAccountId: z.string().nullable().optional(),
+          notes: z.string().optional(),
+          amount: z.coerce.number().positive().optional(),
+          currencyPrimary: z.enum(["VES", "USD"]).optional(),
+          exchangeRateOverride: z.coerce.number().positive().optional(),
+          autoAllocate: z.boolean().optional(),
+        }),
+      )
+      .mutation(({ ctx, input }) =>
+        updatePayment({
+          organizationId: input.organizationId,
+          paymentId: input.id,
+          actorId: ctx.user.id,
+          paidAt: input.paidAt,
+          method: input.method,
+          reference: input.reference,
+          bankAccountId: input.bankAccountId,
+          notes: input.notes,
+          amount: input.amount,
+          currencyPrimary: input.currencyPrimary,
+          exchangeRateOverride: input.exchangeRateOverride,
+          autoAllocate: input.autoAllocate,
+        }),
+      ),
+
+    /** Elimina definitivamente un pago (revierte allocations, deja rastro en AuditLog). */
+    deleteOne: orgProcedure
+      .input(orgIdInput.extend({ id: z.string(), reason: z.string().min(3) }))
+      .mutation(({ ctx, input }) =>
+        deletePayment({
           organizationId: input.organizationId,
           paymentId: input.id,
           reason: input.reason,
@@ -3375,117 +3459,17 @@ export const financeRouter = router({
   applyUnitCredit: orgProcedure
     .input(orgIdInput.extend({ unitId: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      const { applyUnitCreditCore } = await import("@/server/services/payments");
       return ctx.db.$transaction(async (tx) => {
-        // 1. Encontrar pagos con porción no asignada (anticipo).
-        //    Excluir históricos migrados: no son anticipos reales aplicables.
-        const payments = await tx.payment.findMany({
-          where: { unitId: input.unitId, voidedAt: null, organizationId: input.organizationId, isHistorical: false },
-          include: { allocations: { select: { amountBss: true, amountUsd: true } } },
-          orderBy: { paidAt: "asc" },
+        const result = await applyUnitCreditCore(tx, {
+          organizationId: input.organizationId,
+          unitId: input.unitId,
+          actorId: ctx.user.id,
         });
-
-        const creditByPayment: { id: string; remBss: Decimal; remUsd: Decimal; currencyPrimary: "USD" | "VES" }[] = [];
-        for (const p of payments) {
-          const allocBss = p.allocations.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
-          const allocUsd = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
-          const remBss = new Decimal(p.amountBss.toString()).minus(allocBss);
-          const remUsd = new Decimal(p.amountUsd.toString()).minus(allocUsd);
-          if (remUsd.gt(0.005)) {
-            creditByPayment.push({ id: p.id, remBss, remUsd, currencyPrimary: p.currencyPrimary as "USD" | "VES" });
-          }
+        if (result.applied.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Esta unidad no tiene saldo a favor aplicable a facturas pendientes." });
         }
-
-        if (creditByPayment.length === 0) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Esta unidad no tiene saldo a favor." });
-        }
-
-        // 2. Encontrar facturas pendientes ordenadas por dueDate ASC (FIFO)
-        const pending = await tx.invoice.findMany({
-          where: {
-            unitId: input.unitId,
-            organizationId: input.organizationId,
-            status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
-          },
-          orderBy: { dueDate: "asc" },
-          select: { id: true, invoiceNumber: true, currencyPrimary: true, totalBss: true, totalUsd: true, paidBss: true, paidUsd: true },
-        });
-
-        const applied: { invoiceNumber: string; usd: string; bss: string }[] = [];
-
-        for (const inv of pending) {
-          const invIsUsd = inv.currencyPrimary === "USD";
-          const totalPrim = new Decimal((invIsUsd ? inv.totalUsd : inv.totalBss).toString());
-          const paidPrim = new Decimal((invIsUsd ? inv.paidUsd : inv.paidBss).toString());
-          let invBalance = totalPrim.minus(paidPrim);
-          if (invBalance.lte(0)) continue;
-
-          // Consumir crédito por orden
-          for (const c of creditByPayment) {
-            if (invBalance.lte(0)) break;
-            const cAmount = invIsUsd ? c.remUsd : c.remBss;
-            if (cAmount.lte(0.005)) continue;
-            const toApply = Decimal.min(cAmount, invBalance);
-            // Calcular bss/usd a partir del que estamos consumiendo (proporcional)
-            const ratio = toApply.div(cAmount);
-            const allocUsd = c.remUsd.mul(ratio);
-            const allocBss = c.remBss.mul(ratio);
-
-            await tx.paymentAllocation.create({
-              data: {
-                paymentId: c.id,
-                invoiceId: inv.id,
-                amountBss: allocBss.toFixed(2),
-                amountUsd: allocUsd.toFixed(2),
-              },
-            });
-
-            c.remUsd = c.remUsd.minus(allocUsd);
-            c.remBss = c.remBss.minus(allocBss);
-            invBalance = invBalance.minus(toApply);
-          }
-
-          // Recalcular paid del invoice y status
-          const updatedAllocs = await tx.paymentAllocation.findMany({
-            where: { invoiceId: inv.id }, select: { amountBss: true, amountUsd: true },
-          });
-          const newPaidBss = updatedAllocs.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
-          const newPaidUsd = updatedAllocs.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
-          const newPaidPrim = invIsUsd ? newPaidUsd : newPaidBss;
-          const status = newPaidPrim.gte(totalPrim) ? "PAID" : newPaidPrim.gt(0) ? "PARTIAL" : "ISSUED";
-
-          await tx.invoice.update({
-            where: { id: inv.id },
-            data: {
-              paidBss: newPaidBss.toFixed(2),
-              paidUsd: newPaidUsd.toFixed(2),
-              status,
-            },
-          });
-
-          const appliedAmount = totalPrim.minus(paidPrim).minus(invBalance);
-          applied.push({
-            invoiceNumber: inv.invoiceNumber,
-            usd: invIsUsd ? appliedAmount.toFixed(2) : "—",
-            bss: invIsUsd ? "—" : appliedAmount.toFixed(2),
-          });
-        }
-
-        if (applied.length === 0) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No hay facturas pendientes a las que aplicar el saldo." });
-        }
-
-        await tx.auditLog.create({
-          data: {
-            organizationId: input.organizationId,
-            actorId: ctx.user.id,
-            action: "UPDATE",
-            entityType: "Unit",
-            entityId: input.unitId,
-            after: { event: "CREDIT_APPLIED", invoicesAffected: applied.length, applied },
-          },
-        });
-
-        return { applied };
+        return result;
       });
     }),
 

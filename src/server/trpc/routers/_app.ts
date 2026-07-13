@@ -12,6 +12,7 @@ import { comercialRouter } from "@/server/trpc/routers/comercial";
 import { reservationsRouter } from "@/server/trpc/routers/reservations";
 import { aiRouter } from "@/server/trpc/routers/ai";
 import { authSecurityRouter } from "@/server/trpc/routers/auth-security";
+import { legalRouter } from "@/server/trpc/routers/legal";
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, ts: new Date() })),
@@ -28,6 +29,7 @@ export const appRouter = router({
   reservations: reservationsRouter,
   ai: aiRouter,
   authSecurity: authSecurityRouter,
+  legal: legalRouter,
 });
 
 export type AppRouter = typeof appRouter;

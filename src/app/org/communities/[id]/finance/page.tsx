@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatUtcDate, todayInVenezuelaStr } from "@/lib/utils";
 
 export default function FinanceDashboard() {
   const { id: communityId } = useParams<{ id: string }>();
@@ -203,7 +204,7 @@ export default function FinanceDashboard() {
           <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
               {rate.data && (
-                <>{rate.data.source} · {new Date(rate.data.date).toLocaleDateString("es-VE")}</>
+                <>{rate.data.source} · {formatUtcDate(rate.data.date)}</>
               )}
             </p>
             <Button
@@ -251,7 +252,7 @@ export default function FinanceDashboard() {
                   type="date"
                   value={manualDate}
                   onChange={(e) => setManualDate(e.target.value)}
-                  max={new Date().toISOString().slice(0, 10)}
+                  max={todayInVenezuelaStr()}
                 />
               </div>
               <Button type="submit" disabled={setManual.isPending}>
@@ -304,7 +305,7 @@ export default function FinanceDashboard() {
             <tbody>
               {recent.data?.map((r, i) => (
                 <tr key={i} className="border-t">
-                  <td className="px-2 py-1">{new Date(r.date).toLocaleDateString("es-VE")}</td>
+                  <td className="px-2 py-1">{formatUtcDate(r.date)}</td>
                   <td className="px-2 py-1">{r.source}</td>
                   <td className="px-2 py-1">{Number(r.vesPerUsd).toFixed(4)}</td>
                 </tr>

@@ -80,6 +80,13 @@ export default function ResidentsPage() {
   const { data, refetch } = trpc.org.persons.list.useQuery({ organizationId, communityId });
   const bulkImport = trpc.org.persons.bulkImport.useMutation();
 
+  // Marca "⚖️ En abogado" — unidades con un caso legal (LegalCase) OPEN.
+  const { data: openLegalCases } = trpc.legal.cases.list.useQuery({ organizationId, communityId, status: "OPEN" });
+  const legalUnitCodes = useMemo(
+    () => new Set((openLegalCases ?? []).map((c) => c.unit.code)),
+    [openLegalCases],
+  );
+
   // --- Formulario manual ---
   const [showForm, setShowForm] = useState(false);
   const [formMsg, setFormMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -503,6 +510,7 @@ export default function ResidentsPage() {
         rows={filteredOwnerships}
         communityId={communityId}
         organizationId={organizationId}
+        legalUnitCodes={legalUnitCodes}
         onEdit={(p) => setEditPerson(p)}
         onSendCredentials={(personId) =>
           sendCredentials.mutateAsync({ organizationId, personId })
@@ -515,6 +523,7 @@ export default function ResidentsPage() {
         rows={filteredTenancies}
         communityId={communityId}
         organizationId={organizationId}
+        legalUnitCodes={legalUnitCodes}
         isTenant
         onEdit={(p) => setEditPerson(p)}
         onSendCredentials={(personId) =>
@@ -532,6 +541,7 @@ function ResidentsTable({
   rows,
   communityId,
   organizationId,
+  legalUnitCodes,
   isTenant = false,
   onEdit,
   onSendCredentials,
@@ -544,6 +554,7 @@ function ResidentsTable({
   }>;
   communityId: string;
   organizationId: string;
+  legalUnitCodes: Set<string>;
   isTenant?: boolean;
   onEdit: (p: PersonData) => void;
   onSendCredentials: (personId: string) => Promise<{ ok: boolean; email: string }>;
@@ -582,6 +593,7 @@ function ResidentsTable({
                 communityId={communityId}
                 organizationId={organizationId}
                 isTenant={isTenant}
+                hasLegalCase={legalUnitCodes.has(unit.code)}
                 onEdit={() => onEdit(person)}
                 onSendCredentials={onSendCredentials}
               />
@@ -602,6 +614,7 @@ function ResidentRow({
   communityId,
   organizationId,
   isTenant = false,
+  hasLegalCase = false,
   onEdit,
   onSendCredentials,
 }: {
@@ -611,6 +624,7 @@ function ResidentRow({
   communityId: string;
   organizationId: string;
   isTenant?: boolean;
+  hasLegalCase?: boolean;
   onEdit: () => void;
   onSendCredentials: (personId: string) => Promise<{ ok: boolean; email: string }>;
 }) {
@@ -704,6 +718,14 @@ function ResidentRow({
         <div className="text-xs text-muted-foreground">
           {unit.tower && `T${unit.tower} `}{unit.floor != null && `Piso ${unit.floor}`}
         </div>
+        {hasLegalCase && (
+          <span
+            className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700"
+            title="Esta unidad tiene un caso legal (cobranza judicial) abierto"
+          >
+            ⚖️ En abogado
+          </span>
+        )}
       </td>
       <td className="px-3 py-2">
         {debt ? <DebtBadge debt={debt} /> : <span className="text-muted-foreground text-xs">—</span>}

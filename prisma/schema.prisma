@@ -83,6 +83,8 @@ model Organization {
   visitors            Visitor[]
   accessLogs          AccessLog[]
   violations          Violation[]
+  lawyers             Lawyer[]
+  legalCases          LegalCase[]
   boardMembers        BoardMember[]
   assemblies          Assembly[]
   communityDocuments  CommunityDocument[]
@@ -181,6 +183,7 @@ model Community {
   visitors                 Visitor[]
   accessLogs               AccessLog[]
   violations               Violation[]
+  legalCases               LegalCase[]
   securityNotes            SecurityNote[]
   boardMembers             BoardMember[]
   assemblies               Assembly[]
@@ -234,6 +237,7 @@ model Unit {
   visitors          Visitor[]
   accessLogs        AccessLog[]
   violations        Violation[]
+  legalCases        LegalCase[]
   assemblyVotes     AssemblyVote[]
   individualExpenses       Expense[]              @relation("ExpenseTargetUnit")
   unidentifiedPayments    UnidentifiedPayment[]  @relation("UnidentifiedToUnit")
@@ -577,9 +581,15 @@ model Expense {
   currencyPrimary Currency
   // Documentación
   supplierName    String?
+  supplierRif     String?         // RIF del proveedor/profesional — requerido para el comprobante de retención
   invoiceNumber   String?
   receiptDate     DateTime?
   notes           String?
+  // Retención de ISLR sobre honorarios pagados a un profesional (contador, administrador,
+  // abogado, etc.). Si retentionPct es null, el gasto no tiene retención.
+  retentionPct        Decimal?    @db.Decimal(5, 2)
+  retentionAmountUsd  Decimal?    @db.Decimal(18, 2)
+  retentionAmountBss  Decimal?    @db.Decimal(18, 2)
   // Alcance por torre: null=general (todas las unidades), "A"=Torre A, "B"=Torre B, etc.
   towerScope      String?
   // Cargo individual a una unidad específica (p.ej. reparación exclusiva del apto)
@@ -631,6 +641,7 @@ enum InvoiceType {
   SPECIAL_FEE // Cuota especial (obra extraordinaria)
   FINE        // Multa por violación del reglamento
   EXTRA_FEE   // Cuota extra individual (daño, reparación exclusiva, etc.)
+  LEGAL_FEE   // Honorario legal cobrado a un residente por su caso de cobranza
   OTHER
 }
 
@@ -670,6 +681,7 @@ model Invoice {
   items      InvoiceItem[]
   payments   PaymentAllocation[]
   violations Violation[]
+  legalCases LegalCase[]
 
   @@unique([communityId, invoiceNumber])
   @@index([organizationId])
@@ -1159,6 +1171,7 @@ enum AuditAction {
   FINE_APPLIED
   EXTRA_FEE_APPLIED
   MONTHLY_FEE_UPDATED
+  LEGAL_FEE_APPLIED
 }
 
 model AuditLog {
@@ -1306,6 +1319,64 @@ model Violation {
 
   @@index([communityId, createdAt])
   @@index([unitId])
+}
+
+/// Directorio de abogados/despachos (a nivel organización, reusable entre comunidades).
+/// Mismo patrón que Contractor para mantenimiento.
+model Lawyer {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  specialty      String?
+  phone          String?
+  email          String?
+  notes          String?
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  cases LegalCase[]
+
+  @@index([organizationId, active])
+}
+
+/// Caso de cobranza legal: se le asigna un abogado a UNA unidad morosa y se le
+/// cobra un honorario legal aparte de su cuota normal (mismo patrón que
+/// Violation + fineInvoice, pero para honorarios en vez de multas).
+model LegalCase {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  communityId    String
+  community      Community    @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  unitId         String
+  unit           Unit         @relation(fields: [unitId], references: [id])
+  lawyerId       String?
+  lawyer         Lawyer?      @relation(fields: [lawyerId], references: [id])
+
+  description    String
+  status         LegalCaseStatus @default(OPEN)
+
+  // Honorario cobrado (opcional hasta que se decide el monto)
+  feeInvoiceId   String?
+  feeInvoice     Invoice?     @relation(fields: [feeInvoiceId], references: [id])
+  feeAmountUsd   Decimal?     @db.Decimal(18, 2)
+
+  createdById    String?
+  resolvedAt     DateTime?
+  resolvedNotes  String?
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([communityId, createdAt])
+  @@index([unitId])
+}
+
+enum LegalCaseStatus {
+  OPEN
+  RESOLVED
 }
 
 // ─── Novedades del día (bitácora del vigilante) ───────────────────────────────

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { formatUtcDate } from "@/lib/utils";
 
 const MONTHS = [
   "Ene","Feb","Mar","Abr","May","Jun",
@@ -56,6 +57,56 @@ function guessMethodFromBanco(banco: string): string {
   return "TRANSFER_USD";
 }
 
+/** Muestra el saldo pendiente (USD) de una unidad — para saber contra qué se aplica un pago reportado. */
+function UnitDebtBadge({
+  organizationId,
+  communityId,
+  unitId,
+  detailed = false,
+}: {
+  organizationId: string;
+  communityId: string;
+  unitId: string;
+  detailed?: boolean;
+}) {
+  const invoices = trpc.finance.invoices.list.useQuery(
+    { organizationId, communityId, unitId, status: undefined },
+    { enabled: Boolean(unitId) },
+  );
+
+  if (invoices.isLoading) return <span className="text-muted-foreground">...</span>;
+
+  const pending = (invoices.data ?? [])
+    .filter((i) => i.status !== "PAID" && i.status !== "VOIDED")
+    .sort((a, b) => (a.periodYear !== b.periodYear ? a.periodYear - b.periodYear : a.periodMonth - b.periodMonth));
+
+  const totalDebt = pending.reduce(
+    (s, inv) => s + (Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString())),
+    0,
+  );
+
+  if (pending.length === 0) {
+    return <span className="text-green-700 font-medium">$0.00 — al día</span>;
+  }
+
+  return (
+    <span className={detailed ? "" : "font-semibold text-orange-700"}>
+      <span className={detailed ? "font-semibold text-orange-700" : ""}>${totalDebt.toFixed(2)}</span>
+      {" "}
+      <span className="text-muted-foreground">({pending.length} {pending.length === 1 ? "recibo" : "recibos"} pendiente{pending.length === 1 ? "" : "s"})</span>
+      {detailed && (
+        <ul className="mt-1 space-y-0.5">
+          {pending.map((inv) => (
+            <li key={inv.id} className="text-[11px] text-muted-foreground">
+              {periodLabel(inv.periodYear, inv.periodMonth)} — {inv.invoiceNumber}: ${(Number(inv.totalUsd.toString()) - Number(inv.paidUsd.toString())).toFixed(2)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
+  );
+}
+
 // ─── Sección "Por aprobar" ────────────────────────────────────────────────────
 function PorAprobarSection({ organizationId, communityId }: { organizationId: string; communityId: string }) {
   const reportsQ = trpc.notifications.listPaymentReports.useQuery({ organizationId, communityId });
@@ -88,6 +139,23 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
 
   const pending = reports.filter(r => !registered.has(r.id) && !dismissed.has(r.id));
 
+  // Tasa BCV de la fecha del pago que se está aprobando (o la manual, si se especificó) —
+  // pedido cliente: "debería reflejarse el monto en dólares según la tasa del día".
+  const approveRateQ = trpc.finance.exchange.byDate.useQuery(
+    { organizationId, date: new Date(`${editPaidAt}T00:00:00`) },
+    { enabled: Boolean(confirmRep && editPaidAt) },
+  );
+  const approveRate = Number(editRateOverride) > 0
+    ? Number(editRateOverride)
+    : approveRateQ.data ? Number(approveRateQ.data.vesPerUsd) : null;
+  const approveAmountNum = Number(editAmount) || 0;
+  const approveUsdEquiv = approveRate && approveAmountNum
+    ? (editCurrency === "VES" ? approveAmountNum / approveRate : approveAmountNum)
+    : null;
+  const approveBsEquiv = approveRate && approveAmountNum
+    ? (editCurrency === "USD" ? approveAmountNum * approveRate : approveAmountNum)
+    : null;
+
   const handleDismiss = async (r: Report) => {
     const reason = window.prompt(
       `¿Descartar el reporte de pago de ${r.unitCode} (${r.personName})? Escribe el motivo (opcional) o deja vacío:`,
@@ -119,6 +187,7 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
               <th className="px-3 py-2">Residente</th>
               <th className="px-3 py-2">Banco / Ref.</th>
               <th className="px-3 py-2 text-right">Monto</th>
+              <th className="px-3 py-2 text-right">Saldo pendiente</th>
               <th className="px-3 py-2">Fecha pago</th>
               <th className="px-3 py-2"></th>
             </tr>
@@ -137,6 +206,9 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                 </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {r.moneda === "USD" ? "$" : "Bs."}{r.monto.toFixed(2)}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <UnitDebtBadge organizationId={organizationId} communityId={communityId} unitId={r.unitId} />
                 </td>
                 <td className="px-3 py-2 text-xs text-muted-foreground">
                   {new Date(r.fechaPago).toLocaleDateString("es-VE")}
@@ -188,6 +260,10 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
               <strong>Unidad:</strong> {confirmRep.unitCode} — {confirmRep.personName}<br />
               <strong>Reportado por residente.</strong> Verifica y corrige cualquier dato antes de aprobar.
             </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+              <strong>Saldo pendiente de la unidad:</strong>{" "}
+              <UnitDebtBadge organizationId={organizationId} communityId={communityId} unitId={confirmRep.unitId} detailed />
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -212,6 +288,17 @@ function PorAprobarSection({ organizationId, communityId }: { organizationId: st
                 </select>
               </div>
             </div>
+
+            {approveAmountNum > 0 && (
+              approveRate ? (
+                <p className="text-xs text-muted-foreground -mt-1">
+                  ≈ {editCurrency === "VES" ? `$${approveUsdEquiv!.toFixed(2)}` : `Bs ${approveBsEquiv!.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  {" "}(tasa {editRateOverride ? "manual" : "BCV"} {approveRate.toLocaleString("es-VE", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} del {editPaidAt ? new Date(`${editPaidAt}T12:00:00`).toLocaleDateString("es-VE") : "—"})
+                </p>
+              ) : (
+                <p className="text-xs text-amber-700 -mt-1">Buscando tasa de esa fecha...</p>
+              )
+            )}
 
             <div>
               <Label className="text-xs">Referencia (solo números)</Label>
@@ -364,9 +451,22 @@ export default function PaymentsPage() {
   const list = trpc.finance.payments.list.useQuery({ organizationId, communityId });
   const utils = trpc.useUtils();
   const [showNew, setShowNew] = useState(false);
+  // Buscador — pedido cliente 12-jul-2026: la lista de pagos recibidos crece mucho y
+  // hace falta poder buscar por unidad, referencia o método sin scrollear todo.
+  const [search, setSearch] = useState("");
+  const filteredList = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return list.data ?? [];
+    return (list.data ?? []).filter((p) =>
+      p.unit.code.toLowerCase().includes(q) ||
+      (p.reference ?? "").toLowerCase().includes(q) ||
+      (METHOD_LABEL[p.method] ?? p.method).toLowerCase().includes(q) ||
+      p.allocations.some((a) => a.invoice.invoiceNumber.toLowerCase().includes(q)),
+    );
+  }, [list.data, search]);
 
-  const totalUsd = list.data?.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountUsd.toString())), 0) ?? 0;
-  const totalBss = list.data?.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountBss.toString())), 0) ?? 0;
+  const totalUsd = filteredList.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountUsd.toString())), 0);
+  const totalBss = filteredList.reduce((s, p) => s + (p.voidedAt ? 0 : Number(p.amountBss.toString())), 0);
 
   return (
     <div className="space-y-4">
@@ -385,6 +485,13 @@ export default function PaymentsPage() {
         <Button onClick={() => setShowNew(true)}>+ Registrar pago</Button>
       </div>
 
+      <Input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 Buscar por unidad, referencia, método o # de recibo..."
+        className="max-w-sm"
+      />
+
       <div className="overflow-hidden rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left">
@@ -400,13 +507,13 @@ export default function PaymentsPage() {
             </tr>
           </thead>
           <tbody>
-            {list.data?.map((p) => (
+            {filteredList.map((p) => (
               <PaymentRow key={p.id} payment={p} organizationId={organizationId} />
             ))}
-            {list.data?.length === 0 && (
+            {filteredList.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
-                  Sin pagos registrados
+                  {search ? "Sin resultados para esa búsqueda" : "Sin pagos registrados"}
                 </td>
               </tr>
             )}
@@ -442,6 +549,7 @@ function PaymentRow({
     amountBss: { toString(): string };
     method: string;
     reference?: string | null;
+    currencyPrimary?: string;
     voidedAt?: Date | string | null;
     unit: { code: string };
     allocations: { invoice: { invoiceNumber: string } }[];
@@ -449,7 +557,11 @@ function PaymentRow({
   organizationId: string;
 }) {
   const getVoucher = trpc.finance.payments.getVoucherPdf.useMutation();
+  const deletePayment = trpc.finance.payments.deleteOne.useMutation();
   const [downloading, setDownloading] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const utils = trpc.useUtils();
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -461,35 +573,219 @@ function PaymentRow({
     }
   };
 
+  const handleDelete = async () => {
+    if (!confirm(`¿Eliminar definitivamente este pago de ${payment.unit.code}? Esto revierte lo aplicado a facturas y no se puede deshacer.`)) return;
+    const reason = window.prompt("Motivo (para el registro de auditoría):", "Registrado por error");
+    if (reason === null) return;
+    setDeleting(true);
+    try {
+      await deletePayment.mutateAsync({ organizationId, id: payment.id, reason: reason || "Sin motivo especificado" });
+      void utils.finance.payments.list.invalidate();
+      void utils.finance.invoices.list.invalidate();
+      void utils.finance.aging.invalidate();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
-    <tr className={`border-t ${payment.voidedAt ? "text-muted-foreground line-through" : ""}`}>
-      <td className="px-3 py-2">{new Date(payment.paidAt).toLocaleDateString("es-VE")}</td>
-      <td className="px-3 py-2">{payment.unit.code}</td>
-      <td className="px-3 py-2 text-xs">{METHOD_LABEL[payment.method] ?? payment.method}</td>
-      <td className="px-3 py-2 text-muted-foreground">{payment.reference ?? "—"}</td>
-      <td className="px-3 py-2 text-right font-medium">
-        {Number(payment.amountBss.toString()).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-      </td>
-      <td className="px-3 py-2 text-right text-muted-foreground text-xs">
-        ${Number(payment.amountUsd.toString()).toFixed(2)}
-      </td>
-      <td className="px-3 py-2 text-xs">
-        {payment.allocations.length > 0
-          ? payment.allocations.map((a) => a.invoice.invoiceNumber).join(", ")
-          : <span className="text-amber-700">anticipo</span>}
-      </td>
-      <td className="px-3 py-2">
-        {!payment.voidedAt && (
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className="text-xs text-blue-600 hover:underline disabled:opacity-50 whitespace-nowrap"
-          >
-            {downloading ? "..." : "📄 Bauche"}
-          </button>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr className={`border-t ${payment.voidedAt ? "text-muted-foreground line-through" : ""}`}>
+        <td className="px-3 py-2">{new Date(payment.paidAt).toLocaleDateString("es-VE")}</td>
+        <td className="px-3 py-2">{payment.unit.code}</td>
+        <td className="px-3 py-2 text-xs">{METHOD_LABEL[payment.method] ?? payment.method}</td>
+        <td className="px-3 py-2 text-muted-foreground">{payment.reference ?? "—"}</td>
+        <td className="px-3 py-2 text-right font-medium">
+          {Number(payment.amountBss.toString()).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </td>
+        <td className="px-3 py-2 text-right text-muted-foreground text-xs">
+          ${Number(payment.amountUsd.toString()).toFixed(2)}
+        </td>
+        <td className="px-3 py-2 text-xs">
+          {payment.allocations.length > 0
+            ? payment.allocations.map((a) => a.invoice.invoiceNumber).join(", ")
+            : <span className="text-amber-700">anticipo</span>}
+        </td>
+        <td className="px-3 py-2">
+          {!payment.voidedAt && (
+            <div className="flex gap-2 whitespace-nowrap">
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+              >
+                {downloading ? "..." : "📄 Bauche"}
+              </button>
+              <button
+                onClick={() => setShowEdit(true)}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                ✏️ Editar
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="text-xs text-destructive hover:underline disabled:opacity-50"
+              >
+                {deleting ? "..." : "🗑️ Eliminar"}
+              </button>
+            </div>
+          )}
+        </td>
+      </tr>
+      {showEdit && (
+        <EditPaymentDialog
+          organizationId={organizationId}
+          payment={payment}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => {
+            setShowEdit(false);
+            void utils.finance.payments.list.invalidate();
+            void utils.finance.invoices.list.invalidate();
+            void utils.finance.aging.invalidate();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function EditPaymentDialog({
+  organizationId,
+  payment,
+  onClose,
+  onSaved,
+}: {
+  organizationId: string;
+  payment: {
+    id: string;
+    paidAt: Date | string;
+    amountUsd: { toString(): string };
+    amountBss: { toString(): string };
+    method: string;
+    reference?: string | null;
+    currencyPrimary?: string;
+    unit: { code: string };
+  };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const updatePayment = trpc.finance.payments.update.useMutation();
+  const currency = (payment.currencyPrimary as "USD" | "VES") ?? "VES";
+  const [form, setForm] = useState({
+    paidAt: new Date(payment.paidAt).toISOString().slice(0, 10),
+    method: payment.method as (typeof METHODS_PAY)[number],
+    reference: payment.reference ?? "",
+    currencyPrimary: currency,
+    amount: currency === "USD" ? payment.amountUsd.toString() : payment.amountBss.toString(),
+    rateOverride: "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      await updatePayment.mutateAsync({
+        organizationId,
+        id: payment.id,
+        paidAt: new Date(`${form.paidAt}T12:00:00`),
+        method: form.method,
+        reference: form.reference || undefined,
+        currencyPrimary: form.currencyPrimary,
+        amount: Number(form.amount),
+        exchangeRateOverride: Number(form.rateOverride) > 0 ? Number(form.rateOverride) : undefined,
+      });
+      onSaved();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+        <h3 className="mb-1 text-lg font-semibold">Editar pago</h3>
+        <p className="mb-4 text-sm text-muted-foreground">Unidad {payment.unit.code}</p>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Fecha del pago</Label>
+              <Input
+                type="date"
+                value={form.paidAt}
+                onChange={(e) => setForm((f) => ({ ...f, paidAt: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Método</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.method}
+                onChange={(e) => setForm((f) => ({ ...f, method: e.target.value as (typeof METHODS_PAY)[number] }))}
+              >
+                {METHODS_PAY.map((m) => (
+                  <option key={m} value={m}>{METHOD_LABEL[m]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Referencia</Label>
+            <Input
+              value={form.reference}
+              onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Moneda</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={form.currencyPrimary}
+                onChange={(e) => setForm((f) => ({ ...f, currencyPrimary: e.target.value as "USD" | "VES" }))}
+              >
+                <option value="VES">Bs — Bolívares</option>
+                <option value="USD">USD — Dólares</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Monto</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={form.amount}
+                onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Tasa manual (opcional)</Label>
+            <Input
+              type="number"
+              step="0.0001"
+              min="0"
+              placeholder="Dejar vacío para usar la tasa BCV de la fecha"
+              value={form.rateOverride}
+              onChange={(e) => setForm((f) => ({ ...f, rateOverride: e.target.value }))}
+            />
+          </div>
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+            ⚠️ Si cambias el monto o la moneda, se re-asigna automáticamente a las facturas pendientes de la unidad (más antigua primero).
+          </p>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex gap-2 justify-end pt-1">
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" disabled={saving}>{saving ? "Guardando..." : "Guardar cambios"}</Button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -535,6 +831,9 @@ function NewPaymentDialog({
   // Feature 7: también registrar como ingreso con la misma referencia
   const [alsoCreateIncome, setAlsoCreateIncome]             = useState(false);
   const [incomeDescription, setIncomeDescription]           = useState("");
+  // Monto del ingreso adicional — el depósito puede repartirse entre cuota + ingreso extra
+  // con montos DISTINTOS (ej: $100 depositados = $60 cuota + $40 alquiler de salón).
+  const [incomeAmount, setIncomeAmount]                     = useState("");
 
   // Facturas pendientes ordenadas de más antigua a más reciente
   const pendingInvoices = useMemo(() => {
@@ -640,6 +939,7 @@ function NewPaymentDialog({
         exchangeRateOverride: Number(rateOverride) > 0 ? Number(rateOverride) : undefined,
         alsoCreateIncome,
         incomeDescription: alsoCreateIncome && incomeDescription ? incomeDescription : undefined,
+        incomeAmount: alsoCreateIncome && Number(incomeAmount) > 0 ? Number(incomeAmount) : undefined,
       });
       onCreated();
     } catch (err: unknown) {
@@ -664,18 +964,18 @@ function NewPaymentDialog({
             <div className="rounded-md border border-purple-200 bg-purple-50 px-3 py-2 text-sm text-purple-800">
               💱 Tasa manual para este pago:{" "}
               <span className="font-semibold">
-                Bs {Number(rateOverride).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / USD
+                Bs {Number(rateOverride).toLocaleString("es-VE", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} / USD
               </span>
             </div>
           ) : rate ? (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
               💱 Tasa BCV de la fecha del pago:{" "}
               <span className="font-semibold">
-                Bs {rate.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / USD
+                Bs {rate.toLocaleString("es-VE", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} / USD
               </span>
               {exchangeRate.data?.date && (
                 <span className="ml-2 text-blue-600 text-xs">
-                  (cotización del {new Date(exchangeRate.data.date).toLocaleDateString("es-VE")})
+                  (cotización del {formatUtcDate(exchangeRate.data.date)})
                 </span>
               )}
             </div>
@@ -893,7 +1193,7 @@ function NewPaymentDialog({
                             type="number"
                             step="0.01"
                             min="0"
-                            max={pending}
+                            max={pending.toFixed(2)}
                             className="h-8 w-16 text-right text-xs px-2"
                             placeholder="0.00"
                             value={allocs[inv.id] ?? ""}
@@ -996,13 +1296,29 @@ function NewPaymentDialog({
               </span>
             </label>
             {alsoCreateIncome && (
-              <div className="pl-6">
-                <Label>Descripción del ingreso</Label>
-                <Input
-                  value={incomeDescription}
-                  onChange={(e) => setIncomeDescription(e.target.value)}
-                  placeholder={`Ingreso vinculado a ref ${form.reference || "—"}`}
-                />
+              <div className="pl-6 space-y-2">
+                <div>
+                  <Label>Monto del ingreso</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={incomeAmount}
+                    onChange={(e) => setIncomeAmount(e.target.value)}
+                    placeholder={form.amount || "0.00"}
+                  />
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Si se deja vacío, se usa el mismo monto del pago ({form.currencyPrimary === "USD" ? "$" : "Bs"} {form.amount || "0"}).
+                  </p>
+                </div>
+                <div>
+                  <Label>Descripción del ingreso</Label>
+                  <Input
+                    value={incomeDescription}
+                    onChange={(e) => setIncomeDescription(e.target.value)}
+                    placeholder={`Ingreso vinculado a ref ${form.reference || "—"}`}
+                  />
+                </div>
               </div>
             )}
           </div>

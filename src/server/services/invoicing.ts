@@ -145,9 +145,12 @@ export type CreateExpenseInput = {
   customCategory?: string;
   subCategory?: string | null;
   supplierName?: string;
+  supplierRif?: string;
   invoiceNumber?: string;
   receiptDate?: Date;
   notes?: string;
+  /** % de retención de ISLR sobre honorarios pagados a un profesional (ej. 3.00 = 3%). */
+  retentionPct?: Decimal.Value;
   /** Scope de torre: null=general, "A"=Torre A, etc. Solo se prorratea a unidades de esa torre. */
   towerScope?: string | null;
   /** Si true, el gasto va directamente a una unidad específica (sin prorrateo). */
@@ -213,6 +216,14 @@ export async function registerExpense(input: CreateExpenseInput) {
   const rate = await getCurrentRate(source, input.receiptDate ?? new Date());
   const { amountBss, amountUsd } = buildBimonetary(input.amount, input.currencyPrimary, rate.vesPerUsd);
 
+  // Retención de ISLR sobre honorarios (contador, administrador, abogado, etc.) —
+  // pedido cliente 12-jul-2026 vía Reinaldo: "hacer el reporte de las retenciones".
+  // Se calcula sobre el monto bimonetario ya resuelto, nunca sobre el monto crudo
+  // (evita arrastre de redondeo entre Bs/USD).
+  const retentionPct = input.retentionPct != null ? new Decimal(input.retentionPct) : null;
+  const retentionAmountUsd = retentionPct ? amountUsd.mul(retentionPct).div(100) : null;
+  const retentionAmountBss = retentionPct ? amountBss.mul(retentionPct).div(100) : null;
+
   return db.expense.create({
     data: {
       organizationId: input.organizationId,
@@ -229,6 +240,7 @@ export async function registerExpense(input: CreateExpenseInput) {
       exchangeSource: rate.source,
       currencyPrimary: input.currencyPrimary,
       supplierName: input.supplierName,
+      supplierRif: input.supplierRif,
       invoiceNumber: input.invoiceNumber,
       receiptDate: input.receiptDate,
       notes: input.notes,
@@ -236,6 +248,9 @@ export async function registerExpense(input: CreateExpenseInput) {
       isIndividual: input.isIndividual ?? false,
       targetUnitId: input.targetUnitId ?? null,
       recurringTemplateId: input.recurringTemplateId ?? null,
+      retentionPct: retentionPct?.toFixed(2) ?? null,
+      retentionAmountUsd: retentionAmountUsd?.toFixed(2) ?? null,
+      retentionAmountBss: retentionAmountBss?.toFixed(2) ?? null,
       createdById: input.createdById,
     },
   });
@@ -710,6 +725,34 @@ export async function issueMonthlyInvoices(params: {
       invoices: invoiceRows.map((r) => ({ unitId: r.unitId, unitCode: r.unitCode, invoiceNumber: r.invoiceNumber, totalBss: r.totalBss, totalUsd: r.totalUsd })),
     };
   }, { timeout: 15000 }); // timeout aumentado por si acaso, pero ahora debería completar en <2s
+
+  // Aplicar automáticamente cualquier saldo a favor PREEXISTENTE contra las facturas
+  // recién emitidas — pedido cliente 12-jul-2026 vía Reinaldo: "que el ajuste de saldo
+  // a favor se integre automáticamente siempre, no que haga falta aplicarlo manual".
+  // Precheck barato: solo unidades con crédito real, antes de intentar el sweep completo
+  // por unidad (evita 188 queries de más cuando casi ninguna tiene anticipo).
+  {
+    const newUnitIds = result.invoices.map((r) => r.unitId);
+    const paymentsMaybeWithCredit = await db.payment.findMany({
+      where: { communityId, voidedAt: null, isHistorical: false, unitId: { in: newUnitIds } },
+      select: { unitId: true, amountUsd: true, allocations: { select: { amountUsd: true } } },
+    });
+    const creditUnitIds = new Set<string>();
+    for (const p of paymentsMaybeWithCredit) {
+      const allocSum = p.allocations.reduce((s, a) => s + Number(a.amountUsd), 0);
+      if (Number(p.amountUsd) - allocSum > 0.005) creditUnitIds.add(p.unitId);
+    }
+    if (creditUnitIds.size > 0) {
+      const { applyUnitCreditCore } = await import("@/server/services/payments");
+      for (const unitId of creditUnitIds) {
+        try {
+          await db.$transaction((tx) => applyUnitCreditCore(tx, { organizationId, unitId }));
+        } catch {
+          // Best-effort — que falle para una unidad puntual no debe bloquear la emisión.
+        }
+      }
+    }
+  }
 
   // Fire-and-forget: notify each unit's current owner after the transaction commits.
   void (async () => {

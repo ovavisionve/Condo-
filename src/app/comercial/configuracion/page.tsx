@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { formatUtcDate } from "@/lib/utils";
 
 export default function ConfiguracionPage() {
   const { selectedOrgId } = useComercial();
@@ -147,7 +148,7 @@ export default function ConfiguracionPage() {
             <CardContent className="space-y-2">
               {rateData && (
                 <p className="text-xs text-muted-foreground">
-                  {rateData.source} · {new Date(rateData.date).toLocaleDateString("es-VE")}
+                  {rateData.source} · {formatUtcDate(rateData.date)}
                 </p>
               )}
               <Button size="sm" variant="outline" className="w-full"
@@ -217,7 +218,7 @@ export default function ConfiguracionPage() {
               <tbody className="divide-y">
                 {recentQ.data.map((r, i) => (
                   <tr key={i} className={i === 0 ? "bg-blue-50/50 font-medium" : "hover:bg-accent/20"}>
-                    <td className="px-3 py-2">{new Date(r.date).toLocaleDateString("es-VE")}</td>
+                    <td className="px-3 py-2">{formatUtcDate(r.date)}</td>
                     <td className="px-3 py-2 text-right font-mono">{Number(r.vesPerUsd).toFixed(4)}</td>
                     <td className="px-3 py-2 text-muted-foreground">{r.source}</td>
                   </tr>

@@ -291,7 +291,17 @@ export default function ExpensesPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-muted-foreground">{e.supplierName ?? "—"}</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {e.supplierName ?? "—"}
+                        {exp.retentionPct != null && (
+                          <span
+                            className="ml-1.5 inline-block rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium text-violet-800"
+                            title="Este gasto tiene retención de ISLR registrada"
+                          >
+                            🧾 {Number(exp.retentionPct.toString())}%
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-xs">
                         {exp.isIndividual && exp.targetUnit
                           ? <span className="rounded bg-purple-100 px-1 py-0.5 text-purple-800">Unidad {exp.targetUnit.code}</span>
@@ -958,8 +968,13 @@ function NewExpenseDialog({
     // con la posibilidad de pasar a dolares").
     currencyPrimary: "VES" as "USD" | "VES",
     supplierName: "",
+    supplierRif: "",
     invoiceNumber: "",
     notes: "",
+    // Retención de ISLR sobre honorarios pagados a un profesional (pedido cliente
+    // 12-jul-2026 vía Reinaldo: "hacer el reporte de las retenciones").
+    applyRetention: false,
+    retentionPct: "",
     // Fecha completa del comprobante — calendario. Año y mes del período se derivan.
     receiptDate: todayStr,
     periodYear: defaultYear,
@@ -1015,12 +1030,14 @@ function NewExpenseDialog({
         amount: Number(form.amount),
         currencyPrimary: form.currencyPrimary,
         supplierName: form.supplierName || undefined,
+        supplierRif: form.supplierRif || undefined,
         invoiceNumber: form.invoiceNumber || undefined,
         notes: form.notes || undefined,
         towerScope: form.isIndividual ? null : (form.towerScope || null),
         isIndividual: form.isIndividual,
         targetUnitId: form.isIndividual && form.targetUnitId ? form.targetUnitId : null,
         recurringTemplateId: form.recurringTemplateId || null,
+        retentionPct: form.applyRetention && Number(form.retentionPct) > 0 ? Number(form.retentionPct) : undefined,
       });
       onCreated();
     } catch (err: unknown) {
@@ -1244,6 +1261,56 @@ function NewExpenseDialog({
             )}
           </div>
 
+          {/* Retención de ISLR sobre honorarios (contador, administrador, abogado, etc.) */}
+          <div className="rounded-lg border border-dashed p-3 space-y-2">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.applyRetention}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  applyRetention: e.target.checked,
+                  // Reinaldo confirmó que la retención siempre es 25% — se precarga
+                  // pero se puede editar si algún caso puntual es distinto.
+                  retentionPct: e.target.checked && !f.retentionPct ? "25" : f.retentionPct,
+                }))}
+              />
+              <span className="font-medium">🧾 Este pago tiene retención de ISLR (honorarios profesionales)</span>
+            </label>
+            {form.applyRetention && (
+              <div className="grid grid-cols-2 gap-3 pl-6">
+                <div>
+                  <Label className="text-xs">RIF del proveedor</Label>
+                  <Input
+                    value={form.supplierRif}
+                    onChange={(e) => setForm((f) => ({ ...f, supplierRif: e.target.value }))}
+                    placeholder="J-12345678-9"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">% de retención</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={form.retentionPct}
+                    onChange={(e) => setForm((f) => ({ ...f, retentionPct: e.target.value }))}
+                    placeholder="Ej: 3"
+                  />
+                </div>
+                {form.applyRetention && Number(form.retentionPct) > 0 && Number(form.amount) > 0 && (
+                  <p className="col-span-2 text-[11px] text-muted-foreground">
+                    Se retendrán {(Number(form.amount) * Number(form.retentionPct) / 100).toFixed(2)}{" "}
+                    {form.currencyPrimary === "USD" ? "USD" : "Bs"} — neto a pagar:{" "}
+                    {(Number(form.amount) * (1 - Number(form.retentionPct) / 100)).toFixed(2)}{" "}
+                    {form.currencyPrimary === "USD" ? "USD" : "Bs"}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           <div>
             <Label>Notas</Label>
             <Input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
@@ -1389,6 +1456,7 @@ type EditExpenseRow = {
   currencyPrimary: string;
   receiptDate: Date | null;
   supplierName?: string | null;
+  supplierRif?: string | null;
   invoiceNumber?: string | null;
   notes?: string | null;
   towerScope?: string | null;
@@ -1396,6 +1464,7 @@ type EditExpenseRow = {
   customCategory?: string | null;
   subCategory?: string | null;
   isIndividual?: boolean;
+  retentionPct?: { toString(): string } | null;
 };
 
 function EditExpenseDialog({
@@ -1430,6 +1499,7 @@ function EditExpenseDialog({
     customCategory: expense.customCategory ?? "",
     subCategory: expense.subCategory ?? "",
     supplierName: expense.supplierName ?? "",
+    supplierRif: expense.supplierRif ?? "",
     invoiceNumber: expense.invoiceNumber ?? "",
     notes: expense.notes ?? "",
     amount: initialAmount.toString(),
@@ -1437,6 +1507,8 @@ function EditExpenseDialog({
     receiptDate: initialDate,
     towerScope: expense.towerScope ?? "",
     recurringTemplateId: expense.recurringTemplateId ?? "",
+    applyRetention: Boolean(expense.retentionPct),
+    retentionPct: expense.retentionPct ? Number(expense.retentionPct.toString()).toString() : "",
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -1463,6 +1535,7 @@ function EditExpenseDialog({
         customCategory: form.customCategory.trim() || null,
         subCategory: form.subCategory.trim() || null,
         supplierName: form.supplierName || null,
+        supplierRif: form.supplierRif || null,
         invoiceNumber: form.invoiceNumber || null,
         notes: form.notes || null,
         amount: Number(form.amount),
@@ -1470,6 +1543,7 @@ function EditExpenseDialog({
         receiptDate: new Date(form.receiptDate + "T12:00:00"),
         towerScope: form.towerScope || null,
         recurringTemplateId: form.recurringTemplateId || null,
+        retentionPct: form.applyRetention && Number(form.retentionPct) > 0 ? Number(form.retentionPct) : null,
       });
       onSaved();
     } catch (err: unknown) {
@@ -1505,9 +1579,15 @@ function EditExpenseDialog({
             <Label>Descripción</Label>
             <Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />
           </div>
-          <div>
-            <Label>Proveedor</Label>
-            <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Proveedor</Label>
+              <Input value={form.supplierName} onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))} />
+            </div>
+            <div>
+              <Label>RIF del proveedor</Label>
+              <Input value={form.supplierRif} onChange={(e) => setForm((f) => ({ ...f, supplierRif: e.target.value }))} placeholder="J-12345678-9" />
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1568,6 +1648,34 @@ function EditExpenseDialog({
                 return <option key={t.id} value={t.id}>{t.description} ({amt}/mes)</option>;
               })}
             </select>
+          </div>
+          <div className="rounded-lg border border-dashed p-3 space-y-2">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.applyRetention}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  applyRetention: e.target.checked,
+                  retentionPct: e.target.checked && !f.retentionPct ? "25" : f.retentionPct,
+                }))}
+              />
+              <span className="font-medium">🧾 Este pago tiene retención de ISLR (honorarios profesionales)</span>
+            </label>
+            {form.applyRetention && (
+              <div className="pl-6">
+                <Label className="text-xs">% de retención</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={form.retentionPct}
+                  onChange={(e) => setForm((f) => ({ ...f, retentionPct: e.target.value }))}
+                  placeholder="Ej: 3"
+                />
+              </div>
+            )}
           </div>
           <div>
             <Label>Notas</Label>

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatUtcDate } from "@/lib/utils";
 
 export default function CommunityOverview() {
   const { id } = useParams<{ id: string }>();
@@ -41,11 +42,11 @@ export default function CommunityOverview() {
           <CardHeader>
             <CardDescription>Tasa BCV (USD→VES)</CardDescription>
             <CardTitle className="text-3xl">
-              {rate.data ? Number(rate.data.vesPerUsd).toFixed(2) : "..."}
+              {rate.data ? Number(rate.data.vesPerUsd).toFixed(4) : "..."}
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
-            {rate.data ? `${rate.data.source} · ${new Date(rate.data.date).toLocaleDateString("es-VE")}` : ""}
+            {rate.data ? `${rate.data.source} · ${formatUtcDate(rate.data.date)}` : ""}
           </CardContent>
         </Card>
 

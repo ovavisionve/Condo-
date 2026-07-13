@@ -303,8 +303,12 @@ export const reportsRouter = router({
         .slice(0, input.take)
         .map(([unitId, data]) => {
           const owner = ownerMap.get(unitId);
+          // Math.ceil, no floor — mismo criterio que portal.ts getDeudaGeneral (ya
+          // verificado contra dueDates reales). floor() da sistemáticamente 1 mes
+          // de menos que el "Meses" real de Sisconin — confirmado 12-jul-2026
+          // comparando 20 unidades contra el Excel: TODAS off-by-one con floor.
           const overdueMonths = data.oldestDueDate
-            ? Math.max(0, Math.floor((today.getTime() - data.oldestDueDate.getTime()) / MS / 30))
+            ? Math.max(0, Math.ceil((today.getTime() - data.oldestDueDate.getTime()) / MS / 30))
             : 0;
           return {
             unitId,
@@ -317,6 +321,150 @@ export const reportsRouter = router({
             overdueMonths,
           };
         });
+    }),
+
+  /**
+   * Reporte "deuda por unidad" — equivalente al "Vencimientos por cuotas" del
+   * sistema anterior (Sisconin). Lista TODAS las unidades (no solo top N) con su
+   * deuda pendiente a una fecha de corte, con filtros de rango de código, incluir
+   * sin deuda, mostrar saldo a favor, moneda y ocultar nombre del propietario.
+   *
+   * Nota: "Mostrar recargos" del sistema viejo no tiene equivalente — ResidIA no
+   * calcula un cargo de mora/interés (el modelo es USD fijo, se paga más Bs si
+   * se paga tarde, pero no hay un monto adicional de recargo que mostrar).
+   */
+  duesReport: orgProcedure
+    .input(orgIdInput.extend({
+      communityId: z.string(),
+      asOfDate: z.coerce.date().optional(), // default hoy
+      fromCode: z.string().optional(),
+      toCode: z.string().optional(),
+      includeNoDebt: z.boolean().default(false),
+      includeCredit: z.boolean().default(true),
+      currency: z.enum(["USD", "VES"]).default("USD"),
+      hideOwnerName: z.boolean().default(false),
+    }))
+    .query(async ({ ctx, input }) => {
+      const asOf = input.asOfDate ?? new Date();
+      const today = new Date();
+      const MS = 86_400_000;
+      // Solo filtrar por dueDate cuando asOfDate es una fecha REALMENTE pasada (reconstrucción
+      // histórica, ej. "Otra fecha" con un corte anterior). Para "Hoy" (o cualquier fecha de
+      // hoy en adelante), NO se filtra por vencimiento — debe mostrar TODA la deuda pendiente
+      // ya facturada, igual que "Top deudores" y el resto de la app. Antes filtraba siempre
+      // por `dueDate <= asOf`, así que la factura del mes en curso (emitida pero cuyo
+      // vencimiento todavía no llega) quedaba excluida del reporte aunque SÍ contaba en
+      // "Top deudores" — bug reportado con capturas 12-jul-2026 (montos muy por debajo de
+      // los reales, ej. 193A: reporte $685.70 vs real $1004.92).
+      const todayStart = new Date(today); todayStart.setHours(0, 0, 0, 0);
+      const asOfStart = new Date(asOf); asOfStart.setHours(0, 0, 0, 0);
+      const isPastAsOf = asOfStart.getTime() < todayStart.getTime();
+
+      const units = await ctx.db.unit.findMany({
+        where: {
+          communityId: input.communityId,
+          deletedAt: null,
+          ...(input.fromCode ? { code: { gte: input.fromCode } } : {}),
+          ...(input.toCode ? { code: { lte: input.toCode } } : {}),
+        },
+        select: {
+          id: true, code: true,
+          ownerships: {
+            where: { endDate: null },
+            select: { person: { select: { firstName: true, lastName: true } } },
+          },
+        },
+        orderBy: { code: "asc" },
+      });
+      const unitIds = units.map((u) => u.id);
+
+      const invoices = await ctx.db.invoice.findMany({
+        where: {
+          communityId: input.communityId,
+          unitId: { in: unitIds },
+          status: { in: ["ISSUED", "PARTIAL", "OVERDUE"] },
+          ...(isPastAsOf ? { dueDate: { lte: asOf } } : {}),
+        },
+        select: { unitId: true, totalUsd: true, paidUsd: true, totalBss: true, paidBss: true, dueDate: true },
+      });
+
+      const debtByUnit = new Map<string, { usd: Decimal; bss: Decimal; oldestDueDate: Date | null }>();
+      for (const inv of invoices) {
+        const pendingUsd = new Decimal(inv.totalUsd.toString()).minus(inv.paidUsd.toString());
+        const pendingBss = new Decimal(inv.totalBss.toString()).minus(inv.paidBss.toString());
+        if (pendingUsd.lte(0) && pendingBss.lte(0)) continue;
+        const existing = debtByUnit.get(inv.unitId) ?? { usd: new Decimal(0), bss: new Decimal(0), oldestDueDate: null as Date | null };
+        existing.usd = existing.usd.plus(Decimal.max(pendingUsd, 0));
+        existing.bss = existing.bss.plus(Decimal.max(pendingBss, 0));
+        if (!existing.oldestDueDate || inv.dueDate < existing.oldestDueDate) existing.oldestDueDate = inv.dueDate;
+        debtByUnit.set(inv.unitId, existing);
+      }
+
+      // Saldo a favor (mismo criterio que buildInvoicePdfData: excluye pagos históricos
+      // migrados, que casi nunca tienen allocations y no representan un anticipo real).
+      const creditByUnit = new Map<string, { usd: Decimal; bss: Decimal }>();
+      if (input.includeCredit) {
+        const payments = await ctx.db.payment.findMany({
+          where: { unitId: { in: unitIds }, voidedAt: null, isHistorical: false, paidAt: { lte: asOf } },
+          select: {
+            unitId: true, amountUsd: true, amountBss: true,
+            allocations: { select: { amountUsd: true, amountBss: true } },
+          },
+        });
+        for (const p of payments) {
+          const tU = new Decimal(p.amountUsd.toString());
+          const tB = new Decimal(p.amountBss.toString());
+          const aU = p.allocations.reduce((s, a) => s.plus(a.amountUsd.toString()), new Decimal(0));
+          const aB = p.allocations.reduce((s, a) => s.plus(a.amountBss.toString()), new Decimal(0));
+          const cU = tU.minus(aU);
+          const cB = tB.minus(aB);
+          if (cU.lte(0.005) && cB.lte(0.005)) continue;
+          const existing = creditByUnit.get(p.unitId) ?? { usd: new Decimal(0), bss: new Decimal(0) };
+          if (cU.gt(0.005)) existing.usd = existing.usd.plus(cU);
+          if (cB.gt(0.005)) existing.bss = existing.bss.plus(cB);
+          creditByUnit.set(p.unitId, existing);
+        }
+      }
+
+      const rows = units.map((u) => {
+        const debt = debtByUnit.get(u.id);
+        const credit = creditByUnit.get(u.id);
+        const owner = u.ownerships[0]?.person;
+        // Math.ceil — mismo criterio que portal.ts getDeudaGeneral y topDebtors (ver
+        // comentario arriba). floor() quedaba 1 mes por debajo del real.
+        const monthsOverdue = debt?.oldestDueDate
+          ? Math.max(0, Math.ceil((today.getTime() - debt.oldestDueDate.getTime()) / MS / 30))
+          : 0;
+        return {
+          unitId: u.id,
+          unitCode: u.code,
+          ownerName: input.hideOwnerName ? null : owner ? `${owner.firstName} ${owner.lastName}` : "Sin propietario",
+          pendingUsd: (debt?.usd ?? new Decimal(0)).toFixed(2),
+          pendingBss: (debt?.bss ?? new Decimal(0)).toFixed(2),
+          creditUsd: (credit?.usd ?? new Decimal(0)).toFixed(2),
+          creditBss: (credit?.bss ?? new Decimal(0)).toFixed(2),
+          monthsOverdue,
+          hasDebt: Boolean(debt),
+        };
+      });
+
+      const filtered = input.includeNoDebt ? rows : rows.filter((r) => r.hasDebt);
+
+      const totalPendingUsd = filtered.reduce((s, r) => s + Number(r.pendingUsd), 0);
+      const totalPendingBss = filtered.reduce((s, r) => s + Number(r.pendingBss), 0);
+      const totalCreditUsd = filtered.reduce((s, r) => s + Number(r.creditUsd), 0);
+
+      return {
+        asOfDate: asOf,
+        currency: input.currency,
+        rows: filtered,
+        summary: {
+          unitCount: filtered.length,
+          totalPendingUsd: totalPendingUsd.toFixed(2),
+          totalPendingBss: totalPendingBss.toFixed(2),
+          totalCreditUsd: totalCreditUsd.toFixed(2),
+        },
+      };
     }),
 
   /**
@@ -506,6 +654,70 @@ export const reportsRouter = router({
         alcance:       e.towerScope ?? (e.isIndividual ? `Unidad ${e.targetUnit?.code ?? ""}` : "General"),
         estado:        e.voidedAt ? "Anulado" : e.invoicedAt ? "Facturado" : "Pendiente",
       }));
+    }),
+
+  /**
+   * Reporte de retenciones de ISLR sobre honorarios pagados a profesionales
+   * (contador, administrador, abogado, etc.) — pedido cliente 12-jul-2026 vía
+   * Reinaldo: "hacer el reporte de las retenciones". Lista los gastos con
+   * retentionPct configurado en un rango de meses, con el desglose bruto/retenido/neto.
+   */
+  retentionsReport: orgProcedure
+    .input(orgIdInput.extend({
+      communityId: z.string(),
+      startYear:   z.number().int().min(2000).max(2100),
+      startMonth:  z.number().int().min(1).max(12),
+      endYear:     z.number().int().min(2000).max(2100),
+      endMonth:    z.number().int().min(1).max(12),
+    }))
+    .query(async ({ ctx, input }) => {
+      const { organizationId, communityId, startYear, startMonth, endYear, endMonth } = input;
+      const expenses = await ctx.db.expense.findMany({
+        where: {
+          organizationId,
+          communityId,
+          voidedAt: null,
+          retentionPct: { not: null },
+          OR: [
+            { periodYear: { gt: startYear }, AND: { periodYear: { lt: endYear } } },
+            { periodYear: startYear, periodMonth: { gte: startMonth } },
+            { periodYear: endYear,   periodMonth: { lte: endMonth   } },
+          ],
+        },
+        orderBy: [{ periodYear: "asc" }, { periodMonth: "asc" }, { createdAt: "asc" }],
+      });
+
+      const rows = expenses.map((e) => {
+        const brutoUsd = Number(e.amountUsd);
+        const brutoBss = Number(e.amountBss);
+        const retUsd = Number(e.retentionAmountUsd ?? 0);
+        const retBss = Number(e.retentionAmountBss ?? 0);
+        return {
+          id: e.id,
+          año: e.periodYear,
+          mes: e.periodMonth,
+          fecha: e.receiptDate?.toISOString() ?? null,
+          proveedor: e.supplierName ?? "",
+          rif: e.supplierRif ?? "",
+          concepto: e.description,
+          categoría: e.customCategory ?? e.category,
+          retencionPct: Number(e.retentionPct ?? 0),
+          brutoUsd, brutoBss,
+          retenidoUsd: retUsd, retenidoBss: retBss,
+          netoUsd: brutoUsd - retUsd, netoBss: brutoBss - retBss,
+        };
+      });
+
+      const summary = rows.reduce(
+        (s, r) => ({
+          brutoUsd: s.brutoUsd + r.brutoUsd, brutoBss: s.brutoBss + r.brutoBss,
+          retenidoUsd: s.retenidoUsd + r.retenidoUsd, retenidoBss: s.retenidoBss + r.retenidoBss,
+          netoUsd: s.netoUsd + r.netoUsd, netoBss: s.netoBss + r.netoBss,
+        }),
+        { brutoUsd: 0, brutoBss: 0, retenidoUsd: 0, retenidoBss: 0, netoUsd: 0, netoBss: 0 },
+      );
+
+      return { rows, summary, count: rows.length };
     }),
 
   /**

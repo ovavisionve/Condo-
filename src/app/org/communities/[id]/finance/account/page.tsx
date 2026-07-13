@@ -171,7 +171,7 @@ export default function AccountStatementPage() {
                 Bs {(debtUsd * todayRate).toLocaleString("es-VE", { maximumFractionDigits: 2 })}
               </div>
               <div className="text-xs text-muted-foreground mt-1">
-                {todayRate > 0 ? `Tasa BCV: ${todayRate.toFixed(2)} Bs/$` : "Cargando tasa..."}
+                {todayRate > 0 ? `Tasa BCV: ${todayRate.toFixed(4)} Bs/$` : "Cargando tasa..."}
               </div>
             </div>
             <div className="rounded-lg border bg-card p-4">

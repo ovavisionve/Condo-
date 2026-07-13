@@ -5,6 +5,8 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useOrgId } from "../../../OrgContext";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -53,6 +55,43 @@ export default function ReportsPage() {
     endYear:   today.getFullYear(), endMonth:   today.getMonth() + 1,
   });
 
+  // Reporte "Deuda por unidad" (equivalente a "Vencimientos por cuotas" del sistema
+  // anterior) — pedido cliente 09-jul-2026 con captura de referencia.
+  const [duesDateMode, setDuesDateMode] = useState<"today" | "monthStart" | "monthEnd" | "custom">("today");
+  const [duesCustomDate, setDuesCustomDate] = useState(today.toISOString().slice(0, 10));
+  const [duesFromCode, setDuesFromCode] = useState("");
+  const [duesToCode, setDuesToCode] = useState("");
+  const [duesIncludeNoDebt, setDuesIncludeNoDebt] = useState(false);
+  const [duesIncludeCredit, setDuesIncludeCredit] = useState(false);
+  const [duesCurrency, setDuesCurrency] = useState<"USD" | "VES">("USD");
+  const [duesHideOwnerName, setDuesHideOwnerName] = useState(false);
+  const [duesGenerated, setDuesGenerated] = useState(false);
+
+  // Marca "⚖️ En abogado" — unidades con un caso legal (LegalCase) OPEN.
+  const { data: openLegalCases } = trpc.legal.cases.list.useQuery({ organizationId, communityId, status: "OPEN" });
+  const legalUnitIds = new Set((openLegalCases ?? []).map((c) => c.unitId));
+
+  const duesAsOfDate = (() => {
+    if (duesDateMode === "today") return today;
+    if (duesDateMode === "monthStart") return new Date(today.getFullYear(), today.getMonth(), 1);
+    if (duesDateMode === "monthEnd") return new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return new Date(`${duesCustomDate}T12:00:00`);
+  })();
+
+  const duesReport = trpc.reports.duesReport.useQuery(
+    {
+      organizationId, communityId,
+      asOfDate: duesAsOfDate,
+      fromCode: duesFromCode || undefined,
+      toCode: duesToCode || undefined,
+      includeNoDebt: duesIncludeNoDebt,
+      includeCredit: duesIncludeCredit,
+      currency: duesCurrency,
+      hideOwnerName: duesHideOwnerName,
+    },
+    { enabled: duesGenerated },
+  );
+
   const periodRange = getPeriodRange(year, month, periodType);
 
   const summary       = trpc.reports.communitySummary.useQuery({ organizationId, communityId, year, month });
@@ -66,6 +105,9 @@ export default function ReportsPage() {
   const expensesExportQ = trpc.reports.expensesExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
   const paymentsExportQ = trpc.reports.paymentsExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
   const incomeExportQ   = trpc.reports.incomeExport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
+  // Reporte de retenciones ISLR — pedido cliente 12-jul-2026 vía Reinaldo.
+  const retentionsQ = trpc.reports.retentionsReport.useQuery({ organizationId, communityId, ...exportRange }, { enabled: false });
+  const [retentionsShown, setRetentionsShown] = useState(false);
 
   const downloadMorososCsv = async () => {
     const { data } = await debtors.refetch();
@@ -145,6 +187,31 @@ export default function ReportsPage() {
       xlsx.utils.book_append_sheet(wb, ws, "Ingresos");
       xlsx.writeFile(wb, `ingresos-${rangeName}.xlsx`);
     }
+  };
+
+  const handleShowRetentions = async () => {
+    await retentionsQ.refetch();
+    setRetentionsShown(true);
+  };
+
+  const handleExportRetentions = async () => {
+    const { data } = await retentionsQ.refetch();
+    if (!data?.rows.length) return;
+    const xlsx = await import("xlsx");
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const rangeName = `${exportRange.startYear}-${pad(exportRange.startMonth)}_a_${exportRange.endYear}-${pad(exportRange.endMonth)}`;
+    const ws = xlsx.utils.json_to_sheet(data.rows.map((r) => ({
+      "Año": r.año, "Mes": r.mes,
+      "Proveedor": r.proveedor, "RIF": r.rif,
+      "Concepto": r.concepto, "Categoría": r.categoría,
+      "% Retención": r.retencionPct,
+      "Bruto USD": r.brutoUsd, "Bruto Bs": r.brutoBss,
+      "Retenido USD": r.retenidoUsd, "Retenido Bs": r.retenidoBss,
+      "Neto USD": r.netoUsd, "Neto Bs": r.netoBss,
+    })));
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, "Retenciones");
+    xlsx.writeFile(wb, `retenciones-${rangeName}.xlsx`);
   };
 
   const s = summary.data;
@@ -302,6 +369,13 @@ export default function ReportsPage() {
             >
               {paymentsExportQ.isFetching ? "..." : "↓ Pagos"}
             </Button>
+            <Button
+              size="sm" variant="outline"
+              onClick={() => void handleShowRetentions()}
+              disabled={retentionsQ.isFetching}
+            >
+              {retentionsQ.isFetching ? "..." : "🧾 Retenciones"}
+            </Button>
           </div>
         </div>
         {firstRecords.data && (
@@ -316,6 +390,67 @@ export default function ReportsPage() {
           </p>
         )}
       </div>
+
+      {/* ── Reporte de retenciones ISLR sobre honorarios ─────────── */}
+      {retentionsShown && (
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold">🧾 Retenciones de ISLR sobre honorarios</h3>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => void handleExportRetentions()} disabled={!retentionsQ.data?.rows.length}>
+                ↓ Exportar Excel
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setRetentionsShown(false)}>Cerrar</Button>
+            </div>
+          </div>
+          {retentionsQ.isFetching ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : !retentionsQ.data?.rows.length ? (
+            <p className="text-sm text-muted-foreground">
+              No hay gastos con retención registrada en este rango. Márcalos en Gastos → "🧾 Este pago tiene retención de ISLR".
+            </p>
+          ) : (
+            <>
+              <div className="mb-3 flex flex-wrap gap-4 rounded-md bg-violet-50 px-3 py-2 text-sm">
+                <span><strong>{retentionsQ.data.count}</strong> pagos con retención</span>
+                <span>Bruto: <strong>${retentionsQ.data.summary.brutoUsd.toFixed(2)}</strong></span>
+                <span className="text-violet-800">Retenido: <strong>${retentionsQ.data.summary.retenidoUsd.toFixed(2)}</strong></span>
+                <span>Neto pagado: <strong>${retentionsQ.data.summary.netoUsd.toFixed(2)}</strong></span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 text-left">
+                    <tr>
+                      <th className="px-3 py-2">Período</th>
+                      <th className="px-3 py-2">Proveedor</th>
+                      <th className="px-3 py-2">RIF</th>
+                      <th className="px-3 py-2">Concepto</th>
+                      <th className="px-3 py-2 text-right">Bruto USD</th>
+                      <th className="px-3 py-2 text-right">%</th>
+                      <th className="px-3 py-2 text-right">Retenido USD</th>
+                      <th className="px-3 py-2 text-right">Neto USD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {retentionsQ.data.rows.map((r) => (
+                      <tr key={r.id} className="border-t hover:bg-muted/30">
+                        <td className="px-3 py-2 text-muted-foreground">{MONTHS_ES[r.mes - 1]} {r.año}</td>
+                        <td className="px-3 py-2 font-medium">{r.proveedor || "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{r.rif || "—"}</td>
+                        <td className="px-3 py-2">{r.concepto}</td>
+                        <td className="px-3 py-2 text-right">${r.brutoUsd.toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right text-muted-foreground">{r.retencionPct}%</td>
+                        <td className="px-3 py-2 text-right text-violet-800 font-semibold">${r.retenidoUsd.toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right">${r.netoUsd.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── KPI Cards (Bs primario + USD secundario) ──────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -597,6 +732,165 @@ export default function ReportsPage() {
             </table>
           );
         })()}
+      </div>
+
+      {/* ── Vencimientos por cuotas (deuda por unidad, equivalente Sisconin) ── */}
+      <div className="rounded-lg border bg-card print:hidden">
+        <div className="border-b px-4 py-3">
+          <p className="font-semibold text-sm">📋 Vencimientos por cuotas — Deuda por unidad</p>
+          <p className="text-xs text-muted-foreground">Reporte completo (todas las unidades) a una fecha de corte, con rango, saldo a favor y moneda — como en el sistema anterior.</p>
+        </div>
+        <div className="p-4 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <Label className="text-xs">Fecha</Label>
+              <div className="flex flex-wrap gap-3 mt-1.5 text-sm">
+                {([
+                  ["today", "Hoy"],
+                  ["monthStart", "Inicio de mes"],
+                  ["monthEnd", "Fin de mes"],
+                  ["custom", "Otra fecha"],
+                ] as const).map(([val, label]) => (
+                  <label key={val} className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={duesDateMode === val}
+                      onChange={() => setDuesDateMode(val)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {duesDateMode === "custom" && (
+                <Input
+                  type="date"
+                  className="mt-2"
+                  value={duesCustomDate}
+                  onChange={(e) => setDuesCustomDate(e.target.value)}
+                />
+              )}
+            </div>
+            <div>
+              <Label className="text-xs">Rango de unidades (código)</Label>
+              <div className="flex gap-2 mt-1.5">
+                <Input placeholder="Desde" value={duesFromCode} onChange={(e) => setDuesFromCode(e.target.value)} />
+                <Input placeholder="Hasta" value={duesToCode} onChange={(e) => setDuesToCode(e.target.value)} />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Moneda</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm mt-1.5"
+                value={duesCurrency}
+                onChange={(e) => setDuesCurrency(e.target.value as "USD" | "VES")}
+              >
+                <option value="USD">USD — Dólares</option>
+                <option value="VES">Bs — Bolívares</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5 justify-end text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={duesIncludeNoDebt} onChange={(e) => setDuesIncludeNoDebt(e.target.checked)} />
+                Mostrar condóminos sin deuda
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={duesIncludeCredit} onChange={(e) => setDuesIncludeCredit(e.target.checked)} />
+                Mostrar saldos a favor
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={duesHideOwnerName} onChange={(e) => setDuesHideOwnerName(e.target.checked)} />
+                No mostrar el nombre del condómino
+              </label>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <Button onClick={() => setDuesGenerated(true)} disabled={duesReport.isFetching}>
+              {duesReport.isFetching ? "Generando..." : "📋 Generar reporte"}
+            </Button>
+            {duesGenerated && duesReport.data && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const xlsx = await import("xlsx");
+                  const rows = duesReport.data!.rows.map((r) => ({
+                    Unidad: r.unitCode,
+                    ...(duesHideOwnerName ? {} : { Propietario: r.ownerName ?? "" }),
+                    [`Pendiente ${duesCurrency}`]: duesCurrency === "USD" ? r.pendingUsd : r.pendingBss,
+                    ...(duesIncludeCredit ? { [`Saldo a favor ${duesCurrency}`]: duesCurrency === "USD" ? r.creditUsd : r.creditBss } : {}),
+                    "Meses en mora": r.monthsOverdue,
+                  }));
+                  const ws = xlsx.utils.json_to_sheet(rows);
+                  const wb = xlsx.utils.book_new();
+                  xlsx.utils.book_append_sheet(wb, ws, "Deuda por unidad");
+                  xlsx.writeFile(wb, `deuda-por-unidad-${new Date().toISOString().slice(0, 10)}.xlsx`);
+                }}
+              >
+                ⬇️ Excel
+              </Button>
+            )}
+          </div>
+
+          {duesGenerated && (
+            <div className="rounded-lg border overflow-auto">
+              {duesReport.isLoading ? (
+                <p className="px-4 py-6 text-center text-muted-foreground text-sm">Cargando...</p>
+              ) : !duesReport.data || duesReport.data.rows.length === 0 ? (
+                <p className="px-4 py-6 text-center text-green-600 font-medium text-sm">✓ Sin resultados para estos filtros</p>
+              ) : (
+                <>
+                  <div className="px-4 py-2 bg-muted/40 border-b text-xs flex flex-wrap gap-4">
+                    <span><strong>{duesReport.data.summary.unitCount}</strong> unidades</span>
+                    <span>Pendiente total: <strong className="text-red-600">
+                      {duesCurrency === "USD" ? `$${duesReport.data.summary.totalPendingUsd}` : `Bs ${Number(duesReport.data.summary.totalPendingBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    </strong></span>
+                    {duesIncludeCredit && (
+                      <span>Saldo a favor total: <strong className="text-green-700">${duesReport.data.summary.totalCreditUsd}</strong></span>
+                    )}
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-left">
+                      <tr>
+                        <th className="px-3 py-2">Unidad</th>
+                        {!duesHideOwnerName && <th className="px-3 py-2">Propietario</th>}
+                        <th className="px-3 py-2 text-right">Pendiente</th>
+                        {duesIncludeCredit && <th className="px-3 py-2 text-right">Saldo a favor</th>}
+                        <th className="px-3 py-2 text-right">Meses mora</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {duesReport.data.rows.map((r) => (
+                        <tr key={r.unitId} className="border-t hover:bg-muted/30">
+                          <td className="px-3 py-2 font-medium">
+                            {r.unitCode}
+                            {legalUnitIds.has(r.unitId) && (
+                              <span
+                                className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700"
+                                title="Esta unidad tiene un caso legal (cobranza judicial) abierto"
+                              >
+                                ⚖️
+                              </span>
+                            )}
+                          </td>
+                          {!duesHideOwnerName && <td className="px-3 py-2 text-muted-foreground">{r.ownerName}</td>}
+                          <td className="px-3 py-2 text-right font-semibold text-red-600">
+                            {duesCurrency === "USD" ? `$${r.pendingUsd}` : `Bs ${Number(r.pendingBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          </td>
+                          {duesIncludeCredit && (
+                            <td className="px-3 py-2 text-right text-green-700">
+                              {Number(r.creditUsd) > 0 ? (duesCurrency === "USD" ? `$${r.creditUsd}` : `Bs ${Number(r.creditBss).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`) : "—"}
+                            </td>
+                          )}
+                          <td className="px-3 py-2 text-right text-muted-foreground">{r.monthsOverdue || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

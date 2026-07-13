@@ -1433,9 +1433,14 @@ export const portalRouter = router({
             include: {
               organization: {
                 include: {
-                  // Buscar ORG_ADMIN primero, luego COMMUNITY_ADMIN como fallback
+                  // Buscar ORG_ADMIN primero, luego COMMUNITY_ADMIN como fallback.
+                  // CRÍTICO: filtrar active:true — una membership revocada no debe
+                  // seguir recibiendo notificaciones de pago (bug real encontrado
+                  // 09-jul-2026: una cuenta de prueba con email inválido, aunque se
+                  // revocara, seguía "ganando" el .find() porque esta query no
+                  // filtraba por active).
                   memberships: {
-                    where: { role: { in: ["ORG_ADMIN", "COMMUNITY_ADMIN"] } },
+                    where: { role: { in: ["ORG_ADMIN", "COMMUNITY_ADMIN"] }, active: true },
                     include: { user: { select: { email: true, name: true } } },
                   },
                 },

@@ -556,7 +556,7 @@ function PrincipalTab({ unit, todayRate, onTab }: { unit: UnitData; todayRate: s
           Deuda neta en US$: {pendingUsd.toFixed(2)}
         </p>
         <p className="text-xs text-slate-500">
-          Calculado a la tasa BCV del día: {new Date().toLocaleDateString("es-VE")} / Bs. {Number(todayRate).toFixed(8)}
+          Calculado a la tasa BCV del día: {new Date().toLocaleDateString("es-VE")} / Bs. {Number(todayRate).toFixed(4)}
         </p>
       </div>
 
@@ -705,7 +705,7 @@ function PendientesTab({ unit, todayRate }: { unit: UnitData; todayRate: string 
 
       {/* Nota */}
       <p className="text-xs text-muted-foreground border rounded px-3 py-2 bg-slate-50">
-        Los montos en bolívares se calculan al tipo de cambio BCV de hoy: {Number(todayRate).toFixed(2)} Bs/$
+        Los montos en bolívares se calculan al tipo de cambio BCV de hoy: {Number(todayRate).toFixed(4)} Bs/$
       </p>
     </div>
   );

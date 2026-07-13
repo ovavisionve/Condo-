@@ -4,6 +4,7 @@ import type { ExchangeSource } from "@prisma/client";
 import axios from "axios";
 import * as https from "https";
 import * as cheerio from "cheerio";
+import { todayInVenezuela } from "@/lib/utils";
 
 /**
  * Servicio de tasas de cambio.
@@ -38,14 +39,18 @@ const dateOnly = (d: Date): Date => {
  */
 export async function getCurrentRate(
   source: ExchangeSource = "BCV",
-  forDate: Date = new Date(),
+  forDate?: Date,
 ): Promise<RateInfo> {
-  const todayStart = dateOnly(new Date());
+  // "Hoy" se calcula con el calendario de Venezuela (UTC-4), no el del servidor
+  // (Vercel corre en UTC — ver `todayInVenezuela`). Si `forDate` no se especificó,
+  // el llamador quiere "hoy" literalmente, así que se usa el mismo valor sin volver
+  // a pasar por `new Date()` (que traería el día UTC del servidor).
+  const todayStart = todayInVenezuela();
   // BLINDAJE: nunca tratar una fecha FUTURA como propia — se clampa a hoy. Antes, pedir
   // la tasa para (p.ej.) el 31 de julio hacía fetch en vivo y la CACHEABA bajo esa fecha
   // futura, contaminando la serie histórica con valores erróneos (un scrape malo quedaba
   // guardado bajo el futuro y luego se leía en el recibo). Para fecha futura = usar hoy.
-  const requested = dateOnly(forDate);
+  const requested = forDate ? dateOnly(forDate) : todayStart;
   const date = requested.getTime() > todayStart.getTime() ? todayStart : requested;
   const isPastDate = date.getTime() < todayStart.getTime();
 
@@ -61,23 +66,34 @@ export async function getCurrentRate(
   if (!isPastDate && source === "BCV") {
     const fetched = await fetchBcvRate();
     if (fetched) {
+      // El BCV publica cada tasa con su propia "Fecha Valor" (parseada de la página) —
+      // a veces días antes de que ese día llegue (ej. viernes en la tarde ya publica la
+      // tasa "para el lunes"). Guardar bajo ESA fecha, no bajo "hoy", es lo que corrige el
+      // bug "tasa adelantada/atrasada" (11-jul-2026): antes se guardaba SIEMPRE bajo la
+      // fecha de hoy del scraper, mezclando el valor de mañana con la etiqueta de hoy —
+      // confirmado comparando contra la tasa oficial real: lo que el sistema guardaba como
+      // "1 de julio" (639,7029) era en realidad la tasa oficial del 2 de julio.
+      const valueDate = fetched.valueDate ?? todayStart;
       const saved = await db.exchangeRate.upsert({
-        where: { date_source: { date, source: "BCV" } },
-        update: { vesPerUsd: fetched.toString() },
-        create: { date, source: "BCV", vesPerUsd: fetched.toString() },
+        where: { date_source: { date: valueDate, source: "BCV" } },
+        update: { vesPerUsd: fetched.rate.toString() },
+        create: { date: valueDate, source: "BCV", vesPerUsd: fetched.rate.toString() },
       });
-      return { date: saved.date, source: saved.source, vesPerUsd: new Decimal(saved.vesPerUsd) };
+      if (valueDate.getTime() <= todayStart.getTime()) {
+        return { date: saved.date, source: saved.source, vesPerUsd: new Decimal(saved.vesPerUsd) };
+      }
+      // La tasa recién publicada es para un día hábil FUTURO (el BCV ya adelantó la del
+      // próximo día hábil) — todavía no "vigente" para hoy. Cae al fallback de abajo, que
+      // busca la última vigente (≤ hoy) — normalmente la del último día hábil transcurrido.
     }
   }
 
-  // Fallback histórico: para fechas pasadas, la tasa más cercana ANTERIOR o IGUAL a esa fecha.
-  // Para fechas presentes/futuras sin cache ni fetch, la última tasa disponible.
+  // Tasa vigente = la más reciente publicada con fecha ≤ la solicitada. El BCV no publica
+  // una fila por cada día calendario (fines de semana, feriados) — la última vigente sigue
+  // aplicando hasta que se publique la siguiente.
   const sourceFallback = source === "BCV" ? { in: ["BCV", "MANUAL"] as ExchangeSource[] } : source;
   const latest = await db.exchangeRate.findFirst({
-    where: {
-      source: sourceFallback,
-      ...(isPastDate ? { date: { lte: date } } : {}),
-    },
+    where: { source: sourceFallback, date: { lte: date } },
     orderBy: { date: "desc" },
   });
   if (latest) {
@@ -99,10 +115,11 @@ export async function getCurrentRate(
  */
 export async function setManualRate(
   vesPerUsd: Decimal.Value,
-  date: Date = new Date(),
+  date?: Date,
   notes?: string,
 ): Promise<RateInfo> {
-  const d = dateOnly(date);
+  // Sin fecha explícita = "hoy" en Venezuela, no el día UTC del servidor.
+  const d = date ? dateOnly(date) : todayInVenezuela();
   const rate = new Decimal(vesPerUsd);
   if (rate.lte(0)) throw new Error("La tasa debe ser mayor que cero");
 
@@ -124,6 +141,10 @@ export async function setManualRate(
   return { date: d, source: "MANUAL", vesPerUsd: rate };
 }
 
+/** Resultado de un fetch BCV: la tasa + la "Fecha Valor" que el BCV le asignó, si se pudo
+ * determinar (solo el scraping directo la conoce; los fallbacks JSON no la exponen). */
+type BcvFetchResult = { rate: Decimal; valueDate: Date | null };
+
 /**
  * Fetch BCV oficial — intenta las fuentes en este orden:
  *   1. Scraping directo bcv.org.ve  ← FUENTE PRIMARIA (igual que el proyecto comanda)
@@ -132,16 +153,13 @@ export async function setManualRate(
  *
  * open.er-api.com fue removida: no actualiza VES con frecuencia suficiente.
  */
-async function fetchBcvRate(): Promise<Decimal | null> {
-  const sources = [
-    fetchBcvScrape,        // 1° — más precisa, fuente oficial directa
-    fetchFromPydolarve,    // 2° — fallback si BCV está inaccesible desde Vercel
-    fetchFromDolarApi,     // 3° — fallback adicional
-  ];
-  for (const fn of sources) {
-    const result = await fn();
-    if (result) return result;
-  }
+async function fetchBcvRate(): Promise<BcvFetchResult | null> {
+  const scraped = await fetchBcvScrape();
+  if (scraped) return scraped;
+  const pydolar = await fetchFromPydolarve();
+  if (pydolar) return { rate: pydolar, valueDate: null };
+  const dolarapi = await fetchFromDolarApi();
+  if (dolarapi) return { rate: dolarapi, valueDate: null };
   return null;
 }
 
@@ -223,7 +241,7 @@ const bcvHttpsAgent = new https.Agent({ rejectUnauthorized: false });
  * Usa axios + cheerio (igual que comanda) con SSL bypass para el cert malo del BCV.
  * El BCV usa coma como separador decimal: "490,22510000".
  */
-async function fetchBcvScrape(): Promise<Decimal | null> {
+async function fetchBcvScrape(): Promise<BcvFetchResult | null> {
   try {
     const response = await axios.get<string>("https://www.bcv.org.ve/", {
       timeout: 15_000,
@@ -277,8 +295,22 @@ async function fetchBcvScrape(): Promise<Decimal | null> {
       return null;
     }
 
-    console.info("[exchange] ✓ Tasa BCV obtenida por scraping directo:", value);
-    return new Decimal(value);
+    // El BCV publica cada tasa junto a su "Fecha Valor" — el día en que esa tasa TOMA
+    // EFECTO, que puede ser un día hábil futuro (ej. el viernes en la tarde ya muestra
+    // la tasa "para el lunes"). El markup trae un atributo machine-readable:
+    // <span class="date-display-single" property="dc:date" content="2026-07-13T00:00:00-04:00">
+    // Parsear ESE valor evita el bug "tasa adelantada/atrasada" de etiquetar con la fecha
+    // de hoy del scraper un valor que en realidad es para otro día.
+    let valueDate: Date | null = null;
+    const content = $('span.date-display-single[property="dc:date"]').first().attr("content");
+    const m = content?.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) valueDate = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+
+    console.info(
+      "[exchange] ✓ Tasa BCV obtenida por scraping directo:", value,
+      valueDate ? `(Fecha Valor: ${valueDate.toISOString().slice(0, 10)})` : "(sin Fecha Valor detectada)",
+    );
+    return { rate: new Decimal(value), valueDate };
   } catch (err) {
     console.warn("[exchange] BCV scraping falló:", err instanceof Error ? err.message : err);
     return null;
@@ -324,11 +356,12 @@ export async function refreshBcvRate(): Promise<RateInfo> {
       "No se pudo obtener la tasa automáticamente (dolarapi.com y BCV no respondieron). Ingresa la tasa manualmente.",
     );
   }
-  const date = dateOnly(new Date());
+  // Guardar bajo la "Fecha Valor" real del BCV, no bajo "hoy" — mismo fix que getCurrentRate.
+  const date = fetched.valueDate ?? todayInVenezuela();
   const saved = await db.exchangeRate.upsert({
     where: { date_source: { date, source: "BCV" } },
-    update: { vesPerUsd: fetched.toString() },
-    create: { date, source: "BCV", vesPerUsd: fetched.toString() },
+    update: { vesPerUsd: fetched.rate.toString() },
+    create: { date, source: "BCV", vesPerUsd: fetched.rate.toString() },
   });
   return { date: saved.date, source: saved.source, vesPerUsd: new Decimal(saved.vesPerUsd) };
 }
